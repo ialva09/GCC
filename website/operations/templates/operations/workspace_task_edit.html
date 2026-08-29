@@ -1,0 +1,6 @@
+{% if active_section == 'tasks' and can_manage_tasks and request.GET.edit == 'task' and selected_task %}
+<section class='record-detail workspace-form time-edit-panel'>
+    <div class='admin-section-heading compact'><div><span class='section-kicker'>Task editor</span><h3>Update {{ selected_task.title }}</h3></div></div>
+    <form method='post' action='{% if team_mode %}/team/tasks/{{ selected_task.pk }}/update/{% else %}/dashboard/tasks/{{ selected_task.pk }}/update/{% endif %}'>{% csrf_token %}<div class='workspace-form-grid'>{% for field in task_form %}<label class='form-field'>{{ field.label }}{{ field }}{{ field.errors }}</label>{% endfor %}</div><button class='button button-primary' type='submit'>Save task</button></form>
+</section>
+{% endif %}

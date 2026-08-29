@@ -1,0 +1,6 @@
+{% if active_section == 'leads' and selected_lead and can_manage_tasks %}
+<section class='record-detail lead-assignment-panel'>
+    <div class='admin-section-heading compact'><div><span class='section-kicker'>Ownership</span><h3>Lead assignment</h3></div><span class='detail-value'>Keep one responsible teammate visible.</span></div>
+    <form class='inline-control' method='post' action='/dashboard/leads/{{ selected_lead.pk }}/assign/'>{% csrf_token %}{{ lead_assignment_form.assigned_to }}<button class='button button-quiet' type='submit'>Save assignment</button></form>
+</section>
+{% endif %}

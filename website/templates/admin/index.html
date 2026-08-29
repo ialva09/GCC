@@ -1,0 +1,95 @@
+{% extends 'admin/base.html' %}
+
+{% load i18n %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block bodyclass %}{{ block.super }} gcc-admin-home-page{% endblock %}
+
+{% block branding %}
+    {% include 'unfold/helpers/site_branding.html' %}
+{% endblock %}
+
+{% block content %}
+    <section class='gcc-admin-home' aria-labelledby='gcc-admin-home-title'>
+        <div class='gcc-admin-home-heading'>
+            <div>
+                <span class='gcc-admin-kicker'>Administration</span>
+                <h1 id='gcc-admin-home-title'>GCC Inc.</h1>
+                <p>Manage the records behind Grand Coast Operations.</p>
+            </div>
+            <a class='gcc-admin-button gcc-admin-button-outline' href='/dashboard/'>
+                Open Operations <span aria-hidden='true'>→</span>
+            </a>
+        </div>
+
+        <div class='gcc-admin-stat-row'>
+            <a class='gcc-admin-stat' href='/admin/operations/lead/'>
+                <span class='gcc-admin-stat-label'>Pipeline</span>
+                <strong>Leads &amp; estimates</strong>
+                <small>Keep every conversation moving.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
+            </a>
+            <a class='gcc-admin-stat' href='/admin/operations/project/'>
+                <span class='gcc-admin-stat-label'>Work in motion</span>
+                <strong>Projects &amp; updates</strong>
+                <small>See the records shaping each build.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
+            </a>
+            <a class='gcc-admin-stat gcc-admin-stat-gold' href='/admin/operations/service/'>
+                <span class='gcc-admin-stat-label'>Public presence</span>
+                <strong>Website content</strong>
+                <small>Keep the company story current.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
+            </a>
+        </div>
+
+        <div class='gcc-admin-section-heading'>
+            <div>
+                <span class='gcc-admin-kicker'>Record management</span>
+                <h2>Administration</h2>
+            </div>
+            <a class='gcc-admin-text-link' href='/dashboard/'>Go to workspace <span aria-hidden='true'>→</span></a>
+        </div>
+
+        <div class='gcc-admin-record-panel'>
+            {% if app_list %}
+                <div class='gcc-admin-record-grid'>
+                    {% for app in app_list %}
+                        {% for model in app.models %}
+                            {% if model.admin_url %}
+                                <a class='gcc-admin-record-row' href='{{ model.admin_url }}'>
+                            {% else %}
+                                <div class='gcc-admin-record-row'>
+                            {% endif %}
+                                <span class='gcc-admin-record-copy'>
+                                    <span class='gcc-admin-record-app'>{{ app.name }}</span>
+                                    <strong>{{ model.name }}</strong>
+                                </span>
+                                <span class='gcc-admin-record-actions'>
+                                    {% if model.add_url %}
+                                        <span class='gcc-admin-record-add'>Add</span>
+                                    {% endif %}
+                                    {% if model.admin_url %}
+                                        <span class='gcc-admin-record-open'>Open <span aria-hidden='true'>→</span></span>
+                                    {% endif %}
+                                </span>
+                            {% if model.admin_url %}
+                                </a>
+                            {% else %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class='gcc-admin-empty'>You do not have permission to view or edit any administration records.</p>
+            {% endif %}
+        </div>
+
+        <div class='gcc-admin-home-footnote'>
+            <span class='gcc-admin-gold-rule' aria-hidden='true'></span>
+            <span>Native Django administration · Operations remains the primary staff workspace.</span>
+        </div>
+    </section>
+{% endblock %}

@@ -1,0 +1,33 @@
+<section class='project-documents-panel'>
+    <div class='admin-section-heading compact'>
+        <div><span class='section-kicker'>Project files</span><h4>Documents</h4></div>
+        <a class='text-link-button' href='/dashboard/documents/?project={{ selected_project.pk }}'>Open document library &rarr;</a>
+    </div>
+    <div class='project-document-list'>
+        {% for document in selected_project.documents.all %}
+            <a class='project-document-row' href='/documents/{{ document.pk }}/'>
+                <span><strong>{{ document.title }}</strong><small>{{ document.category }} &middot; {{ document.get_visibility_display }}</small></span>
+                <span>&darr;</span>
+            </a>
+        {% empty %}
+            <p class='detail-value'>No documents have been added to this project yet.</p>
+        {% endfor %}
+    </div>
+    {% if can_manage_documents %}
+        <details class='project-document-upload'>
+            <summary>Upload a project document</summary>
+            <form class='workspace-form' method='post' action='/dashboard/documents/upload/' enctype='multipart/form-data'>
+                {% csrf_token %}
+                <div class='workspace-form-grid'>
+                    <label class='form-field'>Project{{ project_document_form.project }}</label>
+                    <label class='form-field'>Title{{ project_document_form.title }}</label>
+                    <label class='form-field'>Category{{ project_document_form.category }}</label>
+                    <label class='form-field'>Visibility{{ project_document_form.visibility }}</label>
+                    <label class='form-field'>Description{{ project_document_form.description }}</label>
+                    <label class='form-field'>File{{ project_document_form.file }}</label>
+                </div>
+                <button class='button button-quiet' type='submit'>Upload document</button>
+            </form>
+        </details>
+    {% endif %}
+</section>

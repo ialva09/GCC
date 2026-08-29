@@ -1,0 +1,34 @@
+{% if active_section == 'calendar' %}
+<section class='calendar-month-panel'>
+    <div class='calendar-month-heading'>
+        <a class='text-link-button' href='?month={{ calendar_previous }}'>&larr; Previous</a>
+        <div>
+            <span class='section-kicker'>Monthly view</span>
+            <h3>{{ calendar_month_label }}</h3>
+        </div>
+        <a class='text-link-button' href='?month={{ calendar_next }}'>Next &rarr;</a>
+    </div>
+    <div class='calendar-weekdays' aria-hidden='true'>
+        <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
+    </div>
+    <div class='calendar-grid'>
+        {% for week in calendar_weeks %}
+            {% for day in week %}
+                <div class='calendar-day{% if not day.is_current_month %} is-outside{% endif %}{% if day.is_today %} is-today{% endif %}'>
+                    <strong>{{ day.date|date:'j' }}</strong>
+                    <div class='calendar-day-events'>
+                        {% for event in day.events %}
+                            <a href='?event={{ event.pk }}&amp;edit=event' title='{{ event.title }}'>
+                                <span>{{ event.start_at|date:'g:i A' }}</span> {{ event.title }}
+                            </a>
+                        {% empty %}
+                            <span class='calendar-day-empty'></span>
+                        {% endfor %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% endfor %}
+    </div>
+    <p class='calendar-mobile-note'>On smaller screens, scheduled work is listed below.</p>
+</section>
+{% endif %}

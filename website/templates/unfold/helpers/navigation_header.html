@@ -1,0 +1,18 @@
+{% load unfold %}
+
+<div class='gcc-unfold-navigation-header border-b border-base-200'>
+    <a class='gcc-unfold-brand' href='{% url 'admin:index' %}'>
+        <span class='gcc-unfold-logo-frame'>
+            {% if site_logo %}
+                <img src='{{ site_logo }}' alt='Grand Coast Construction Inc. logo'>
+            {% elif branding %}
+                {% include 'unfold/helpers/site_icon.html' %}
+            {% endif %}
+        </span>
+        <span class='gcc-unfold-brand-copy'>
+            <strong>Grand Coast</strong>
+            <small>Construction Inc.</small>
+        </span>
+    </a>
+    <span class='material-symbols-outlined gcc-unfold-navigation-close xl:hidden!' x-on:click='sidebarToggle()'>close</span>
+</div>

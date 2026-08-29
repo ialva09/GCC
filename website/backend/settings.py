@@ -10,7 +10,10 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
 from pathlib import Path
+
+from django.urls import reverse_lazy
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,24 +23,32 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-vqj=87*mnd8e@l#zzbdtxg5irpkueko0b!ay+vi7kwakh#bb&s'
+SECRET_KEY = os.getenv(
+    "DJANGO_SECRET_KEY",
+    'django-insecure-vqj=87*mnd8e@l#zzbdtxg5irpkueko0b!ay+vi7kwakh#bb&s',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes"}
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver").split(",")
+    if host.strip()
+]
 
 
 # Application definition
 
 INSTALLED_APPS = [
+    'unfold',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'demo',
+    'operations',
 ]
 
 MIDDLEWARE = [
@@ -55,7 +66,7 @@ ROOT_URLCONF = 'backend.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -105,7 +116,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/Los_Angeles'
 
 USE_I18N = True
 
@@ -116,13 +127,333 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# User uploads are local during development. Production can opt into the
+# Supabase S3-compatible backend without changing application code.
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', '').lower() in {'1', 'true', 'yes'}
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+}
+
+if USE_SUPABASE_STORAGE:
+    STORAGES['default'] = {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+    }
+    AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_S3_ENDPOINT', '')
+    AWS_ACCESS_KEY_ID = os.getenv('SUPABASE_S3_ACCESS_KEY', '')
+    AWS_SECRET_ACCESS_KEY = os.getenv('SUPABASE_S3_SECRET_KEY', '')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('SUPABASE_STORAGE_BUCKET', '')
+    AWS_S3_REGION_NAME = os.getenv('SUPABASE_S3_REGION', 'us-east-1')
+    AWS_S3_SIGNATURE_VERSION = 's3v4'
+    AWS_S3_FILE_OVERWRITE = False
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = True
+
+LOGIN_URL = 'operations:login'
+LOGIN_REDIRECT_URL = 'operations:dashboard'
+LOGOUT_REDIRECT_URL = 'operations:home'
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+
+def _model_permission(app_label, model_name):
+    permissions = tuple(
+        f'{app_label}.{action}_{model_name}'
+        for action in ('view', 'add', 'change', 'delete')
+    )
+    return lambda request: any(request.user.has_perm(permission) for permission in permissions)
+
+
+UNFOLD = {
+    'SITE_TITLE': 'Grand Coast Administration',
+    'SITE_HEADER': 'Grand Coast Administration',
+    'SITE_SUBHEADER': 'Operations workspace',
+    'SITE_URL': '/',
+    'SITE_LOGO': '/static/operations/images/gcc-logo.png',
+    'SITE_ICON': '/static/operations/images/gcc-logo.png',
+    'SITE_FAVICONS': [
+        {
+            'rel': 'icon',
+            'href': '/static/operations/images/gcc-logo.png',
+            'type': 'image/png',
+        },
+    ],
+    'THEME': 'light',
+    'SHOW_HISTORY': True,
+    'SHOW_VIEW_ON_SITE': True,
+    'SHOW_BACK_BUTTON': True,
+    'SHOW_UI_WARNINGS': False,
+    'COLORS': {
+        'base': {
+            '50': '#ffffff',
+            '100': '#f5f7fa',
+            '200': '#d9e1ef',
+            '300': '#d4d4d4',
+            '400': '#b7c5db',
+            '500': '#5e5e5e',
+            '600': '#1b1b1b',
+            '700': '#31518c',
+            '800': '#1e3051',
+            '900': '#1e3051',
+            '950': '#14243f',
+        },
+        'primary': {
+            '50': '#f5f7fa',
+            '100': '#d9e1ef',
+            '200': '#d9e1ef',
+            '300': '#4465a1',
+            '400': '#4465a1',
+            '500': '#4465a1',
+            '600': '#31518c',
+            '700': '#1e3051',
+            '800': '#14243f',
+            '900': '#14243f',
+            '950': '#14243f',
+        },
     },
+    'COMMAND': {
+        'search_models': ['auth.user', 'auth.group'],
+        'show_history': True,
+        'search_callback': 'operations.search.admin_search',
+    },
+    'SIDEBAR': {
+        'show_search': True,
+        'show_all_applications': False,
+        'navigation': [
+            {
+                'title': 'Workspace',
+                'items': [
+                    {
+                        'title': 'Operations dashboard',
+                        'icon': 'dashboard',
+                        'link': '/dashboard/',
+                        'permission': lambda request: request.user.is_staff,
+                    },
+                    {
+                        'title': 'Administration home',
+                        'icon': 'admin_panel_settings',
+                        'link': reverse_lazy('admin:index'),
+                        'permission': lambda request: request.user.is_staff,
+                    },
+                ],
+            },
+            {
+                'title': 'Clients & access',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Clients',
+                        'icon': 'groups',
+                        'link': reverse_lazy('admin:operations_client_changelist'),
+                        'permission': _model_permission('operations', 'client'),
+                    },
+                    {
+                        'title': 'Client invites',
+                        'icon': 'person_add',
+                        'link': reverse_lazy('admin:operations_clientinvite_changelist'),
+                        'permission': _model_permission('operations', 'clientinvite'),
+                    },
+                    {
+                        'title': 'Client messages',
+                        'icon': 'mail',
+                        'link': reverse_lazy('admin:operations_clientmessage_changelist'),
+                        'permission': _model_permission('operations', 'clientmessage'),
+                    },
+                ],
+            },
+            {
+                'title': 'Leads & estimates',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Leads',
+                        'icon': 'person_search',
+                        'link': reverse_lazy('admin:operations_lead_changelist'),
+                        'permission': _model_permission('operations', 'lead'),
+                    },
+                    {
+                        'title': 'Tasks',
+                        'icon': 'event_upcoming',
+                        'link': reverse_lazy('admin:operations_task_changelist'),
+                        'permission': _model_permission('operations', 'task'),
+                    },
+                    {
+                        'title': 'Estimates',
+                        'icon': 'request_quote',
+                        'link': reverse_lazy('admin:operations_estimate_changelist'),
+                        'permission': _model_permission('operations', 'estimate'),
+                    },
+                    {
+                        'title': 'Estimate line items',
+                        'icon': 'format_list_bulleted',
+                        'link': reverse_lazy('admin:operations_estimatelineitem_changelist'),
+                        'permission': _model_permission('operations', 'estimatelineitem'),
+                    },
+                    {
+                        'title': 'Lead attachments',
+                        'icon': 'attach_file',
+                        'link': reverse_lazy('admin:operations_leadattachment_changelist'),
+                        'permission': _model_permission('operations', 'leadattachment'),
+                    },
+                ],
+            },
+            {
+                'title': 'Projects & media',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Projects',
+                        'icon': 'engineering',
+                        'link': reverse_lazy('admin:operations_project_changelist'),
+                        'permission': _model_permission('operations', 'project'),
+                    },
+                    {
+                        'title': 'Milestones',
+                        'icon': 'task_alt',
+                        'link': reverse_lazy('admin:operations_milestone_changelist'),
+                        'permission': _model_permission('operations', 'milestone'),
+                    },
+                    {
+                        'title': 'Project updates',
+                        'icon': 'update',
+                        'link': reverse_lazy('admin:operations_projectupdate_changelist'),
+                        'permission': _model_permission('operations', 'projectupdate'),
+                    },
+                    {
+                        'title': 'Media assets',
+                        'icon': 'perm_media',
+                        'link': reverse_lazy('admin:operations_mediaasset_changelist'),
+                        'permission': _model_permission('operations', 'mediaasset'),
+                    },
+                    {
+                        'title': 'Activity history',
+                        'icon': 'history',
+                        'link': reverse_lazy('admin:operations_activity_changelist'),
+                        'permission': _model_permission('operations', 'activity'),
+                    },
+                ],
+            },
+            {
+                'title': 'Team & operations',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Employee profiles',
+                        'icon': 'badge',
+                        'link': reverse_lazy('admin:operations_employeeprofile_changelist'),
+                        'permission': _model_permission('operations', 'employeeprofile'),
+                    },
+                    {
+                        'title': 'Employee invites',
+                        'icon': 'person_add',
+                        'link': reverse_lazy('admin:operations_employeeinvite_changelist'),
+                        'permission': _model_permission('operations', 'employeeinvite'),
+                    },
+                    {
+                        'title': 'Schedule events',
+                        'icon': 'calendar_month',
+                        'link': reverse_lazy('admin:operations_scheduleevent_changelist'),
+                        'permission': _model_permission('operations', 'scheduleevent'),
+                    },
+                    {
+                        'title': 'Time entries',
+                        'icon': 'schedule',
+                        'link': reverse_lazy('admin:operations_timeentry_changelist'),
+                        'permission': _model_permission('operations', 'timeentry'),
+                    },
+                    {
+                        'title': 'Project documents',
+                        'icon': 'description',
+                        'link': reverse_lazy('admin:operations_projectdocument_changelist'),
+                        'permission': _model_permission('operations', 'projectdocument'),
+                    },
+                ],
+            },
+            {
+                'title': 'Website content',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Site settings',
+                        'icon': 'settings',
+                        'link': reverse_lazy('admin:operations_sitesettings_changelist'),
+                        'permission': _model_permission('operations', 'sitesettings'),
+                    },
+                    {
+                        'title': 'Services',
+                        'icon': 'design_services',
+                        'link': reverse_lazy('admin:operations_service_changelist'),
+                        'permission': _model_permission('operations', 'service'),
+                    },
+                    {
+                        'title': 'Process steps',
+                        'icon': 'format_list_numbered',
+                        'link': reverse_lazy('admin:operations_processstep_changelist'),
+                        'permission': _model_permission('operations', 'processstep'),
+                    },
+                ],
+            },
+            {
+                'title': 'System',
+                'collapsible': True,
+                'items': [
+                    {
+                        'title': 'Users',
+                        'icon': 'manage_accounts',
+                        'link': reverse_lazy('admin:auth_user_changelist'),
+                        'permission': _model_permission('auth', 'user'),
+                    },
+                    {
+                        'title': 'Groups',
+                        'icon': 'shield',
+                        'link': reverse_lazy('admin:auth_group_changelist'),
+                        'permission': _model_permission('auth', 'group'),
+                    },
+                ],
+            },
+            {
+                'title': 'Shortcuts',
+                'items': [
+                    {
+                        'title': 'Public site',
+                        'icon': 'open_in_new',
+                        'link': '/',
+                        'permission': lambda request: request.user.is_staff,
+                    },
+                    {
+                        'title': 'Client portal',
+                        'icon': 'account_circle',
+                        'link': '/portal/',
+                        'permission': lambda request: request.user.is_staff,
+                    },
+                ],
+            },
+        ],
+    },
+    'ACCOUNT': {
+        'navigation': [
+            {
+                'title': 'Operations dashboard',
+                'link': '/dashboard/',
+            },
+            {
+                'title': 'Return to public site',
+                'link': '/',
+            },
+        ],
+    },
+    'STYLES': ['/static/operations/css/unfold.css'],
 }

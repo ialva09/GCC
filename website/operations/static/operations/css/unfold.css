@@ -1,0 +1,825 @@
+/* Grand Coast accents for Unfold's native administration interface. */
+
+:root {
+    --gcc-blue: #4465a1;
+    --gcc-deep: #31518c;
+    --gcc-navy: #1e3051;
+    --gcc-navy-2: #14243f;
+    --gcc-gold: #d6a32a;
+    --gcc-gold-soft: #f3e7bd;
+    --gcc-ink: #1b1b1b;
+    --gcc-muted: #5e5e5e;
+    --gcc-soft: #f5f7fa;
+    --gcc-line: #d4d4d4;
+    --gcc-line-blue: #d9e1ef;
+    --gcc-white: #ffffff;
+}
+
+body {
+    color: var(--gcc-ink);
+    background: var(--gcc-soft);
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+}
+
+#nav-sidebar,
+#nav-sidebar-inner {
+    color: #e8eef8;
+    background: var(--gcc-navy);
+}
+
+#nav-sidebar .border-base-200 {
+    border-color: rgba(214, 163, 42, .35);
+}
+
+#nav-sidebar img.h-8 {
+    width: 42px;
+    height: 50px;
+    padding: 3px;
+    background: var(--gcc-white);
+    border-radius: 3px;
+    object-fit: contain;
+}
+
+#nav-sidebar .text-important,
+#nav-sidebar .text-font-important-light,
+#nav-sidebar h2 {
+    color: var(--gcc-white);
+}
+
+#nav-sidebar h2 {
+    color: var(--gcc-gold-soft);
+    font-size: .66rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+}
+
+#nav-sidebar a {
+    color: #cbd6e8;
+}
+
+#nav-sidebar a:hover,
+#nav-sidebar a.active {
+    color: var(--gcc-white);
+    background: rgba(68, 101, 161, .33);
+}
+
+#nav-sidebar a.active {
+    position: relative;
+}
+
+#nav-sidebar a.active::before {
+    position: absolute;
+    top: 7px;
+    bottom: 7px;
+    left: 0;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--gcc-gold);
+    content: '';
+}
+
+#nav-sidebar .text-primary-600,
+#nav-sidebar .dark\:text-primary-500 {
+    color: var(--gcc-white);
+}
+
+.gcc-unfold-navigation-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 82px;
+    padding: 11px 14px;
+    border-color: rgba(214, 163, 42, .35) !important;
+}
+
+.gcc-unfold-brand {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    flex: 1;
+    gap: 10px;
+    color: var(--gcc-white);
+}
+
+.gcc-unfold-brand:hover {
+    color: var(--gcc-white);
+}
+
+.gcc-unfold-logo-frame {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 51px;
+    height: 59px;
+    flex: 0 0 auto;
+    padding: 3px;
+    background: var(--gcc-white);
+    border-radius: 3px;
+}
+
+.gcc-unfold-logo-frame img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.gcc-unfold-brand-copy {
+    display: block;
+    min-width: 0;
+}
+
+.gcc-unfold-brand-copy strong,
+.gcc-unfold-brand-copy small {
+    display: block;
+}
+
+.gcc-unfold-brand-copy strong {
+    overflow: hidden;
+    color: var(--gcc-white);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: .91rem;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gcc-unfold-brand-copy small {
+    margin-top: 5px;
+    overflow: hidden;
+    color: var(--gcc-gold-soft);
+    font-size: .56rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.gcc-unfold-navigation-close {
+    color: #cbd6e8;
+}
+
+.gcc-unfold-navigation-close:hover {
+    color: var(--gcc-white);
+}
+
+#main {
+    background: var(--gcc-soft);
+}
+
+#main > .border-b,
+#main .bg-white {
+    border-color: var(--gcc-line-blue);
+}
+
+#main h1,
+#main h2 {
+    color: var(--gcc-navy);
+    font-family: 'Merriweather', Georgia, serif;
+}
+
+#main a:hover {
+    color: var(--gcc-gold);
+}
+
+#main input:focus,
+#main select:focus,
+#main textarea:focus {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 1px var(--gcc-blue);
+}
+
+#main button[type='submit'],
+#main .bg-primary-600 {
+    background-color: var(--gcc-blue);
+}
+
+#main button[type='submit']:hover,
+#main .hover\:bg-primary-700:hover {
+    background-color: var(--gcc-deep);
+}
+
+@media (max-width: 1279px) {
+    #nav-sidebar img.h-8 {
+        width: 38px;
+        height: 45px;
+    }
+
+    .gcc-unfold-brand-copy strong {
+        font-size: .84rem;
+    }
+}
+
+/* Administration landing page */
+
+body.gcc-admin-home-page {
+    color: var(--gcc-ink);
+    background: var(--gcc-soft);
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+}
+
+body.gcc-admin-home-page #main {
+    background: var(--gcc-soft);
+}
+
+body.gcc-admin-home-page #content {
+    width: 100%;
+    max-width: 1480px;
+}
+
+.gcc-admin-home {
+    padding: 0 0 56px;
+}
+
+.gcc-admin-home-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 30px;
+    padding: 44px 0 34px;
+    border-bottom: 1px solid var(--gcc-line);
+}
+
+.gcc-admin-kicker,
+.gcc-login-kicker {
+    display: block;
+    color: var(--gcc-blue);
+    font-size: .67rem;
+    font-weight: 900;
+    letter-spacing: .17em;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.gcc-admin-home h1,
+.gcc-login-form-wrap h1 {
+    margin: 12px 0 10px;
+    color: var(--gcc-navy);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: clamp(2.5rem, 5vw, 4.6rem);
+    font-weight: 900;
+    letter-spacing: -.055em;
+    line-height: 1.02;
+}
+
+.gcc-admin-home-heading p,
+.gcc-login-intro {
+    max-width: 520px;
+    margin: 0;
+    color: var(--gcc-muted);
+    font-size: .78rem;
+}
+
+.gcc-admin-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 46px;
+    padding: 11px 18px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-size: .69rem;
+    font-weight: 900;
+    transition: background .2s ease, border-color .2s ease, color .2s ease, transform .2s ease;
+}
+
+.gcc-admin-button:hover {
+    transform: translateY(-1px);
+}
+
+.gcc-admin-button-primary {
+    color: var(--gcc-white);
+    background: var(--gcc-blue);
+    box-shadow: 0 7px 18px rgba(68, 101, 161, .2);
+}
+
+.gcc-admin-button-primary:hover {
+    color: var(--gcc-white);
+    background: var(--gcc-deep);
+}
+
+.gcc-admin-button-outline {
+    color: var(--gcc-deep);
+    background: transparent;
+    border-color: var(--gcc-blue);
+}
+
+.gcc-admin-button-outline:hover {
+    color: var(--gcc-white);
+    background: var(--gcc-blue);
+}
+
+.gcc-admin-stat-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin-bottom: 54px;
+    border-bottom: 1px solid var(--gcc-line);
+}
+
+.gcc-admin-stat {
+    position: relative;
+    display: flex;
+    min-height: 145px;
+    flex-direction: column;
+    padding: 24px 30px 22px 0;
+    border-right: 1px solid var(--gcc-line);
+}
+
+.gcc-admin-stat + .gcc-admin-stat {
+    padding-left: 30px;
+}
+
+.gcc-admin-stat:last-child {
+    border-right: 0;
+}
+
+.gcc-admin-stat-label {
+    color: var(--gcc-muted);
+    font-size: .64rem;
+    font-weight: 900;
+}
+
+.gcc-admin-stat strong {
+    display: block;
+    margin: 17px 0 9px;
+    color: var(--gcc-navy);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: 1.35rem;
+    font-weight: 900;
+    letter-spacing: -.035em;
+}
+
+.gcc-admin-stat small {
+    color: var(--gcc-muted);
+    font-size: .61rem;
+}
+
+.gcc-admin-stat-arrow {
+    position: absolute;
+    right: 28px;
+    bottom: 24px;
+    color: var(--gcc-blue);
+    font-size: 1rem;
+    font-weight: 900;
+}
+
+.gcc-admin-stat-gold strong,
+.gcc-admin-stat-gold .gcc-admin-stat-arrow {
+    color: var(--gcc-gold);
+}
+
+.gcc-admin-section-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 22px;
+}
+
+.gcc-admin-section-heading h2 {
+    margin: 10px 0 0;
+    color: var(--gcc-navy);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: 1.65rem;
+    font-weight: 900;
+    letter-spacing: -.04em;
+}
+
+.gcc-admin-text-link {
+    color: var(--gcc-blue);
+    font-size: .68rem;
+    font-weight: 900;
+}
+
+.gcc-admin-text-link:hover {
+    color: var(--gcc-gold);
+}
+
+.gcc-admin-record-panel {
+    padding: 14px;
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+}
+
+.gcc-admin-record-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.gcc-admin-record-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 0;
+    gap: 18px;
+    padding: 17px 18px;
+    color: var(--gcc-ink);
+    background: #fbfcfe;
+    border-top: 2px solid var(--gcc-blue);
+    transition: background .2s ease, border-color .2s ease, transform .2s ease;
+}
+
+.gcc-admin-record-row:hover {
+    color: var(--gcc-ink);
+    background: var(--gcc-white);
+    border-top-color: var(--gcc-gold);
+    transform: translateY(-1px);
+}
+
+.gcc-admin-record-copy {
+    display: block;
+    min-width: 0;
+}
+
+.gcc-admin-record-app {
+    display: block;
+    overflow: hidden;
+    color: var(--gcc-blue);
+    font-size: .57rem;
+    font-weight: 900;
+    letter-spacing: .12em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.gcc-admin-record-copy strong {
+    display: block;
+    overflow: hidden;
+    margin-top: 5px;
+    color: var(--gcc-navy);
+    font-size: .76rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gcc-admin-record-actions {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 10px;
+}
+
+.gcc-admin-record-add {
+    padding: 4px 7px;
+    color: #846314;
+    background: var(--gcc-gold-soft);
+    border-radius: 2px;
+    font-size: .56rem;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+.gcc-admin-record-open {
+    color: var(--gcc-blue);
+    font-size: .62rem;
+    font-weight: 900;
+}
+
+.gcc-admin-empty {
+    margin: 22px;
+    color: var(--gcc-muted);
+    font-size: .75rem;
+}
+
+.gcc-admin-home-footnote {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 25px;
+    color: var(--gcc-muted);
+    font-size: .61rem;
+}
+
+.gcc-admin-gold-rule {
+    display: inline-block;
+    width: 42px;
+    height: 3px;
+    flex: 0 0 auto;
+    background: var(--gcc-gold);
+}
+
+/* Branded native admin login */
+
+body.gcc-admin-login-page {
+    color: var(--gcc-ink);
+    background: var(--gcc-soft);
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+}
+
+body.gcc-admin-login-page #page {
+    display: grid;
+    min-height: 100vh;
+    grid-template-columns: minmax(330px, .8fr) minmax(0, 1.2fr);
+    background: var(--gcc-soft);
+}
+
+.gcc-login-brand-panel {
+    display: flex;
+    min-height: 100%;
+    flex-direction: column;
+    padding: 42px clamp(28px, 5vw, 78px);
+    color: var(--gcc-white);
+    background: var(--gcc-navy);
+}
+
+.gcc-login-brand {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    gap: 13px;
+    color: var(--gcc-white);
+}
+
+.gcc-login-brand:hover {
+    color: var(--gcc-white);
+}
+
+.gcc-login-logo-frame {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 67px;
+    height: 78px;
+    padding: 4px;
+    background: var(--gcc-white);
+    border-radius: 3px;
+}
+
+.gcc-login-logo-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.gcc-login-brand strong,
+.gcc-login-brand small {
+    display: block;
+}
+
+.gcc-login-brand strong {
+    color: var(--gcc-white);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: 1.1rem;
+    line-height: 1.1;
+}
+
+.gcc-login-brand small {
+    margin-top: 6px;
+    color: var(--gcc-gold-soft);
+    font-size: .61rem;
+    font-weight: 900;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+}
+
+.gcc-login-brand-copy {
+    max-width: 440px;
+    margin: auto 0;
+    padding: 90px 0;
+}
+
+.gcc-login-kicker {
+    color: var(--gcc-gold-soft);
+}
+
+.gcc-login-brand-copy h2 {
+    margin: 16px 0 17px;
+    color: var(--gcc-white);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: clamp(2.2rem, 4vw, 4.2rem);
+    font-weight: 900;
+    letter-spacing: -.055em;
+    line-height: 1.03;
+}
+
+.gcc-login-brand-copy p {
+    max-width: 370px;
+    margin: 0;
+    color: #cbd6e8;
+    font-size: .78rem;
+    line-height: 1.8;
+}
+
+.gcc-login-brand-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 11px;
+    color: #9db0ce;
+    font-size: .63rem;
+}
+
+.gcc-login-brand-footer a {
+    color: #cbd6e8;
+    font-weight: 800;
+}
+
+.gcc-login-brand-footer a:hover {
+    color: var(--gcc-gold-soft);
+}
+
+.gcc-login-form-panel {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    padding: 48px clamp(24px, 7vw, 110px);
+    background: var(--gcc-soft);
+}
+
+.gcc-login-form-wrap {
+    width: min(100%, 490px);
+    padding: clamp(28px, 5vw, 52px);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+    box-shadow: 0 16px 48px rgba(30, 48, 81, .07);
+}
+
+.gcc-login-form-wrap h1 {
+    margin-top: 14px;
+    font-size: clamp(2.35rem, 4vw, 3.6rem);
+}
+
+.gcc-login-intro {
+    margin-bottom: 32px;
+}
+
+.gcc-login-form-wrap form {
+    margin-top: 28px;
+}
+
+.gcc-login-form-wrap form > div {
+    margin-bottom: 18px;
+}
+
+.gcc-login-form-wrap label {
+    color: var(--gcc-navy);
+    font-size: .67rem;
+    font-weight: 900;
+}
+
+.gcc-login-form-wrap input {
+    min-height: 44px;
+    padding: 10px 12px;
+    color: var(--gcc-navy);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line);
+    border-radius: 3px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .74rem;
+}
+
+.gcc-login-form-wrap input:focus {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 1px var(--gcc-blue);
+}
+
+.gcc-login-submit {
+    width: 100%;
+    margin-top: 4px;
+    border: 0;
+}
+
+.gcc-login-reset-link {
+    display: inline-block;
+    margin-top: 20px;
+    color: var(--gcc-blue);
+    font-size: .63rem;
+    font-weight: 800;
+}
+
+.gcc-login-reset-link:hover {
+    color: var(--gcc-gold);
+}
+
+.gcc-login-footnote {
+    padding-top: 24px;
+    margin: 24px 0 0;
+    color: var(--gcc-muted);
+    border-top: 1px solid var(--gcc-line);
+    font-size: .61rem;
+    line-height: 1.6;
+}
+
+.gcc-login-errors {
+    padding: 11px 13px;
+    margin-top: 20px;
+    color: #8e3f3a;
+    background: #fff4f3;
+    border-left: 3px solid #a34843;
+    font-size: .65rem;
+}
+
+.gcc-login-errors ul {
+    padding-left: 18px;
+    margin: 0;
+}
+
+@media (max-width: 900px) {
+    body.gcc-admin-home-page #content {
+        max-width: 100%;
+    }
+
+    .gcc-admin-home-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gcc-admin-stat-row {
+        grid-template-columns: 1fr;
+    }
+
+    .gcc-admin-stat,
+    .gcc-admin-stat + .gcc-admin-stat {
+        min-height: 116px;
+        padding: 21px 28px 20px 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--gcc-line);
+    }
+
+    .gcc-admin-stat:last-child {
+        border-bottom: 0;
+    }
+
+    .gcc-admin-record-grid {
+        grid-template-columns: 1fr;
+    }
+
+    body.gcc-admin-login-page #page {
+        grid-template-columns: 1fr;
+    }
+
+    .gcc-login-brand-panel {
+        min-height: 360px;
+    }
+
+    .gcc-login-brand-copy {
+        padding: 52px 0;
+        margin: 0;
+    }
+
+    .gcc-login-form-panel {
+        min-height: 560px;
+    }
+}
+
+@media (max-width: 560px) {
+    .gcc-admin-home {
+        padding-bottom: 32px;
+    }
+
+    .gcc-admin-home-heading {
+        padding-top: 30px;
+    }
+
+    .gcc-admin-home h1 {
+        font-size: 2.8rem;
+    }
+
+    .gcc-admin-section-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gcc-admin-record-panel {
+        padding: 8px;
+    }
+
+    .gcc-admin-record-row {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 13px;
+    }
+
+    .gcc-admin-record-actions {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .gcc-login-brand-panel {
+        min-height: 325px;
+        padding: 26px 24px;
+    }
+
+    .gcc-login-brand-copy {
+        padding: 40px 0 30px;
+    }
+
+    .gcc-login-brand-copy h2 {
+        font-size: 2.45rem;
+    }
+
+    .gcc-login-form-panel {
+        align-items: flex-start;
+        padding: 24px 15px 40px;
+    }
+
+    .gcc-login-form-wrap {
+        padding: 28px 22px;
+    }
+}

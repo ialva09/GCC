@@ -7,14 +7,19 @@
     <meta name="theme-color" content="#31518C">
     <meta name="description" content="Grand Coast Construction Inc. — thoughtful construction and clear communication across Southern California.">
     <title>{% block title %}Grand Coast Construction Inc.{% endblock %}</title>
-    <link rel="stylesheet" href="{% static 'demo/css/site.css' %}">
-    <link rel="icon" type="image/png" href="{% static 'demo/images/gcc-logo.png' %}">
-    <script defer src="{% static 'demo/js/demo.js' %}"></script>
+    <link rel="stylesheet" href="{% static 'operations/css/site.css' %}">
+    <link rel="icon" type="image/png" href="{% static 'operations/images/gcc-logo.png' %}">
+    {% block extra_head %}{% endblock %}
+    <script defer src="{% static 'operations/js/operations.js' %}"></script>
 </head>
-<body class="{% block body_class %}{% endblock %}" data-asset-root="{% static 'demo/' %}">
+<body class="{% block body_class %}{% endblock %}" data-asset-root="{% static 'operations/' %}">
     {% block body %}{% endblock %}
 
-    <div class="toast-region" aria-live="polite" aria-atomic="true" data-toast-region></div>
+    <div class="toast-region" aria-live="polite" aria-atomic="true">
+        {% for message in messages %}
+            <div class="toast {% if message.tags %}toast-{{ message.tags }}{% endif %}">{{ message }}</div>
+        {% endfor %}
+    </div>
     <div class="modal-backdrop" data-modal hidden>
         <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
             <button class="modal-close" type="button" aria-label="Close dialog" data-action="close-modal">×</button>

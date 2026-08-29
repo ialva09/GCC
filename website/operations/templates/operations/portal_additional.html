@@ -1,0 +1,17 @@
+{% if portal_project %}
+<section class='portal-secondary-section'>
+    <div class='container portal-secondary-grid'>
+        <section class='portal-document-card' id='documents-files'>
+            <span class='section-kicker'>Project documents</span>
+            <h3>Files shared with you</h3>
+            <div class='portal-document-list'>{% for document in portal_documents %}<a class='portal-document-row' href='/documents/{{ document.pk }}/'><span>{{ document.title }}</span><small>{{ document.category }} &middot; Download</small></a>{% empty %}<p class='detail-value'>Client-ready documents will appear here when the team shares them.</p>{% endfor %}</div>
+        </section>
+        <section class='portal-document-card' id='conversation-history'>
+            <span class='section-kicker'>Conversation history</span>
+            <h3>Project messages</h3>
+            <div class='portal-message-history'>{% for message in portal_messages %}<article class='portal-message'><strong>{% if message.sent_by and message.sent_by.is_staff %}Grand Coast{% else %}{{ portal_client.name }}{% endif %}</strong><small>{{ message.created_at|date:'M j, Y &middot; g:i A' }}</small><p>{{ message.body }}</p></article>{% empty %}<p class='detail-value'>Your project conversation will appear here.</p>{% endfor %}</div>
+        </section>
+    </div>
+</section>
+{% endif %}
+{% if google_review_url %}<div class='google-review-band'><div class='container'><span class='section-kicker'>Enjoying the experience?</span><a class='text-link' href='{{ google_review_url }}' target='_blank' rel='noopener'>Review us on Google &rarr;</a></div></div>{% endif %}

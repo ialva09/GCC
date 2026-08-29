@@ -1,0 +1,87 @@
+{% extends 'unfold/layouts/unauthenticated.html' %}
+
+{% load i18n static unfold %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    {{ form.media }}
+{% endblock %}
+
+{% block bodyclass %}{{ block.super }} gcc-admin-login-page{% endblock %}
+
+{% block title %}
+    {{ title }} | {{ site_title }}
+{% endblock %}
+
+{% block base %}
+    <div id='page' class='gcc-admin-login-shell'>
+        <aside class='gcc-login-brand-panel'>
+            <a class='gcc-login-brand' href='/'>
+                <span class='gcc-login-logo-frame'>
+                    <img src='{% static 'operations/images/gcc-logo.png' %}' alt='Grand Coast Construction Inc. logo'>
+                </span>
+                <span>
+                    <strong>Grand Coast</strong>
+                    <small>Construction Inc.</small>
+                </span>
+            </a>
+
+            <div class='gcc-login-brand-copy'>
+                <span class='gcc-login-kicker'>Owner workspace</span>
+                <h2>Keep every build moving.</h2>
+                <p>One clear place for leads, estimates, projects, and the details that keep the work on track.</p>
+            </div>
+
+            <div class='gcc-login-brand-footer'>
+                <span class='gcc-admin-gold-rule' aria-hidden='true'></span>
+                <span>Operations workspace</span>
+                <a href='/'>← Return to public site</a>
+            </div>
+        </aside>
+
+        <main class='gcc-login-form-panel'>
+            <div class='gcc-login-form-wrap'>
+                <span class='gcc-admin-kicker'>Secure access</span>
+                <h1>Welcome back.</h1>
+                <p class='gcc-login-intro'>Sign in to Grand Coast Administration.</p>
+
+                {% include 'unfold/helpers/messages.html' %}
+
+                {% if form.errors or form.non_field_errors %}
+                    <div class='gcc-login-errors'>
+                        {% include 'unfold/helpers/messages/errornote.html' with errors=form.errors %}
+                        {% include 'unfold/helpers/messages/error.html' with errors=form.non_field_errors %}
+                        {% if user.is_authenticated %}
+                            {% blocktranslate trimmed asvar message %}
+                                You are authenticated as {{ username }}, but are not authorized to access this page.
+                            {% endblocktranslate %}
+                            {% include 'unfold/helpers/messages/error.html' with error=message %}
+                        {% endif %}
+                    </div>
+                {% endif %}
+
+                <form action='{{ app_path }}' method='post' id='login-form'>
+                    {% csrf_token %}
+                    {% include 'unfold/helpers/field.html' with field=form.username %}
+                    {% include 'unfold/helpers/field.html' with field=form.password %}
+
+                    {% if next %}
+                        <input type='hidden' name='next' value='{{ next }}'>
+                    {% endif %}
+
+                    <button class='gcc-admin-button gcc-admin-button-primary gcc-login-submit' type='submit'>
+                        Log in <span aria-hidden='true'>→</span>
+                    </button>
+                </form>
+
+                {% url 'admin_password_reset' as password_reset_url %}
+                {% url 'admin:admin_password_reset' as unfold_password_reset_url %}
+                {% if password_reset_url or unfold_password_reset_url %}
+                    <a class='gcc-login-reset-link' href='{{ password_reset_url|default:unfold_password_reset_url }}'>Forgot your password?</a>
+                {% endif %}
+
+                <p class='gcc-login-footnote'>Staff access only · Use Operations for day-to-day workflows.</p>
+            </div>
+        </main>
+    </div>
+{% endblock %}

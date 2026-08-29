@@ -1,0 +1,6 @@
+{% if active_section == 'calendar' and can_manage_schedule and request.GET.edit == 'event' and selected_event %}
+<section class='record-detail workspace-form time-edit-panel'>
+    <div class='admin-section-heading compact'><div><span class='section-kicker'>Calendar editor</span><h3>Update {{ selected_event.title }}</h3></div></div>
+    <form method='post' action='/dashboard/calendar/{{ selected_event.pk }}/update/'>{% csrf_token %}<div class='workspace-form-grid'>{% for field in event_form %}<label class='form-field'>{{ field.label }}{{ field }}{{ field.errors }}</label>{% endfor %}</div><button class='button button-primary' type='submit'>Save event</button></form>
+</section>
+{% endif %}
