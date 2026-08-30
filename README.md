@@ -37,7 +37,7 @@ The application now includes:
 - Public project detail pages and gallery readiness
 - Content Studio for public website content
 - Optional Google Review link
-- Unfold for the native /admin/ interface
+- Unfold for the private /gccad/ interface
 - Operations search from the Unfold admin home
 
 I intentionally did not add Stripe, payment processing, payment webhooks, card collection, email delivery, external calendar synchronization, payroll functionality, or geolocation tracking.
@@ -144,11 +144,13 @@ I create a superuser if I do not already have one:
 
 I use that account for:
 
-- The separate Django/Unfold administration area at /admin/
-- The full staff Operations workspace
+- The separate Django/Unfold administration area at /gccad/
+- The full staff Operations workspace at /dashboard/
+- Employee access, assignments, schedules, and visibility controls
 - Local setup and data inspection
 
-The seed command automatically places an existing superuser in the Owner group and creates an EmployeeProfile for staff accounts.
+
+Only an active superuser can enter /gccad/ or /dashboard/. The seed command automatically places an existing superuser in the Owner group, creates an EmployeeProfile for staff accounts, and creates a disabled AdminSecurityProfile for each superuser. The Owner group is reserved for this account; employee invitations only offer Manager, Office, and Field.
 
 ## 4. I seed the local presentation data
 
@@ -203,11 +205,11 @@ I run the local server:
 I then open:
 
 - Public website: http://127.0.0.1:8000/
-- Staff Operations: http://127.0.0.1:8000/dashboard/
+- Owner Operations workspace: http://127.0.0.1:8000/dashboard/
 - Employee Team workspace: http://127.0.0.1:8000/team/
-- Client portal: http://127.0.0.1:8000/portal/
-- Unfold administration: http://127.0.0.1:8000/admin/
-- Staff login: http://127.0.0.1:8000/accounts/login/
+- Authenticated client portal: http://127.0.0.1:8000/portal/
+- Owner-only Unfold administration: http://127.0.0.1:8000/gccad/
+- Sign-in page: http://127.0.0.1:8000/accounts/login/
 
 ## 6. I understand the account permissions
 
@@ -215,19 +217,19 @@ All staff accounts use Django's existing User model, Group model, and session au
 
 ### Owner
 
-I use the Owner role for the business owner or full administrator. An Owner can use the full Operations workspace, manage team access, manage operational records, and use the native Django/Unfold user and group administration.
+I use an active superuser as the Owner. The Owner can use the full Operations workspace, manage team access, manage every operational record, control assignments and visibility, and use the native Django/Unfold user and group administration. The Owner group is a label for this account, not an employee invitation option.
 
 ### Manager
 
-A Manager can run the operational workflow, including team invitations, leads, clients, estimates, projects, tasks, schedules, documents, messages, updates, and media.
+A Manager uses /team/ and cannot enter /dashboard/ or /gccad/. A Manager can view the complete Team calendar, including assigned employee names, and work with their own permitted assigned projects, tasks, internal reports, personal time entries, and clock-in/out. The calendar is read-only for Managers; they cannot create or edit schedules, change assignments, change employee access, or publish client-visible or public material.
 
 ### Office
 
-An Office user can work with clients, leads, follow-up tasks, estimates, documents, messages, and project information. Office users do not receive employee role administration.
+An Office user uses /team/ and cannot enter /dashboard/ or /gccad/. Office visibility is assignment-scoped: assigned projects, personally relevant tasks, assigned schedule events, relevant client context, internal reports, personal time entries, and clock-in/out. Office users cannot view another employee's schedule or change anyone's access, assignments, or publication visibility.
 
 ### Field
 
-A Field user receives the dedicated Team workspace. A Field user can see only assigned projects, assigned tasks, relevant client context, personal schedule entries, personal time entries, internal updates, and permitted media reporting. Field users cannot enter the staff dashboard, native Unfold admin, or another client's portal.
+A Field user uses the dedicated Team workspace. A Field user can see only assigned projects, assigned tasks, relevant client context, personal schedule entries, personal time entries, internal updates, and permitted media reporting. Field uploads and reports are forced to Internal until the Owner publishes them. Field users cannot enter the staff dashboard, native Unfold admin, or another client's portal.
 
 ### Client
 
@@ -257,7 +259,7 @@ The public contact form uses normal Django form handling and CSRF protection. I 
 
 ## 8. I manage a new lead
 
-I sign in as an Owner, Manager, or authorized Office user and open:
+I sign in as the Owner and open:
 
 ~~~text
 /dashboard/leads/
@@ -482,7 +484,7 @@ They can update permitted task fields and status, but they cannot see unrelated 
 
 ## 14. I use the internal calendar
 
-Managers and authorized Office users create and edit schedule events at:
+Only the Owner creates and edits schedule events at:
 
 ~~~text
 /dashboard/calendar/
@@ -501,13 +503,19 @@ A schedule event supports:
 
 The calendar is internal and non-recurring. There is no Google Calendar or Outlook synchronization.
 
-Employees view their own schedule at:
+Managers view the complete read-only Team calendar at:
 
 ~~~text
 /team/calendar/
 ~~~
 
-The Team workspace provides a monthly calendar with a mobile-friendly list fallback.
+Office and Field employees view only their own assigned schedule at:
+
+~~~text
+/team/calendar/
+~~~
+
+The Team workspace provides a monthly calendar with a mobile-friendly list fallback. Each event shows the complete range, such as Monday · 4:00 PM – 8:00 PM, in America/Los_Angeles. Clicking an employee event opens read-only details for non-Owners.
 
 ## 15. I test employee clock-in and time tracking
 
@@ -535,7 +543,7 @@ A time entry can include:
 - Note
 - Manager correction metadata
 
-Managers and Owners can correct time entries. Employees can see their own recent entries.
+Only the Owner can correct time entries from /dashboard/time/. Employees can see their own recent entries and clock themselves in and out from /team/time/.
 
 Database timestamps remain timezone-aware. The application uses America/Los_Angeles and displays times in 12-hour format, such as 1:05 PM.
 
@@ -573,15 +581,18 @@ I use the staff team-management area at:
 /dashboard/team/
 ~~~
 
-From there, an Owner or Manager can:
+From there, the Owner can:
 
 - Invite an employee.
 - Choose the employee's group.
 - View employee profiles.
 - Update job title, phone, and active status.
+- Control which projects, tasks, milestones, and schedule events employees can see.
 - Create a one-time password reset link.
 
 The employee onboarding link expires after seven days. Password reset links expire after one day and can only be used once. Since email delivery is deferred, I copy these links manually.
+
+Employees can update only their own profile details. They cannot change another employee's schedule, access, assignments, or visibility.
 
 ## 17. I prepare project documents
 
@@ -683,10 +694,10 @@ The Google Review field is a normal external URL. If it is blank, the public rev
 I open:
 
 ~~~text
-/admin/
+/gccad/
 ~~~
 
-Unfold is the lower-level Django administration interface. It is separate from the branded Operations workspace at /dashboard/.
+Unfold is the lower-level Django administration interface. It is separate from the branded Operations workspace at /dashboard/, and both are restricted to the active Owner superuser.
 
 I use Unfold for:
 
@@ -716,6 +727,26 @@ The Unfold admin search is extended to search Operations records, including:
 - Related milestones, updates, line items, and client details
 
 When I select an Operations result, it opens the branded dashboard or Team workspace instead of sending me to an unrelated native edit page.
+
+## 21A. I secure the private administration and install the PWA
+
+I use the private administration entry at:
+
+~~~text
+/gccad/
+~~~
+
+The old /admin/ path intentionally returns 404. The public /accounts/login/ page is for employee and client accounts; it rejects superuser credentials with the same generic invalid-login response as any failed login. I do not reveal the private administration route through public navigation, the regular login page, or recovery pages.
+
+When I open /gccad/, I first enter the administrator username or email. If that superuser has enabled PIN protection, I enter the six-digit PIN before the password form. If authenticator verification is enabled, I enter a fresh code from the authenticator app after the password is accepted. Direct requests to the login, model pages, or authenticator page cannot skip the gate.
+
+After I sign in, I can open Security settings from the Unfold account area. I can enable or disable my own PIN and enroll or disable my own authenticator app without re-entering credentials. PIN setup uses two six-digit fields, and authenticator setup displays a QR code that I scan with my app before choosing the enable button. Existing superusers start with PIN and authenticator protection disabled until I turn them on.
+
+If I forget the PIN or lose the authenticator, I choose the recovery link on the private access screen and submit the verified administrator email. The response is intentionally generic. After three incorrect recovery-email attempts, that browser is locked for 15 minutes. A matching request uses the configured email backend to send a one-time link that expires after 30 minutes. Recovery lets me choose a new six-digit PIN, disables authenticator verification, revokes existing administrator sessions, and never signs me in automatically. Locally, email uses the console backend; production SMTP values come from environment variables.
+
+The website is also installable as a Progressive Web App. Public pages register /service-worker.js and reference /manifest.webmanifest. Public static assets can be cached for faster repeat visits, while public navigation uses the network first and falls back to /offline/. The service worker never caches POST requests, credentials, CSRF tokens, administrator pages, Team pages, client portal pages, account pages, private documents, or private media. Private routes require a live connection.
+
+I can install the PWA from the browser’s install prompt or address-bar install control. The application name is Grand Coast Construction, it opens at /, and it uses the existing Grand Coast logo and navy, blue, gold, and white color system.
 
 ## 22. I understand local file storage and production storage
 
@@ -777,7 +808,9 @@ The current suite covers:
 - Idempotent Owner, Manager, Office, and Field groups
 - Employee invitation creation, expiry, and one-time use
 - Password setup and manager-issued reset links
-- Staff, Field, client, and anonymous access restrictions
+- Owner-only Operations and Unfold access
+- Manager, Office, Field, client, inactive, ungrouped, and anonymous access restrictions
+- Role-aware Team calendar visibility and read-only employee calendar behavior
 - Lead creation, assignment, status, priority, and client conversion
 - Estimate creation, line-item Decimal totals, status transitions, and acceptance
 - Accepted estimate to project conversion
@@ -804,13 +837,13 @@ After starting the server, I test the application in this order.
 1. I open /.
 2. I click Services, Projects, Process, and Contact.
 3. I submit a test contact form.
-4. I verify that a new lead appears in /dashboard/leads/.
+4. I verify that a new lead appears in /dashboard/leads/ as the Owner.
 5. I resize the browser to a mobile width and confirm there is no horizontal overflow.
 
 ### Owner workflow
 
 1. I log in at /accounts/login/.
-2. I open /dashboard/.
+2. I open /dashboard/ as the Owner.
 3. I confirm the fixed navigation and staff account area remain visible.
 4. I open Leads, Clients, Tasks, Estimates, Projects, Calendar, Time, Documents, Media, and Content.
 5. I assign a lead and change its status.
@@ -836,7 +869,7 @@ After starting the server, I test the application in this order.
 7. I update a task.
 8. I add an internal project update.
 9. I clock in and clock out.
-10. I confirm that the employee cannot open /dashboard/, /admin/, or another employee's information.
+10. I confirm that the employee cannot open /dashboard/, /gccad/, or another employee's information, and cannot create or edit schedules.
 
 ### Client workflow
 
@@ -853,7 +886,7 @@ After starting the server, I test the application in this order.
 
 ### Unfold workflow
 
-1. I open /admin/.
+1. I open /gccad/ as the Owner.
 2. I confirm the Grand Coast logo and colors.
 3. I use the admin search for a known lead, project, estimate, or client.
 4. I click the result.
@@ -878,8 +911,13 @@ I check at least one desktop size and one narrow mobile size. I verify:
 I verify that:
 
 - Anonymous visitors can view public pages but not staff or client workspaces.
-- Clients cannot access /dashboard/, /team/, or /admin/.
-- Field employees cannot access the Owner dashboard or another employee's records.
+- Only the active Owner superuser can access /dashboard/ and /gccad/.
+- Managers, Office, and Field employees can access only the permitted /team/ records.
+- Clients cannot access /dashboard/, /team/, or /gccad/.
+- Employees cannot access another employee's schedule, access controls, assignments, or private records.
+- Public pages expose no Operations or Client Portal destination links.
+- Managers can view the full Team calendar but cannot create or edit its schedule events.
+- Office and Field employees see only their personally assigned calendar events.
 - Internal project updates, media, and documents are protected.
 - Client-only files require authentication and project ownership.
 - Invite links are hashed, expire, and cannot be reused.
