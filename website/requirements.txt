@@ -4,3 +4,4 @@ sqlparse==0.6.0
 tzdata==2026.3
 django-storages[boto3]>=1.14,<2
 django-unfold==0.104.1
+django-otp[segno]==1.7.0

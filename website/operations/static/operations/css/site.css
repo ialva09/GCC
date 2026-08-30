@@ -49,6 +49,8 @@ p { color: var(--muted); }
 .button-outline { color: var(--brand-deep); background: transparent; border-color: var(--brand-blue); }
 .button-outline:hover { color: var(--white); background: var(--brand-blue); }
 .button-quiet { color: var(--muted); background: var(--soft); border-color: transparent; }
+.button-danger { color: var(--danger); background: transparent; border-color: var(--danger); }
+.button-danger:hover { color: var(--white); background: var(--danger); }
 .button-small { min-height: 40px; padding: 9px 15px; font-size: .72rem; }
 .text-link { display: inline-flex; align-items: center; gap: 8px; color: var(--brand-deep); font-size: .82rem; font-weight: 800; }
 .text-link:hover, .text-link-button:hover { color: var(--brand-gold); }
@@ -753,7 +755,9 @@ body.modal-open { overflow: hidden; }
 .calendar-day-events a span { color: var(--brand-gold); }
 .calendar-day-empty { display: block; min-height: 28px; }
 .calendar-mobile-note { display: none; margin: 15px 0 0; color: var(--muted); font-size: .61rem; }
-.time-edit-panel { margin-top: 20px; }
+.time-edit-panel { margin-top: 20px; scroll-margin-top: 136px; }
+.calendar-editor-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.calendar-delete-form { margin-top: 12px; }
 .time-zone-label { color: var(--muted); font-size: .61rem; }
 .time-live { color: var(--success); font-weight: 800; }
 .time-clock-form { display: flex; align-items: flex-end; gap: 12px; }
@@ -818,6 +822,12 @@ body.modal-open { overflow: hidden; }
 .portal-message p { font-size: .65rem; line-height: 1.55; margin: 5px 0 0; white-space: pre-wrap; }
 .portal-secondary-section { padding: 0 0 70px; background: var(--soft); }
 .portal-secondary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.offline-shell { display: grid; min-height: 100vh; place-items: center; padding: 30px; background: var(--soft); }
+.offline-card { width: min(100%, 520px); padding: clamp(29px, 6vw, 58px); background: var(--white); border: 1px solid var(--line-blue); box-shadow: 0 18px 46px rgba(30, 48, 81, .08); text-align: center; }
+.offline-card .gold-rule { margin-right: auto; margin-left: auto; }
+.offline-card h1 { margin: 17px 0 12px; color: var(--brand-navy); font-family: var(--serif); font-size: clamp(2.1rem, 6vw, 3.4rem); letter-spacing: -.045em; line-height: 1.05; }
+.offline-card p { max-width: 380px; margin: 0 auto 24px; color: var(--muted); font-size: .74rem; line-height: 1.8; }
+.offline-card a { display: inline-flex; }
 @media (max-width: 860px) {
     .portal-secondary-grid { grid-template-columns: 1fr; }
 }

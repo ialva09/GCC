@@ -1,0 +1,47 @@
+{% extends 'admin/gate_base.html' %}
+
+{% load i18n %}
+
+{% block gate_content %}
+    {% if pin_step %}
+        <span class="gcc-admin-kicker">Secure access</span>
+        <h1>Enter your PIN.</h1>
+        <p class="gcc-login-intro">Enter your six-digit administration PIN before continuing to sign in.</p>
+    {% else %}
+        <span class="gcc-admin-kicker">Private access</span>
+        <h1>Before we begin.</h1>
+        <p class="gcc-login-intro">Enter the administrator username or email to continue.</p>
+    {% endif %}
+
+    {% if locked %}
+        <div class="gcc-login-errors">
+            <p>Too many attempts. Try again in 15 minutes.</p>
+        </div>
+    {% else %}
+        {% if form.errors or form.non_field_errors %}
+            <div class="gcc-login-errors">
+                {% include 'unfold/helpers/messages/errornote.html' with errors=form.errors %}
+                {% include 'unfold/helpers/messages/error.html' with errors=form.non_field_errors %}
+            </div>
+        {% endif %}
+
+        <form action="" method="post">
+            {% csrf_token %}
+            {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+            {% for field in form.visible_fields %}
+                <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                    {{ field.label_tag }}
+                    {{ field }}
+                    {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                </div>
+            {% endfor %}
+            <input type="hidden" name="next" value="{{ next }}">
+            <button class="gcc-admin-button gcc-admin-button-primary gcc-login-submit" type="submit">
+                Continue to sign in <span aria-hidden="true">&rarr;</span>
+            </button>
+        </form>
+    {% endif %}
+
+    <a class="gcc-login-reset-link" href="{% url 'admin:recovery' %}">Forgot your admin PIN or lost your authenticator?</a>
+    <p class="gcc-login-footnote">This extra step helps keep the administration workspace private.</p>
+{% endblock %}

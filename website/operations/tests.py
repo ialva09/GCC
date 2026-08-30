@@ -43,9 +43,12 @@ class OperationsWorkflowTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         user_model = get_user_model()
-        cls.staff = user_model.objects.create_user(username="owner", password="owner-pass")
-        cls.staff.is_staff = True
-        cls.staff.save(update_fields=["is_staff"])
+        cls.staff = user_model.objects.create_user(
+            username="owner",
+            password="owner-pass",
+            is_staff=True,
+            is_superuser=True,
+        )
         cls.client_user = user_model.objects.create_user(
             username="client-a",
             password="client-pass",
@@ -169,9 +172,15 @@ class OperationsWorkflowTests(TestCase):
         self.browser = DjangoClient()
 
     def login_staff(self):
+        self.browser.logout()
         self.browser.force_login(self.staff)
+        self.browser.post(
+            reverse('admin:access'),
+            {'identifier': self.staff.username},
+        )
 
     def login_client(self):
+        self.browser.logout()
         self.browser.force_login(self.client_user)
 
     def test_public_contact_form_creates_real_lead(self):
@@ -237,12 +246,11 @@ class OperationsWorkflowTests(TestCase):
     def test_admin_search_is_staff_only(self):
         anonymous_response = self.browser.get(reverse('admin:search'), {'s': 'Maya'})
         self.assertEqual(anonymous_response.status_code, 302)
-        self.assertIn(reverse('admin:login'), anonymous_response['Location'])
+        self.assertIn(reverse('admin:access'), anonymous_response['Location'])
 
         self.login_client()
         client_response = self.browser.get(reverse('admin:search'), {'s': 'Maya'})
-        self.assertEqual(client_response.status_code, 302)
-        self.assertIn(reverse('admin:login'), client_response['Location'])
+        self.assertEqual(client_response.status_code, 403)
 
     def test_dashboard_lead_search_matches_client_fields(self):
         self.login_staff()
@@ -326,7 +334,8 @@ class OperationsWorkflowTests(TestCase):
                 "lines-1-sort_order": "0",
             },
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "An estimate needs at least one line item.")
         self.assertTrue(EstimateLineItem.objects.filter(pk=self.line.pk).exists())
 
     def test_estimate_status_timestamps_and_accepted_lock(self):

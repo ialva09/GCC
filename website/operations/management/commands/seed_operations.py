@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from operations.models import (
     Activity,
+    AdminSecurityProfile,
     Client,
     Estimate,
     EstimateLineItem,
@@ -39,6 +40,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         staff_user = get_user_model().objects.filter(is_staff=True).order_by("id").first()
         role_groups = ensure_role_groups()
+        for admin_user in get_user_model().objects.filter(is_superuser=True):
+            AdminSecurityProfile.objects.get_or_create(user=admin_user)
         if staff_user:
             staff_user.groups.add(role_groups["Owner"] if staff_user.is_superuser else role_groups["Office"])
             EmployeeProfile.objects.get_or_create(user=staff_user)

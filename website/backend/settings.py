@@ -12,20 +12,21 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 from django.urls import reverse_lazy
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+load_dotenv(BASE_DIR / '.env')
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    'django-insecure-vqj=87*mnd8e@l#zzbdtxg5irpkueko0b!ay+vi7kwakh#bb&s',
+    "DJANGO_SECRET_KEY"
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -44,6 +45,8 @@ INSTALLED_APPS = [
     'unfold',
     'django.contrib.admin',
     'django.contrib.auth',
+    'django_otp',
+    'django_otp.plugins.otp_totp',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
@@ -57,6 +60,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django_otp.middleware.OTPMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -162,11 +166,25 @@ LOGIN_URL = 'operations:login'
 LOGIN_REDIRECT_URL = 'operations:dashboard'
 LOGOUT_REDIRECT_URL = 'operations:home'
 
+ADMIN_URL_PREFIX = '/gccad/'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'webmaster@localhost')
+OTP_TOTP_ISSUER = 'Grand Coast Construction'
+OTP_ADMIN_HIDE_SENSITIVE_DATA = True
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.console.EmailBackend',
+)
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() in {'1', 'true', 'yes'}
+EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'false').lower() in {'1', 'true', 'yes'}
 
 
 def _model_permission(app_label, model_name):
@@ -174,7 +192,15 @@ def _model_permission(app_label, model_name):
         f'{app_label}.{action}_{model_name}'
         for action in ('view', 'add', 'change', 'delete')
     )
-    return lambda request: any(request.user.has_perm(permission) for permission in permissions)
+    return lambda request: bool(
+        request.user.is_active
+        and request.user.is_superuser
+        and any(request.user.has_perm(permission) for permission in permissions)
+    )
+
+
+def _superuser_permission(request):
+    return bool(request.user.is_active and request.user.is_superuser)
 
 
 UNFOLD = {
@@ -189,6 +215,11 @@ UNFOLD = {
             'rel': 'icon',
             'href': '/static/operations/images/gcc-logo.png',
             'type': 'image/png',
+        },
+        {
+            'rel': 'manifest',
+            'href': '/manifest.webmanifest',
+            'type': 'application/manifest+json',
         },
     ],
     'THEME': 'light',
@@ -240,13 +271,13 @@ UNFOLD = {
                         'title': 'Operations dashboard',
                         'icon': 'dashboard',
                         'link': '/dashboard/',
-                        'permission': lambda request: request.user.is_staff,
+                        'permission': _superuser_permission,
                     },
                     {
                         'title': 'Administration home',
                         'icon': 'admin_panel_settings',
                         'link': reverse_lazy('admin:index'),
-                        'permission': lambda request: request.user.is_staff,
+                        'permission': _superuser_permission,
                     },
                 ],
             },
@@ -431,13 +462,13 @@ UNFOLD = {
                         'title': 'Public site',
                         'icon': 'open_in_new',
                         'link': '/',
-                        'permission': lambda request: request.user.is_staff,
+                        'permission': _superuser_permission,
                     },
                     {
                         'title': 'Client portal',
                         'icon': 'account_circle',
                         'link': '/portal/',
-                        'permission': lambda request: request.user.is_staff,
+                        'permission': _superuser_permission,
                     },
                 ],
             },
@@ -450,10 +481,15 @@ UNFOLD = {
                 'link': '/dashboard/',
             },
             {
+                'title': 'Security settings',
+                'link': '/gccad/security/',
+            },
+            {
                 'title': 'Return to public site',
                 'link': '/',
             },
         ],
     },
+    'SCRIPTS': ['/static/operations/js/pwa-register.js'],
     'STYLES': ['/static/operations/css/unfold.css'],
 }

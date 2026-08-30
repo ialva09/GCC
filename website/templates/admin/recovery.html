@@ -1,0 +1,39 @@
+{% extends 'admin/gate_base.html' %}
+
+{% load i18n %}
+
+{% block gate_content %}
+    <span class="gcc-admin-kicker">Account recovery</span>
+    <h1>Recover access.</h1>
+    <p class="gcc-login-intro">Use the verified email on your administrator account. We’ll show the same confirmation either way.</p>
+
+    {% if locked %}
+        <div class="gcc-login-errors">
+            <p>Too many attempts. Try again in 15 minutes.</p>
+        </div>
+    {% else %}
+        {% if form.errors or form.non_field_errors %}
+            <div class="gcc-login-errors">
+                {% include 'unfold/helpers/messages/errornote.html' with errors=form.errors %}
+                {% include 'unfold/helpers/messages/error.html' with errors=form.non_field_errors %}
+            </div>
+        {% endif %}
+        <form action="" method="post">
+            {% csrf_token %}
+            {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
+            {% for field in form.visible_fields %}
+                <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                    {{ field.label_tag }}
+                    {{ field }}
+                    {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                </div>
+            {% endfor %}
+            <button class="gcc-admin-button gcc-admin-button-primary gcc-login-submit" type="submit">
+                Send recovery link <span aria-hidden="true">&rarr;</span>
+            </button>
+        </form>
+    {% endif %}
+
+    <a class="gcc-login-reset-link" href="{% url 'admin:access' %}">Return to secure access</a>
+    <p class="gcc-login-footnote">Recovery links expire and never sign you in automatically.</p>
+{% endblock %}

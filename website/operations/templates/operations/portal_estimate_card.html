@@ -1,0 +1,24 @@
+<section class="estimate-card" id="documents">
+    {% if portal_estimate %}
+        <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">#{{ portal_estimate.number }}</span></div>
+        <h2>{{ portal_estimate.title }}</h2>
+        {% if portal_estimate.portal_project %}<p class="detail-value">{{ portal_estimate.portal_project.title }}</p>{% endif %}
+        <div class="estimate-total"><span>Project estimate</span><strong>${{ portal_estimate.total|floatformat:2 }}</strong></div>
+        <div class="estimate-status"><span class="status-check">{% if portal_estimate.status == 'accepted' %}✓{% else %}•{% endif %}</span><span>{{ portal_estimate.get_status_display }}</span></div>
+        <div class="portal-estimate-lines">
+            {% for item in portal_estimate.line_items.all %}<div><span>{{ item.description }}</span><strong>${{ item.line_total|floatformat:2 }}</strong></div>{% endfor %}
+        </div>
+        {% if portal_estimate.status == 'sent' %}
+            {% if not request.user.is_staff %}<form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form>{% endif %}
+            <small class="secure-note">Acceptance is recorded in your workspace. No payment is collected here.</small>
+        {% elif portal_estimate.status == 'accepted' %}
+            <div class="portal-accepted-note">Accepted{% if portal_estimate.accepted_at %} on {{ portal_estimate.accepted_at|date:'M d, Y' }}{% endif %}</div>
+        {% else %}
+            <div class="portal-accepted-note">This estimate was declined. Contact Grand Coast if you would like to discuss a revision.</div>
+        {% endif %}
+        <div class="estimate-divider"></div>
+        <div class="deposit-block"><span>Deposit amount</span><strong>${{ portal_estimate.deposit_amount|floatformat:2 }}</strong><small>Informational only · Contact Grand Coast for next steps</small></div>
+    {% else %}
+        <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the project scope is ready to review.</p>
+    {% endif %}
+</section>

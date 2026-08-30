@@ -43,13 +43,33 @@
                 <p>Grand Coast will connect your client record to this workspace before sharing an invitation.</p>
                 <a class="button button-primary" href="{% url 'operations:home' %}">Return to Grand Coast</a>
             </section>
-        {% elif not portal_project %}
+        {% elif not portal_project and not portal_estimates %}
             <section class="portal-empty">
                 <span class="gold-rule"></span>
                 <span class="section-kicker">Welcome, {{ portal_client.name }}</span>
                 <h1>We’re preparing your project workspace.</h1>
                 <p>Your account is active. The Grand Coast team will add project details and next steps here.</p>
             </section>
+            <section class="portal-message-panel" id="conversation">
+                <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the Grand Coast team while your project is being prepared.</p></div>
+                {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message â†’</button></form>{% endif %}
+            </section>
+        {% elif portal_estimates and not portal_project %}
+            <section class="portal-empty">
+                <span class="gold-rule"></span>
+                <span class="section-kicker">Welcome, {{ portal_client.name }}</span>
+                <h1>Your scope is ready to review.</h1>
+                <p>Review the estimate below and send questions to the Grand Coast team before a project is created.</p>
+            </section>
+            <div class="portal-grid">
+                <div class="portal-primary-column">
+                    <section class="portal-message-panel" id="conversation">
+                        <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the team and keep project context in one place.</p></div>
+                        {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}{% if portal_estimate %}<input type="hidden" name="estimate" value="{{ portal_estimate.pk }}">{% endif %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message →</button></form>{% endif %}
+                    </section>
+                </div>
+                <aside class="portal-side-column">{% include 'operations/portal_estimate_card.html' %}</aside>
+            </div>
         {% else %}
             {% if portal_projects|length > 1 %}
                 <div class="portal-project-selector" aria-label="Choose a project">
@@ -121,7 +141,7 @@
 
                     <section class="portal-message-panel" id="conversation">
                         <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the team and keep project context in one place.</p></div>
-                        {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}<input type="hidden" name="project" value="{{ portal_project.pk }}">{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message →</button></form>
+                        {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}<input type="hidden" name="project" value="{{ portal_project.pk }}">{% if portal_estimate %}<input type="hidden" name="estimate" value="{{ portal_estimate.pk }}">{% endif %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message →</button></form>
 {% endif %}
                     </section>
                 </div>

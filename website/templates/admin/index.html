@@ -24,19 +24,19 @@
         </div>
 
         <div class='gcc-admin-stat-row'>
-            <a class='gcc-admin-stat' href='/admin/operations/lead/'>
+            <a class='gcc-admin-stat' href='{% url "admin:operations_lead_changelist" %}'>
                 <span class='gcc-admin-stat-label'>Pipeline</span>
                 <strong>Leads &amp; estimates</strong>
                 <small>Keep every conversation moving.</small>
                 <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
             </a>
-            <a class='gcc-admin-stat' href='/admin/operations/project/'>
+            <a class='gcc-admin-stat' href='{% url "admin:operations_project_changelist" %}'>
                 <span class='gcc-admin-stat-label'>Work in motion</span>
                 <strong>Projects &amp; updates</strong>
                 <small>See the records shaping each build.</small>
                 <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
             </a>
-            <a class='gcc-admin-stat gcc-admin-stat-gold' href='/admin/operations/service/'>
+            <a class='gcc-admin-stat gcc-admin-stat-gold' href='{% url "admin:operations_service_changelist" %}'>
                 <span class='gcc-admin-stat-label'>Public presence</span>
                 <strong>Website content</strong>
                 <small>Keep the company story current.</small>

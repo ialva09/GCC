@@ -1,0 +1,8 @@
+{% extends 'admin/gate_base.html' %}
+
+{% block gate_content %}
+    <span class="gcc-admin-kicker">Recovery unavailable</span>
+    <h1>That link has expired.</h1>
+    <p class="gcc-login-intro">Request a new recovery link from the private administration access screen.</p>
+    <a class="gcc-admin-button gcc-admin-button-outline gcc-login-submit" href="{% url 'admin:recovery' %}">Start recovery</a>
+{% endblock %}

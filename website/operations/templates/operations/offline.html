@@ -1,0 +1,17 @@
+{% extends "operations/base.html" %}
+
+{% block title %}Offline · Grand Coast Construction Inc.{% endblock %}
+
+{% block body_class %}offline-page{% endblock %}
+
+{% block body %}
+    <main class="offline-shell">
+        <section class="offline-card" aria-labelledby="offline-title">
+            <span class="gold-rule" aria-hidden="true"></span>
+            <p class="section-kicker">Connection required</p>
+            <h1 id="offline-title">You’re offline.</h1>
+            <p>The public Grand Coast experience will be available again when your connection returns. Private workspaces and account pages are never stored offline.</p>
+            <a class="button button-primary" href="/">Return to the public site</a>
+        </section>
+    </main>
+{% endblock %}

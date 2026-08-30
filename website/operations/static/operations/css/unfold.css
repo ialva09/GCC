@@ -144,6 +144,19 @@ body {
     white-space: nowrap;
 }
 
+.gcc-unfold-admin-url {
+    display: block;
+    margin-top: 7px;
+    overflow: hidden;
+    color: #9db0ce;
+    font-size: .51rem;
+    font-weight: 700;
+    letter-spacing: .02em;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .gcc-unfold-brand-copy small {
     margin-top: 5px;
     overflow: hidden;
@@ -720,6 +733,250 @@ body.gcc-admin-login-page #page {
     margin: 0;
 }
 
+.gcc-form-field {
+    display: grid;
+    gap: 7px;
+}
+
+.gcc-form-field input:not([type='checkbox']),
+.gcc-form-field select,
+.gcc-form-field textarea {
+    width: 100%;
+}
+
+.gcc-form-field small {
+    color: var(--gcc-muted);
+    font-size: .6rem;
+    line-height: 1.5;
+}
+
+.gcc-field-error {
+    color: #8e3f3a;
+    font-size: .61rem;
+    line-height: 1.4;
+}
+
+.gcc-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--gcc-navy);
+    font-size: .67rem;
+    font-weight: 900;
+}
+
+.gcc-checkbox-label input {
+    accent-color: var(--gcc-blue);
+}
+
+.gcc-login-form-wrap form > .gcc-form-field {
+    margin-bottom: 18px;
+}
+
+/* Private admin security settings */
+
+.gcc-security-page {
+    padding: 10px 0 60px;
+}
+
+.gcc-security-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 30px;
+    padding: 34px 0 30px;
+    border-bottom: 1px solid var(--gcc-line);
+}
+
+.gcc-security-heading h1 {
+    margin: 11px 0 10px;
+    color: var(--gcc-navy);
+    font-family: var(--serif, 'Merriweather', Georgia, serif);
+    font-size: clamp(2.3rem, 5vw, 4rem);
+    letter-spacing: -.05em;
+    line-height: 1.05;
+}
+
+.gcc-security-heading p {
+    max-width: 610px;
+    margin: 0;
+    color: var(--gcc-muted);
+    font-size: .73rem;
+    line-height: 1.7;
+}
+
+.gcc-security-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    padding-top: 28px;
+}
+
+.gcc-security-card {
+    min-width: 0;
+    padding: 25px;
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+}
+
+.gcc-security-card-heading {
+    position: relative;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--gcc-line);
+}
+
+.gcc-security-card h2 {
+    margin: 8px 0 0;
+    color: var(--gcc-navy);
+    font-family: var(--serif, 'Merriweather', Georgia, serif);
+    font-size: 1.6rem;
+    letter-spacing: -.04em;
+}
+
+.gcc-security-status {
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 5px 8px;
+    color: var(--gcc-muted);
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line);
+    font-size: .55rem;
+    font-weight: 900;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+}
+
+.gcc-security-status.is-on {
+    color: #846314;
+    background: var(--gcc-gold-soft);
+    border-color: var(--gcc-gold);
+}
+
+.gcc-security-copy {
+    min-height: 45px;
+    margin: 17px 0 22px;
+    color: var(--gcc-muted);
+    font-size: .68rem;
+    line-height: 1.65;
+}
+
+.gcc-security-form {
+    display: grid;
+    gap: 13px;
+}
+
+.gcc-security-form .gcc-form-field {
+    margin: 0;
+}
+
+.gcc-security-form input:not([type='checkbox']) {
+    min-height: 40px;
+    padding: 9px 11px;
+    color: var(--gcc-navy);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line);
+    border-radius: 3px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .7rem;
+}
+
+.gcc-security-form input:focus {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 1px var(--gcc-blue);
+}
+
+.gcc-security-form label:not(.gcc-checkbox-label) {
+    color: var(--gcc-navy);
+    font-size: .62rem;
+    font-weight: 900;
+}
+
+.gcc-security-form .gcc-admin-button {
+    justify-self: start;
+}
+
+.gcc-security-callout {
+    padding: 13px;
+    margin-bottom: 18px;
+    color: var(--gcc-muted);
+    background: var(--gcc-soft);
+    border-left: 3px solid var(--gcc-blue);
+    font-size: .64rem;
+    line-height: 1.55;
+}
+
+.gcc-security-callout.is-on {
+    color: #846314;
+    background: var(--gcc-gold-soft);
+    border-left-color: var(--gcc-gold);
+}
+
+.gcc-security-enrollment {
+    padding: 16px;
+    margin-bottom: 18px;
+    background: #fbfcfe;
+    border: 1px solid var(--gcc-line-blue);
+}
+
+.gcc-security-enrollment > p {
+    margin: 0 0 14px;
+    color: var(--gcc-muted);
+    font-size: .64rem;
+    line-height: 1.55;
+}
+
+.gcc-security-qr {
+    display: grid;
+    width: min(100%, 210px);
+    min-height: 210px;
+    place-items: center;
+    padding: 10px;
+    margin: 0 auto 15px;
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line);
+}
+
+.gcc-security-qr img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.gcc-security-manual {
+    display: grid;
+    gap: 5px;
+}
+
+.gcc-security-manual strong {
+    color: var(--gcc-navy);
+    font-size: .6rem;
+}
+
+.gcc-security-manual code {
+    overflow-wrap: anywhere;
+    color: var(--gcc-blue);
+    font-family: 'Courier New', monospace;
+    font-size: .65rem;
+    letter-spacing: .08em;
+}
+
+.gcc-security-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.gcc-admin-button-quiet {
+    color: var(--gcc-muted);
+    background: transparent;
+}
+
+.gcc-admin-button-quiet:hover {
+    color: var(--gcc-navy);
+    background: var(--gcc-soft);
+}
+
 @media (max-width: 900px) {
     body.gcc-admin-home-page #content {
         max-width: 100%;
@@ -747,6 +1004,15 @@ body.gcc-admin-login-page #page {
     }
 
     .gcc-admin-record-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gcc-security-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gcc-security-grid {
         grid-template-columns: 1fr;
     }
 

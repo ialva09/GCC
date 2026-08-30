@@ -6,6 +6,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
 
 
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
@@ -217,6 +218,10 @@ class Task(TimeStampedModel):
         ]
 
     def clean(self):
+        if self.milestone_id and (
+            not self.project_id or self.milestone.project_id != self.project_id
+        ):
+            raise ValidationError('The selected milestone must belong to the selected project.')
         if not self.lead_id and not self.project_id:
             raise ValidationError("A task must be attached to a lead or project.")
         if self.milestone_id and self.project_id and self.milestone.project_id != self.project_id:
@@ -629,7 +634,9 @@ class ScheduleEvent(TimeStampedModel):
     def clean(self):
         if self.start_at and self.end_at and self.end_at <= self.start_at:
             raise ValidationError("Schedule events must end after they start.")
-        if self.task_id and self.project_id and self.task.project_id and self.task.project_id != self.project_id:
+        if self.task_id and self.task.project_id and (
+            not self.project_id or self.task.project_id != self.project_id
+        ):
             raise ValidationError("The selected task must belong to the selected project.")
 
     def __str__(self):
@@ -684,7 +691,9 @@ class TimeEntry(models.Model):
     def clean(self):
         if self.clock_out and self.clock_out <= self.clock_in:
             raise ValidationError("Clock-out must be after clock-in.")
-        if self.task_id and self.project_id and self.task.project_id and self.task.project_id != self.project_id:
+        if self.task_id and self.task.project_id and (
+            not self.project_id or self.task.project_id != self.project_id
+        ):
             raise ValidationError("The selected task must belong to the selected project.")
 
 
@@ -715,3 +724,49 @@ class ProjectDocument(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class AdminSecurityProfile(TimeStampedModel):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="admin_security_profile",
+    )
+    pin_enabled = models.BooleanField(default=False)
+    pin_hash = models.CharField(max_length=128, blank=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+    def __str__(self):
+        return f"Admin security for {self.user.get_username()}"
+
+
+class AdminRecoveryToken(models.Model):
+    class Purpose(models.TextChoices):
+        SECURITY_RESET = "security_reset", "Security reset"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="admin_recovery_tokens",
+    )
+    purpose = models.CharField(max_length=30, choices=Purpose.choices, default=Purpose.SECURITY_RESET)
+    token_hash = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "purpose", "expires_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        return self.used_at is None and self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.get_purpose_display()} for {self.user.get_username()}"

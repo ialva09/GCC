@@ -135,7 +135,7 @@ def _search_tasks(term: str) -> list[SearchResult]:
 def _search_clients(term: str) -> list[SearchResult]:
     clients = Client.objects.filter(_contains(term, 'name', 'company', 'email', 'phone')).order_by('name')[:SEARCH_LIMIT]
     return [
-        _result(client.name, f'Client Â· {client.company or client.email}', _dashboard_url('clients', client=client.pk), 'groups')
+        _result(client.name, f'Client \u00b7 {client.company or client.email}', _dashboard_url('clients', client=client.pk), 'groups')
         for client in clients
     ]
 
@@ -145,7 +145,7 @@ def _search_employees(term: str) -> list[SearchResult]:
         _contains(term, 'job_title', 'phone', 'user__username', 'user__email', 'user__first_name', 'user__last_name')
     ).order_by('user__first_name')[:SEARCH_LIMIT]
     return [
-        _result(profile.user.get_full_name() or profile.user.username, f'Employee Â· {profile.job_title}', _dashboard_url('team'), 'badge')
+        _result(profile.user.get_full_name() or profile.user.username, f'Employee \u00b7 {profile.job_title}', _dashboard_url('team'), 'badge')
         for profile in profiles
     ]
 
@@ -180,7 +180,7 @@ def _search_schedule(term: str) -> list[SearchResult]:
         _contains(term, 'title', 'location', 'notes', 'project__title', 'task__title')
     ).order_by('-start_at')[:SEARCH_LIMIT]
     return [
-        _result(event.title, f'Calendar Â· {event.project.title if event.project else "Internal event"}', _dashboard_url('calendar', event=event.pk), 'calendar_month')
+        _result(event.title, f'Calendar \u00b7 {event.project.title if event.project else "Internal event"}', _dashboard_url('calendar', event=event.pk), 'calendar_month')
         for event in events
     ]
 
@@ -249,7 +249,7 @@ def _search_documents(term: str) -> list[SearchResult]:
         _contains(term, 'title', 'category', 'description', 'file', 'project__title')
     ).order_by('-created_at')[:SEARCH_LIMIT]
     return [
-        _result(document.title, f'Document Â· {document.project.title}', _dashboard_url('documents', project=document.project.pk), 'description')
+        _result(document.title, f'Document \u00b7 {document.project.title}', _dashboard_url('documents', project=document.project.pk), 'description')
         for document in documents
     ]
 
@@ -324,7 +324,7 @@ def _search_messages(term: str) -> list[SearchResult]:
         _contains(term, 'body', 'client__name', 'client__email', 'project__title')
     ).order_by('-created_at')[:SEARCH_LIMIT]
     return [
-        _result(message.client.name, f'Message Â· {message.project.title if message.project else "Client conversation"}', _dashboard_url('clients', client=message.client.pk), 'chat')
+        _result(message.client.name, f'Message \u00b7 {message.project.title if message.project else "Client conversation"}', _dashboard_url('clients', client=message.client.pk), 'chat')
         for message in client_messages
     ]
 
@@ -415,7 +415,12 @@ def _search_site_settings(term: str) -> list[SearchResult]:
 
 
 def admin_search(request: HttpRequest, search_term: str) -> list[SearchResult]:
-    if not request.user.is_authenticated or not request.user.is_staff:
+    if not (
+        request.user.is_authenticated
+        and request.user.is_active
+        and request.user.is_staff
+        and request.user.is_superuser
+    ):
         return []
 
     term = (search_term or '').strip()

@@ -1,0 +1,48 @@
+{% extends 'unfold/layouts/unauthenticated.html' %}
+
+{% load i18n static unfold %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    {% if form %}{{ form.media }}{% endif %}
+{% endblock %}
+
+{% block bodyclass %}{{ block.super }} gcc-admin-login-page{% endblock %}
+
+{% block title %}
+    {{ title }} | {{ site_title }}
+{% endblock %}
+
+{% block base %}
+    <div id="page" class="gcc-admin-login-shell">
+        <aside class="gcc-login-brand-panel">
+            <a class="gcc-login-brand" href="/">
+                <span class="gcc-login-logo-frame">
+                    <img src="{% static 'operations/images/gcc-logo.png' %}" alt="Grand Coast Construction Inc. logo">
+                </span>
+                <span>
+                    <strong>Grand Coast</strong>
+                    <small>Construction Inc.</small>
+                </span>
+            </a>
+
+            <div class="gcc-login-brand-copy">
+                <span class="gcc-login-kicker">Owner workspace</span>
+                <h2>Keep every build moving.</h2>
+                <p>One clear place for leads, estimates, projects, and the details that keep the work on track.</p>
+            </div>
+
+            <div class="gcc-login-brand-footer">
+                <span class="gcc-admin-gold-rule" aria-hidden="true"></span>
+                <span>Operations workspace</span>
+                <a href="/">&larr; Return to public site</a>
+            </div>
+        </aside>
+
+        <main class="gcc-login-form-panel">
+            <div class="gcc-login-form-wrap">
+                {% block gate_content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+{% endblock %}

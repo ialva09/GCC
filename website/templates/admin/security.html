@@ -1,0 +1,119 @@
+{% extends 'unfold/layouts/base_simple.html' %}
+
+{% load i18n static unfold %}
+
+{% block title %}Security settings | {{ site_title }}{% endblock %}
+
+{% block content %}
+    <section class="gcc-security-page" aria-labelledby="gcc-security-title">
+        <div class="gcc-security-heading">
+            <div>
+                <span class="gcc-admin-kicker">Private administration</span>
+                <h1 id="gcc-security-title">Security settings</h1>
+                <p>Manage the extra protection on your administrator account. Update either setting directly from this page whenever you need to.</p>
+            </div>
+            <a class="gcc-admin-button gcc-admin-button-outline" href="{% url 'admin:index' %}">Back to administration <span aria-hidden="true">&rarr;</span></a>
+        </div>
+
+        {% include 'unfold/helpers/messages.html' %}
+
+        <div class="gcc-security-grid">
+            <article class="gcc-security-card">
+                <div class="gcc-security-card-heading">
+                    <span class="gcc-admin-kicker">Step one</span>
+                    <h2>Admin PIN</h2>
+                    <span class="gcc-security-status{% if profile.pin_enabled %} is-on{% endif %}">
+                        {% if profile.pin_enabled %}Enabled{% else %}Disabled{% endif %}
+                    </span>
+                </div>
+                <p class="gcc-security-copy">A six-digit PIN is requested before the administrator username and password screen. Leave the new PIN fields blank to keep the current PIN.</p>
+
+                {% if pin_form.errors or pin_form.non_field_errors %}
+                    <div class="gcc-login-errors">
+                        {% include 'unfold/helpers/messages/errornote.html' with errors=pin_form.errors %}
+                        {% include 'unfold/helpers/messages/error.html' with errors=pin_form.non_field_errors %}
+                    </div>
+                {% endif %}
+                <form class="gcc-security-form" method="post">
+                    <input type="hidden" name="username" autocomplete="username" value="{{ request.user.get_username }}">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="save-pin">
+                    {% for field in pin_form.visible_fields %}
+                        <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                            {% if field.field.widget.input_type == 'checkbox' %}
+                                <label class="gcc-checkbox-label">{{ field }} <span>{{ field.label }}</span></label>
+                            {% else %}
+                                {{ field.label_tag }}
+                                {{ field }}
+                            {% endif %}
+                            {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+                            {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                        </div>
+                    {% endfor %}
+                    <button class="gcc-admin-button gcc-admin-button-primary" type="submit">Save PIN settings</button>
+                </form>
+            </article>
+
+            <article class="gcc-security-card">
+                <div class="gcc-security-card-heading">
+                    <span class="gcc-admin-kicker">Step two</span>
+                    <h2>Authenticator app</h2>
+                    <span class="gcc-security-status{% if two_factor_enabled %} is-on{% endif %}">
+                        {% if two_factor_enabled %}Enabled{% else %}Disabled{% endif %}
+                    </span>
+                </div>
+                <p class="gcc-security-copy">Scan a QR code to connect an authenticator app. Once enabled, a new six-digit code is requested for each administration session.</p>
+
+                {% if two_factor_enabled %}
+                    <div class="gcc-security-callout is-on">Authenticator verification is active for this account. You can disable it at any time.</div>
+                    {% if two_factor_form.errors or two_factor_form.non_field_errors %}
+                        <div class="gcc-login-errors">
+                            {% include 'unfold/helpers/messages/errornote.html' with errors=two_factor_form.errors %}
+                            {% include 'unfold/helpers/messages/error.html' with errors=two_factor_form.non_field_errors %}
+                        </div>
+                    {% endif %}
+                    <form class="gcc-security-form" method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="disable-2fa">
+                        <button class="gcc-admin-button gcc-admin-button-outline" type="submit">Disable authenticator</button>
+                    </form>
+                {% elif pending_device %}
+                    <div class="gcc-security-enrollment">
+                        <p>Open your authenticator app and scan this QR code. When the account appears in the app, choose the button below to finish setup. No code entry is needed here.</p>
+                        <div class="gcc-security-qr">
+                            <img src="{{ pending_qr }}" alt="Authenticator setup QR code">
+                        </div>
+                        <p class="gcc-security-qr-note">After you scan it, this account will require an authenticator code on the next new administration sign-in.</p>
+                    </div>
+                    {% if two_factor_form.errors or two_factor_form.non_field_errors %}
+                        <div class="gcc-login-errors">
+                            {% include 'unfold/helpers/messages/errornote.html' with errors=two_factor_form.errors %}
+                            {% include 'unfold/helpers/messages/error.html' with errors=two_factor_form.non_field_errors %}
+                        </div>
+                    {% endif %}
+                    <form class="gcc-security-form" method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="confirm-2fa">
+                        <div class="gcc-security-actions">
+                            <button class="gcc-admin-button gcc-admin-button-primary" type="submit">I have scanned the QR code &mdash; enable 2FA</button>
+                            <button class="gcc-admin-button gcc-admin-button-quiet" name="action" value="cancel-2fa" type="submit">Cancel</button>
+                        </div>
+                    </form>
+                {% else %}
+                    <div class="gcc-security-callout">No authenticator is connected to this account. Start setup to display a QR code.</div>
+                    {% if two_factor_form.errors or two_factor_form.non_field_errors %}
+                        <div class="gcc-login-errors">
+                            {% include 'unfold/helpers/messages/errornote.html' with errors=two_factor_form.errors %}
+                            {% include 'unfold/helpers/messages/error.html' with errors=two_factor_form.non_field_errors %}
+                        </div>
+                    {% endif %}
+                    <form class="gcc-security-form" method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="begin-2fa">
+                        <button class="gcc-admin-button gcc-admin-button-primary" type="submit">Show setup QR code</button>
+                    </form>
+                {% endif %}
+            </article>
+        </div>
+    </section>
+{% endblock %}

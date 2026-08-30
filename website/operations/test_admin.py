@@ -1,7 +1,16 @@
+from datetime import timedelta
+
 from django.contrib.auth import get_user_model
 from django.test import Client as DjangoClient
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
+
+from .security import (
+    ADMIN_GATE_EXPIRES_AT,
+    ADMIN_GATE_NEXT,
+    ADMIN_GATE_USER_ID,
+)
 
 
 class UnfoldAdminTests(TestCase):
@@ -15,7 +24,16 @@ class UnfoldAdminTests(TestCase):
 
     def setUp(self):
         self.browser = DjangoClient()
+        self.login_admin()
+
+    def login_admin(self):
+        self.browser.logout()
         self.browser.force_login(self.admin_user)
+        session = self.browser.session
+        session[ADMIN_GATE_USER_ID] = str(self.admin_user.pk)
+        session[ADMIN_GATE_EXPIRES_AT] = (timezone.now() + timedelta(minutes=10)).timestamp()
+        session[ADMIN_GATE_NEXT] = reverse('admin:index')
+        session.save()
 
     def test_native_admin_uses_unfold_and_grand_coast_branding(self):
         response = self.browser.get(reverse('admin:index'))
@@ -35,6 +53,14 @@ class UnfoldAdminTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Leads')
+
+    def test_unfold_admin_actions_include_a_visible_run_control(self):
+        response = self.browser.get(reverse('admin:auth_user_changelist'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="index"')
+        self.assertContains(response, 'x-model="action"')
+        self.assertContains(response, 'Run the selected action')
 
     def test_unfold_search_keeps_native_system_user_results(self):
         response = self.browser.get(reverse('admin:search'), {'s': 'admin-smoke'})
@@ -57,6 +83,10 @@ class UnfoldAdminTests(TestCase):
 
     def test_native_admin_login_matches_operations_visual_language(self):
         self.browser.logout()
+        self.browser.post(
+            reverse('admin:access'),
+            {'identifier': self.admin_user.username},
+        )
         response = self.browser.get(reverse('admin:login'))
 
         self.assertEqual(response.status_code, 200)
@@ -73,9 +103,9 @@ class UnfoldAdminTests(TestCase):
             username='not-staff',
             password='not-staff-pass',
         )
+        self.browser.logout()
         self.browser.force_login(user)
 
         response = self.browser.get(reverse('admin:index'))
 
-        self.assertEqual(response.status_code, 302)
-        self.assertIn(reverse('admin:login'), response['Location'])
+        self.assertEqual(response.status_code, 403)

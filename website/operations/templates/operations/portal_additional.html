@@ -1,4 +1,4 @@
-{% if portal_project %}
+{% if portal_client %}
 <section class='portal-secondary-section'>
     <div class='container portal-secondary-grid'>
         <section class='portal-document-card' id='documents-files'>
@@ -8,9 +8,17 @@
         </section>
         <section class='portal-document-card' id='conversation-history'>
             <span class='section-kicker'>Conversation history</span>
-            <h3>Project messages</h3>
+            <h3>Messages with Grand Coast</h3>
             <div class='portal-message-history'>{% for message in portal_messages %}<article class='portal-message'><strong>{% if message.sent_by and message.sent_by.is_staff %}Grand Coast{% else %}{{ portal_client.name }}{% endif %}</strong><small>{{ message.created_at|date:'M j, Y &middot; g:i A' }}</small><p>{{ message.body }}</p></article>{% empty %}<p class='detail-value'>Your project conversation will appear here.</p>{% endfor %}</div>
         </section>
+    </div>
+</section>
+{% endif %}
+{% if portal_estimates %}
+<section class='portal-secondary-section portal-estimate-inbox'>
+    <div class='container'>
+        <div class='portal-panel-heading'><div><span class='section-kicker'>Scope history</span><h2>Your estimates</h2></div><span class='detail-value'>Select an estimate to review its line items.</span></div>
+        <div class='portal-document-list'>{% for estimate in portal_estimates %}<a class='portal-document-row' href='?client={{ portal_client.pk }}&amp;estimate={{ estimate.pk }}{% if estimate.portal_project %}&amp;project={{ estimate.portal_project.pk }}{% endif %}#documents'><span><strong>#{{ estimate.number }} &middot; {{ estimate.title }}</strong><small>{% if estimate.portal_project %}{{ estimate.portal_project.title }}{% else %}Pre-project scope{% endif %}</small></span><span>{{ estimate.get_status_display }} &middot; ${{ estimate.total|floatformat:2 }}</span></a>{% endfor %}</div>
     </div>
 </section>
 {% endif %}

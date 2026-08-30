@@ -1,0 +1,8 @@
+{% extends 'admin/gate_base.html' %}
+
+{% block gate_content %}
+    <span class="gcc-admin-kicker">Security reset</span>
+    <h1>You’re ready to start again.</h1>
+    <p class="gcc-login-intro">Your new PIN is active and authenticator verification is disabled. Sign in with your administrator username, password, and new PIN.</p>
+    <a class="gcc-admin-button gcc-admin-button-primary gcc-login-submit" href="{% url 'admin:access' %}">Return to secure access</a>
+{% endblock %}

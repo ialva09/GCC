@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 
 from django import forms
 from django.contrib.auth import get_user_model
+from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -92,8 +94,13 @@ class QuickTaskForm(forms.ModelForm):
         fields = ["title", "due_date", "assigned_to", "priority"]
         widgets = {"due_date": forms.DateInput(attrs={"type": "date"})}
 
-    def __init__(self, *args, staff_queryset=None, **kwargs):
+    def __init__(self, *args, staff_queryset=None, lead=None, **kwargs):
         super().__init__(*args, **kwargs)
+        if lead is not None:
+            # The lead is supplied by the selected record rather than as a
+            # field in this compact follow-up form. Set it before ModelForm's
+            # model validation runs.
+            self.instance.lead = lead
         self.fields["assigned_to"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
 
 
@@ -115,6 +122,16 @@ class TaskForm(forms.ModelForm):
         self.fields["project"].queryset = project_queryset if project_queryset is not None else Project.objects.all()
 
 
+class TeamTaskUpdateForm(forms.ModelForm):
+    class Meta:
+        model = Task
+        fields = ["title", "description", "status", "priority", "due_date"]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 4}),
+            "due_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+
 class LeadAssignmentForm(forms.ModelForm):
     class Meta:
         model = Lead
@@ -128,19 +145,26 @@ class LeadAssignmentForm(forms.ModelForm):
 class EstimateCreateForm(forms.ModelForm):
     class Meta:
         model = Estimate
-        fields = ["lead", "title", "deposit_amount"]
+        fields = ["lead", "client", "title", "deposit_amount"]
         widgets = {"deposit_amount": forms.NumberInput(attrs={"min": "0", "step": "0.01"})}
 
-    def __init__(self, *args, lead_queryset=None, **kwargs):
+    def __init__(self, *args, lead_queryset=None, client_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         if lead_queryset is not None:
             self.fields["lead"].queryset = lead_queryset
+        if client_queryset is not None:
+            self.fields["client"].queryset = client_queryset
 
     def clean(self):
         cleaned = super().clean()
         lead = cleaned.get("lead")
+        client = cleaned.get("client")
         if lead and not lead.client_id:
             raise ValidationError("Convert this lead into a client before creating an estimate.")
+        if lead and client and lead.client_id != client.pk:
+            raise ValidationError("Choose the client connected to this lead.")
+        if not lead and not client:
+            raise ValidationError("Choose a lead or client for this estimate.")
         return cleaned
 
 
@@ -224,8 +248,18 @@ class ProjectForm(forms.ModelForm):
     def clean(self):
         cleaned = super().clean()
         lead = cleaned.get("lead")
-        if lead and self.instance._state.adding and not lead.estimates.filter(status=Estimate.Status.ACCEPTED).exists():
-            raise ValidationError("Lead-derived projects require an accepted estimate.")
+        client = cleaned.get("client")
+        if lead and client and lead.client_id != client.pk:
+            raise ValidationError("Choose the client connected to this lead.")
+        if lead:
+            has_accepted_estimate = lead.estimates.filter(status=Estimate.Status.ACCEPTED).exists()
+            if self.instance.pk and self.instance.estimate_id:
+                has_accepted_estimate = has_accepted_estimate or (
+                    self.instance.estimate.status == Estimate.Status.ACCEPTED
+                    and self.instance.estimate.lead_id == lead.pk
+                )
+            if not has_accepted_estimate:
+                self.add_error("lead", "Lead-derived projects require an accepted estimate.")
         return cleaned
 
 
@@ -363,8 +397,8 @@ class EmployeeInviteAcceptForm(forms.Form):
     username = forms.CharField(max_length=150, required=False)
     first_name = forms.CharField(max_length=80, required=False)
     last_name = forms.CharField(max_length=80, required=False)
-    password1 = forms.CharField(widget=forms.PasswordInput)
-    password2 = forms.CharField(widget=forms.PasswordInput)
+    password1 = forms.CharField(label="Password", widget=forms.PasswordInput)
+    password2 = forms.CharField(label="Confirm Password", widget=forms.PasswordInput)
 
     def __init__(self, *args, purpose=EmployeeInvite.Purpose.ONBOARDING, **kwargs):
         super().__init__(*args, **kwargs)
@@ -419,3 +453,137 @@ class ClientInviteAcceptForm(forms.Form):
         if cleaned.get("password1") and cleaned.get("password1") != cleaned.get("password2"):
             raise ValidationError("Passwords do not match.")
         return cleaned
+
+
+class PublicAuthenticationForm(AuthenticationForm):
+    def confirm_login_allowed(self, user):
+        if user.is_superuser:
+            raise self.get_invalid_login_error()
+        if user.is_staff:
+            is_employee = user.groups.filter(name__in=["Manager", "Office", "Field"]).exists()
+            has_active_profile = not EmployeeProfile.objects.filter(user=user, is_active=False).exists()
+            if not is_employee or not has_active_profile:
+                raise self.get_invalid_login_error()
+        elif not Client.objects.filter(user=user).exists():
+            raise self.get_invalid_login_error()
+        super().confirm_login_allowed(user)
+
+
+class GrandCoastAdminAuthenticationForm(AuthenticationForm):
+    def confirm_login_allowed(self, user):
+        if not (user.is_active and user.is_staff and user.is_superuser):
+            raise self.get_invalid_login_error()
+
+
+class AdminGateIdentifierForm(forms.Form):
+    identifier = forms.CharField(
+        label="Admin username or email",
+        max_length=254,
+        widget=forms.TextInput(attrs={"autocomplete": "username"}),
+    )
+
+
+class AdminPinForm(forms.Form):
+    pin = forms.CharField(
+        label="Six-digit admin PIN",
+        max_length=6,
+        min_length=6,
+        widget=forms.PasswordInput(attrs={"inputmode": "numeric", "autocomplete": "one-time-code"}),
+    )
+
+    def clean_pin(self):
+        pin = self.cleaned_data["pin"]
+        if not re.fullmatch(r"\d{6}", pin):
+            raise ValidationError("Enter the six-digit PIN.")
+        return pin
+
+
+class AdminOtpForm(forms.Form):
+    token = forms.CharField(
+        label="Authenticator code",
+        max_length=6,
+        min_length=6,
+        widget=forms.TextInput(attrs={"inputmode": "numeric", "autocomplete": "one-time-code"}),
+    )
+
+    def clean_token(self):
+        token = self.cleaned_data["token"]
+        if not re.fullmatch(r"\d{6}", token):
+            raise ValidationError("Enter the six-digit authenticator code.")
+        return token
+
+
+class AdminRecoveryRequestForm(forms.Form):
+    email = forms.EmailField(
+        label="Admin email",
+        widget=forms.EmailInput(attrs={"autocomplete": "email"}),
+    )
+
+
+class AdminRecoveryResetForm(forms.Form):
+    new_pin = forms.CharField(
+        label="New six-digit admin PIN",
+        max_length=6,
+        min_length=6,
+        widget=forms.PasswordInput(attrs={"inputmode": "numeric", "autocomplete": "new-password"}),
+    )
+    new_pin_confirmation = forms.CharField(
+        label="Confirm new PIN",
+        max_length=6,
+        min_length=6,
+        widget=forms.PasswordInput(attrs={"inputmode": "numeric", "autocomplete": "new-password"}),
+    )
+
+    def clean_new_pin(self):
+        pin = self.cleaned_data["new_pin"]
+        if not re.fullmatch(r"\d{6}", pin):
+            raise ValidationError("Enter six numeric digits.")
+        return pin
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("new_pin") and cleaned.get("new_pin") != cleaned.get("new_pin_confirmation"):
+            raise ValidationError("The new PINs do not match.")
+        return cleaned
+
+
+class AdminPinSettingsForm(forms.Form):
+    pin_enabled = forms.BooleanField(label="Enable an admin PIN", required=False)
+    new_pin = forms.CharField(
+        label="New admin PIN",
+        required=False,
+        max_length=6,
+        help_text="Leave blank to keep the current PIN when editing.",
+        widget=forms.PasswordInput(attrs={"inputmode": "numeric", "autocomplete": "new-password"}),
+    )
+    new_pin_confirmation = forms.CharField(
+        label="Confirm new admin PIN",
+        required=False,
+        max_length=6,
+        widget=forms.PasswordInput(attrs={"inputmode": "numeric", "autocomplete": "new-password"}),
+    )
+
+    def __init__(self, *args, profile, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.profile = profile
+        self.fields["pin_enabled"].initial = self.profile.pin_enabled
+
+    def clean_new_pin(self):
+        pin = self.cleaned_data.get("new_pin", "")
+        if pin and not re.fullmatch(r"\d{6}", pin):
+            raise ValidationError("Enter six numeric digits.")
+        return pin
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("pin_enabled") and not self.profile.pin_hash and not cleaned.get("new_pin"):
+            self.add_error("new_pin", "Enter a PIN before turning PIN protection on.")
+        if cleaned.get("new_pin") != cleaned.get("new_pin_confirmation"):
+            self.add_error("new_pin_confirmation", "The new PINs do not match.")
+        return cleaned
+
+
+class AdminTwoFactorStartForm(forms.Form):
+    """Simple action form used for starting or disabling authenticator setup."""
+
+    pass

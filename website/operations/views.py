@@ -9,15 +9,16 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth import get_user_model
-from django.contrib.auth import login
-from django.contrib.auth.views import LoginView
+from django.contrib.auth import login, logout
+from django.contrib.auth.views import LoginView, PasswordChangeView
 from django.contrib.auth.models import Group
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
-from django.http import FileResponse, Http404
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
+from django.template.loader import render_to_string
 from django.shortcuts import get_object_or_404, redirect, render
 from django.templatetags.static import static
 from django.urls import reverse
@@ -45,9 +46,11 @@ from .forms import (
     ProjectDocumentForm,
     ProjectForm,
     ProjectUpdateForm,
+    PublicAuthenticationForm,
     QuickTaskForm,
     ScheduleEventForm,
     StaffMessageForm,
+    TeamTaskUpdateForm,
     TaskForm,
     TimeEntryForm,
 )
@@ -88,10 +91,60 @@ from .services import (
 PUBLIC_PAGES = {"home", "services", "projects", "process", "contact"}
 DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "tasks", "calendar", "time", "media", "documents", "team", "content"}
 TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile"}
+EMPLOYEE_GROUPS = {"Manager", "Office", "Field"}
+LEADERSHIP_GROUPS = {"Owner", "Manager"}
+
+
+def pwa_manifest(request):
+    return JsonResponse(
+        {
+            "name": "Grand Coast Construction",
+            "short_name": "Grand Coast",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#f5f7fa",
+            "theme_color": "#31518c",
+            "description": "Grand Coast Construction Inc. project and client workspace.",
+            "icons": [
+                {
+                    "src": static("operations/images/gcc-logo.png"),
+                    "sizes": "192x192",
+                    "type": "image/png",
+                    "purpose": "any maskable",
+                },
+                {
+                    "src": static("operations/images/gcc-logo.png"),
+                    "sizes": "512x512",
+                    "type": "image/png",
+                    "purpose": "any maskable",
+                },
+            ],
+        },
+        content_type="application/manifest+json",
+    )
+
+
+def pwa_service_worker(request):
+    response = HttpResponse(
+        render_to_string("operations/service-worker.js"),
+        content_type="application/javascript",
+    )
+    response["Cache-Control"] = "no-cache"
+    return response
+
+
+def pwa_offline(request):
+    return render(request, "operations/offline.html")
 
 
 def _staff_users():
-    return get_user_model().objects.filter(is_staff=True).filter(
+    return get_user_model().objects.filter(
+        is_staff=True,
+        is_active=True,
+    ).filter(
+        Q(is_superuser=True) | Q(groups__name__in=EMPLOYEE_GROUPS)
+    ).filter(
         Q(employee_profile__isnull=True) | Q(employee_profile__is_active=True)
     ).order_by("first_name", "last_name", "username").distinct()
 
@@ -106,28 +159,35 @@ def _is_owner(user):
     return bool(user.is_superuser or "Owner" in _group_names(user))
 
 
+def _is_active_staff(user):
+    if not user.is_authenticated or not user.is_staff or not user.is_active:
+        return False
+    return not EmployeeProfile.objects.filter(user=user, is_active=False).exists()
+
+
+def _is_active_client(user):
+    return bool(
+        user.is_authenticated
+        and user.is_active
+        and not user.is_staff
+        and Client.objects.filter(user=user).exists()
+    )
+
+
 def _can_access_dashboard(user):
-    roles = _group_names(user)
-    known_roles = {"Owner", "Manager", "Office", "Field"}
-    if not user.is_staff:
-        return False
-    if not user.is_superuser and EmployeeProfile.objects.filter(user=user, is_active=False).exists():
-        return False
-    return bool(_is_owner(user) or roles & {"Manager", "Office"} or not roles & known_roles)
+    return bool(_is_active_staff(user) and user.is_superuser)
 
 
 def _can_manage_team(user):
-    return bool(_is_owner(user) or ("Manager" in _group_names(user)))
+    return _can_access_dashboard(user)
 
 
 def _can_manage_schedule(user):
-    return bool(_is_owner(user) or _group_names(user) & {"Manager", "Office"})
+    return _can_access_dashboard(user)
 
 
 def _can_manage_content(user):
-    roles = _group_names(user)
-    known_roles = {"Owner", "Manager", "Office", "Field"}
-    return bool(_is_owner(user) or "Manager" in roles or (user.is_staff and not roles & known_roles))
+    return _can_access_dashboard(user)
 
 
 def _is_field_employee(user):
@@ -136,12 +196,9 @@ def _is_field_employee(user):
 
 def _can_access_team(user):
     roles = _group_names(user)
-    known_roles = {"Owner", "Manager", "Office", "Field"}
-    if not user.is_staff:
+    if not _is_active_staff(user):
         return False
-    if not user.is_superuser and EmployeeProfile.objects.filter(user=user, is_active=False).exists():
-        return False
-    return bool(user.is_superuser or roles & known_roles or not roles)
+    return bool(user.is_superuser or roles & EMPLOYEE_GROUPS)
 
 
 def _can_view_clients(user):
@@ -149,15 +206,15 @@ def _can_view_clients(user):
 
 
 def _can_manage_tasks(user):
-    return bool(_can_access_dashboard(user) and (_is_owner(user) or _group_names(user) & {"Manager", "Office"}))
+    return _can_access_dashboard(user)
 
 
 def _can_manage_documents(user):
-    return bool(_can_access_dashboard(user) and (_is_owner(user) or _group_names(user) & {"Manager", "Office"}))
+    return _can_access_dashboard(user)
 
 
 def _can_manage_messages(user):
-    return bool(_can_access_dashboard(user) and (_is_owner(user) or _group_names(user) & {"Manager", "Office"}))
+    return _can_access_dashboard(user)
 
 
 def _visible_projects_for_user(user):
@@ -179,6 +236,12 @@ def _visible_tasks_for_user(user):
 
 def _visible_schedule_for_user(user):
     if _can_access_dashboard(user):
+        return ScheduleEvent.objects.all()
+    return ScheduleEvent.objects.filter(assignees=user).distinct()
+
+
+def _visible_team_schedule_for_user(user):
+    if _can_access_dashboard(user) or _group_names(user) & LEADERSHIP_GROUPS:
         return ScheduleEvent.objects.all()
     return ScheduleEvent.objects.filter(assignees=user).distinct()
 
@@ -243,11 +306,26 @@ def _public_context():
     }
 
 
+def _logout_admin_from_public_site(request):
+    if request.user.is_authenticated and request.user.is_superuser:
+        logout(request)
+
+
+def _public_dashboard_url(user):
+    if _can_access_team(user) and not user.is_superuser:
+        return reverse("operations:team")
+    if _is_active_client(user):
+        return reverse("operations:portal")
+    return ""
+
+
 def public_page(request, page="home"):
+    _logout_admin_from_public_site(request)
     if page not in PUBLIC_PAGES:
         page = "home"
     context = _public_context()
     context["page"] = page
+    context["public_dashboard_url"] = _public_dashboard_url(request.user)
     context["contact_form"] = ContactLeadForm()
     if page == "contact" and request.method == "POST":
         form = ContactLeadForm(request.POST, request.FILES)
@@ -309,9 +387,10 @@ def client_required(view_func):
     @wraps(view_func)
     @login_required
     def wrapped(request, *args, **kwargs):
-        if request.user.is_staff and _is_field_employee(request.user):
-            raise PermissionDenied
-        if not request.user.is_staff and not Client.objects.filter(user=request.user).exists():
+        if request.user.is_staff:
+            if not _can_access_dashboard(request.user):
+                raise PermissionDenied
+        elif not _is_active_client(request.user):
             raise PermissionDenied
         return view_func(request, *args, **kwargs)
 
@@ -320,10 +399,20 @@ def client_required(view_func):
 
 class GrandCoastLoginView(LoginView):
     template_name = "operations/login.html"
+    authentication_form = PublicAuthenticationForm
 
     def get_success_url(self):
         if self.request.user.is_staff:
-            return reverse("operations:team") if _is_field_employee(self.request.user) else reverse("operations:dashboard")
+            return reverse("operations:dashboard") if _can_access_dashboard(self.request.user) else reverse("operations:team")
+        return reverse("operations:portal")
+
+
+class GrandCoastPasswordChangeView(PasswordChangeView):
+    template_name = "operations/password_change.html"
+
+    def get_success_url(self):
+        if self.request.user.is_staff:
+            return reverse("operations:dashboard") if _can_access_dashboard(self.request.user) else reverse("operations:team")
         return reverse("operations:portal")
 
 
@@ -349,7 +438,8 @@ def _content_form(instance, services, process_steps, data=None):
     return ContentStudioForm(data=data, initial=initial, services=services, process_steps=process_steps)
 
 
-def _dashboard_context(request, section):
+def _dashboard_context(request, section, form_overrides=None):
+    form_overrides = form_overrides or {}
     site_settings = _site_settings()
     services = list(Service.objects.filter(is_active=True))
     process_steps = list(ProcessStep.objects.all())
@@ -440,6 +530,7 @@ def _dashboard_context(request, section):
         "lead_form": LeadForm(staff_queryset=_staff_users()),
         "estimate_create_form": EstimateCreateForm(
             lead_queryset=Lead.objects.exclude(status=Lead.Status.LOST),
+            client_queryset=Client.objects.all(),
             initial={"lead": initial_lead.pk if initial_lead else None},
         ),
         "estimate_form": EstimateForm(instance=selected_estimate) if selected_estimate else EstimateForm(),
@@ -465,6 +556,7 @@ def _dashboard_context(request, section):
         "lead_assignment_form": LeadAssignmentForm(instance=selected_lead, staff_queryset=_staff_users()) if selected_lead else LeadAssignmentForm(staff_queryset=_staff_users()),
         "follow_up_form": QuickTaskForm(prefix="followup", staff_queryset=_staff_users()),
     }
+    dashboard_forms.update(form_overrides)
     content_form = dashboard_forms["content_form"]
     content_service_fields = [
         {
@@ -549,7 +641,8 @@ def _workspace_redirect(request, section, **params):
     return redirect(f"{url}?{urlencode(clean_params)}" if clean_params else url)
 
 
-def _workspace_context(request, section, team_mode=False):
+def _workspace_context(request, section, team_mode=False, form_overrides=None):
+    form_overrides = form_overrides or {}
     projects_qs = _visible_projects_for_user(request.user).select_related("client", "lead", "estimate").prefetch_related("milestones", "assigned_staff")
     projects = list(projects_qs)
     for project in projects:
@@ -594,7 +687,8 @@ def _workspace_context(request, section, team_mode=False):
         tasks_qs = tasks_qs.filter(due_date__gte=timezone.localdate()).exclude(status=Task.Status.COMPLETE)
     tasks = list(tasks_qs)
 
-    events = list(_visible_schedule_for_user(request.user).select_related("project", "task", "created_by").prefetch_related("assignees"))
+    schedule_queryset = _visible_team_schedule_for_user(request.user) if team_mode else _visible_schedule_for_user(request.user)
+    events = list(schedule_queryset.select_related("project", "task", "created_by").prefetch_related("assignees"))
     today = timezone.localdate()
     requested_month = request.GET.get("month", "")
     try:
@@ -662,16 +756,24 @@ def _workspace_context(request, section, team_mode=False):
     selected_time_entry = next((entry for entry in time_entries if str(entry.pk) == selected_time_entry_id), None) if selected_time_entry_id else None
     staff_users = list(_staff_users()) if _can_access_dashboard(request.user) else [request.user]
     employee_profiles = list(EmployeeProfile.objects.select_related("user").filter(user__in=staff_users))
-    task_form = TaskForm(
-        instance=selected_task if request.GET.get("edit") == "task" else None,
-        staff_queryset=_staff_users(),
-        project_queryset=projects_qs,
-    )
+    if team_mode:
+        task_form = TeamTaskUpdateForm(
+            instance=selected_task if request.GET.get("edit") == "task" else None,
+        )
+    else:
+        task_form = TaskForm(
+            instance=selected_task if request.GET.get("edit") == "task" else None,
+            staff_queryset=_staff_users(),
+            project_queryset=projects_qs,
+        )
     event_form = ScheduleEventForm(
         instance=selected_event if request.GET.get("edit") == "event" else None,
         staff_queryset=_staff_users(),
         project_queryset=projects_qs,
-        task_queryset=tasks_qs,
+        # Keep the editor's task choices independent from the currently active
+        # task filters. An event can remain editable even when its task is not
+        # part of the filtered task list.
+        task_queryset=_visible_tasks_for_user(request.user),
     )
     client_form = ClientForm(instance=selected_client if request.GET.get("edit") == "client" else None)
     document_form = ProjectDocumentForm(project_queryset=projects_qs)
@@ -690,11 +792,34 @@ def _workspace_context(request, section, team_mode=False):
         else EmployeeProfileForm(allow_status=_can_manage_team(request.user))
     )
     invite_form = EmployeeInviteForm(group_queryset=Group.objects.filter(name__in=["Manager", "Office", "Field"]))
+    client_form = form_overrides.get("client_form", client_form)
+    task_form = form_overrides.get("task_form", task_form)
+    event_form = form_overrides.get("event_form", event_form)
+    document_form = form_overrides.get("document_form", document_form)
+    media_upload_form = form_overrides.get("media_upload_form", media_upload_form)
+    time_form = form_overrides.get("time_form", time_form)
+    time_edit_form = form_overrides.get("time_edit_form", time_edit_form)
+    project_update_form = form_overrides.get("project_update_form", project_update_form)
+    profile_form = form_overrides.get("profile_form", profile_form)
+    invite_form = form_overrides.get("invite_form", invite_form)
     selected_messages = []
     if selected_client:
         selected_messages = list(ClientMessage.objects.filter(client=selected_client).select_related("project", "sent_by")[:25])
     unread_messages_count = ClientMessage.objects.filter(is_read=False, sent_by__is_staff=False).count()
+    if team_mode:
+        unread_messages_count = 0
     upcoming_events = [event for event in events if event.start_at >= timezone.now()][:5]
+    can_view_full_team_calendar = bool(
+        team_mode
+        and (_can_access_dashboard(request.user) or _group_names(request.user) & LEADERSHIP_GROUPS)
+    )
+    can_edit_selected_task = bool(
+        selected_task
+        and (
+            (not team_mode and _can_manage_tasks(request.user))
+            or (team_mode and selected_task.assigned_to_id == request.user.id)
+        )
+    )
     return {
         "active_section": section,
         "team_mode": team_mode,
@@ -738,7 +863,7 @@ def _workspace_context(request, section, team_mode=False):
         "time_edit_form": time_edit_form,
         "project_update_form": project_update_form,
         "selected_messages": selected_messages,
-        "staff_message_form": StaffMessageForm(),
+        "staff_message_form": form_overrides.get("staff_message_form", StaffMessageForm()),
         "unread_messages_count": unread_messages_count,
         "upcoming_events": upcoming_events,
         "open_tasks_count": Task.objects.filter(status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS, Task.Status.BLOCKED]).count() if _can_access_dashboard(request.user) else _visible_tasks_for_user(request.user).exclude(status=Task.Status.COMPLETE).count(),
@@ -749,9 +874,38 @@ def _workspace_context(request, section, team_mode=False):
         "can_manage_documents": _can_manage_documents(request.user),
         "can_manage_messages": _can_manage_messages(request.user),
         "is_field_employee": _is_field_employee(request.user),
+        "can_view_full_team_calendar": can_view_full_team_calendar,
+        "can_edit_selected_task": can_edit_selected_task,
         "last_employee_invite_url": request.session.pop("last_employee_invite_url", ""),
         "last_reset_url": request.session.pop("last_reset_url", ""),
     }
+
+
+def _render_dashboard_form_error(request, section, form_overrides=None, *, selections=None, new=None, edit=None):
+    query = request.GET.copy()
+    for key, value in (selections or {}).items():
+        if value not in (None, ""):
+            query[key] = str(value)
+    if new:
+        query["new"] = new
+    if edit:
+        query["edit"] = edit
+    request.GET = query
+    return render(request, "operations/dashboard.html", _dashboard_context(request, section, form_overrides=form_overrides))
+
+
+def _render_workspace_form_error(request, section, form_overrides=None, *, selections=None, new=None, edit=None):
+    query = request.GET.copy()
+    for key, value in (selections or {}).items():
+        if value not in (None, ""):
+            query[key] = str(value)
+    if new:
+        query["new"] = new
+    if edit:
+        query["edit"] = edit
+    request.GET = query
+    team_mode = request.path.startswith("/team/")
+    return render(request, "operations/workspace.html", _workspace_context(request, section, team_mode=team_mode, form_overrides=form_overrides))
 
 
 @team_required
@@ -771,7 +925,7 @@ def client_create(request):
         messages.success(request, f"{client.name} was added to Clients.")
         return _workspace_redirect(request, "clients", client=client.pk)
     messages.error(request, "Please correct the client details and try again.")
-    return _workspace_redirect(request, "clients", new="client")
+    return _render_workspace_form_error(request, "clients", {"client_form": form}, new="client")
 
 
 @require_POST
@@ -785,6 +939,7 @@ def client_update(request, pk):
         messages.success(request, "Client details saved.")
     else:
         messages.error(request, "Please correct the client details and try again.")
+        return _render_workspace_form_error(request, "clients", {"client_form": form}, selections={"client": client.pk}, edit="client")
     return _workspace_redirect(request, "clients", client=client.pk)
 
 
@@ -845,35 +1000,49 @@ def task_create(request):
         messages.success(request, f"{task.title} was added to Tasks.")
         return _workspace_redirect(request, "tasks", task=task.pk)
     messages.error(request, "Please correct the task details and try again.")
-    return _workspace_redirect(request, "tasks", new="task")
+    return _render_workspace_form_error(request, "tasks", {"task_form": form}, new="task")
 
 
 @require_POST
-@staff_required
+@team_required
 def task_update(request, pk):
-    if not _can_manage_tasks(request.user):
-        raise PermissionDenied
-    task = get_object_or_404(Task, pk=pk)
-    form = TaskForm(request.POST, instance=task, staff_queryset=_staff_users(), project_queryset=_visible_projects_for_user(request.user))
+    team_mode = request.path.startswith("/team/")
+    if team_mode:
+        task = get_object_or_404(
+            _visible_tasks_for_user(request.user).select_related("project", "lead"),
+            pk=pk,
+            assigned_to=request.user,
+        )
+        form = TeamTaskUpdateForm(request.POST, instance=task)
+    else:
+        if not _can_manage_tasks(request.user):
+            raise PermissionDenied
+        task = get_object_or_404(Task, pk=pk)
+        form = TaskForm(
+            request.POST,
+            instance=task,
+            staff_queryset=_staff_users(),
+            project_queryset=_visible_projects_for_user(request.user),
+        )
     if form.is_valid():
         task = form.save(commit=False)
         task.completed_at = timezone.now() if task.status == Task.Status.COMPLETE else None
         task.save()
-        form.save_m2m()
+        if not team_mode:
+            form.save_m2m()
         record_activity("Task updated", task.title, actor=request.user, lead=task.lead, project=task.project)
         messages.success(request, "Task changes saved.")
         return _workspace_redirect(request, "tasks", task=task.pk)
     messages.error(request, "Please correct the task details and try again.")
-    return _workspace_redirect(request, "tasks", task=task.pk, edit="task")
+    return _render_workspace_form_error(request, "tasks", {"task_form": form}, selections={"task": task.pk}, edit="task")
 
 
 @require_POST
 @team_required
 def task_set_status(request, pk):
     task = get_object_or_404(Task.objects.select_related("project", "lead"), pk=pk)
-    if _is_field_employee(request.user):
-        visible = _visible_tasks_for_user(request.user).filter(pk=task.pk).exists()
-        if not visible or task.assigned_to_id != request.user.id:
+    if request.path.startswith("/team/"):
+        if task.assigned_to_id != request.user.id:
             raise PermissionDenied
     elif not _can_manage_tasks(request.user):
         raise PermissionDenied
@@ -905,10 +1074,11 @@ def schedule_create(request):
         event.created_by = request.user
         event.save()
         form.save_m2m()
+        record_activity('Calendar event created', event.title, actor=request.user, project=event.project)
         messages.success(request, f"{event.title} was added to the calendar.")
         return _workspace_redirect(request, "calendar", event=event.pk)
     messages.error(request, "Please correct the calendar event details.")
-    return _workspace_redirect(request, "calendar", new="event")
+    return _render_workspace_form_error(request, "calendar", {"event_form": form}, new="event")
 
 
 @require_POST
@@ -925,11 +1095,32 @@ def schedule_update(request, pk):
         task_queryset=_visible_tasks_for_user(request.user),
     )
     if form.is_valid():
-        event = form.save()
+        event = form.save(commit=False)
+        event.save()
+        form.save_m2m()
+        record_activity('Calendar event updated', event.title, actor=request.user, project=event.project)
         messages.success(request, "Calendar event updated.")
         return _workspace_redirect(request, "calendar", event=event.pk)
     messages.error(request, "Please correct the calendar event details.")
-    return _workspace_redirect(request, "calendar", event=event.pk, edit="event")
+    return _render_workspace_form_error(request, "calendar", {"event_form": form}, selections={"event": event.pk}, edit="event")
+
+
+@require_POST
+@team_required
+def schedule_delete(request, pk):
+    if not _can_manage_schedule(request.user):
+        raise PermissionDenied
+    event = get_object_or_404(ScheduleEvent, pk=pk)
+    event_title = event.title
+    record_activity(
+        "Calendar event deleted",
+        event_title,
+        actor=request.user,
+        project=event.project,
+    )
+    event.delete()
+    messages.success(request, f"{event_title} was removed from the calendar.")
+    return _workspace_redirect(request, "calendar")
 
 
 @require_POST
@@ -956,7 +1147,7 @@ def time_clock(request):
                     project = get_object_or_404(_visible_projects_for_user(request.user), pk=request.POST["project"])
                 if request.POST.get("task"):
                     task = get_object_or_404(_visible_tasks_for_user(request.user), pk=request.POST["task"])
-                    if task.project_id and project and task.project_id != project.pk:
+                    if task.project_id and (not project or task.project_id != project.pk):
                         raise ValidationError("The selected task must belong to the selected project.")
                 TimeEntry.objects.create(
                     employee=employee,
@@ -986,9 +1177,11 @@ def time_update(request, pk):
         entry.adjusted_by = request.user
         entry.adjusted_at = timezone.now()
         entry.save()
+        record_activity('Time entry corrected', entry.employee.get_username(), actor=request.user, project=entry.project)
         messages.success(request, "Time entry corrected.")
     else:
         messages.error(request, "Please correct the time entry.")
+        return _render_workspace_form_error(request, "time", {"time_edit_form": form}, selections={"time_entry": entry.pk})
     return _workspace_redirect(request, "time")
 
 
@@ -1008,7 +1201,7 @@ def document_upload(request):
         messages.success(request, "Project document uploaded.")
         return _workspace_redirect(request, "documents", project=document.project_id)
     messages.error(request, "Please choose a valid document and project.")
-    return _workspace_redirect(request, "documents")
+    return _render_workspace_form_error(request, "documents", {"document_form": form}, selections={"project": request.POST.get("project")})
 
 
 @require_GET
@@ -1016,9 +1209,18 @@ def document_upload(request):
 def document_file(request, pk):
     document = get_object_or_404(ProjectDocument.objects.select_related("project", "project__client"), pk=pk)
     project = document.project
-    is_staff_allowed = request.user.is_staff and (_can_access_dashboard(request.user) or project.assigned_staff.filter(pk=request.user.pk).exists())
+    is_staff_allowed = (
+        request.user.is_staff
+        and (
+            _can_access_dashboard(request.user)
+            or (
+                _can_access_team(request.user)
+                and project.assigned_staff.filter(pk=request.user.pk).exists()
+            )
+        )
+    )
     is_client_allowed = bool(
-        not request.user.is_staff
+        _is_active_client(request.user)
         and document.visibility == ProjectDocument.Visibility.CLIENT
         and project.client_id
         and project.client.user_id == request.user.id
@@ -1055,6 +1257,7 @@ def staff_message_reply(request, client_pk):
         messages.success(request, "Your reply was added to the conversation.")
     else:
         messages.error(request, "Please write a message before replying.")
+        return _render_workspace_form_error(request, "clients", {"staff_message_form": form}, selections={"client": client.pk})
     return _workspace_redirect(request, "clients", client=client.pk)
 
 
@@ -1084,15 +1287,20 @@ def employee_invite_create(request):
             actor=request.user,
         )
         request.session["last_employee_invite_url"] = request.build_absolute_uri(reverse("operations:employee-invite", kwargs={"token": raw_token}))
+        record_activity('Employee invitation created', form.cleaned_data['email'], actor=request.user)
         messages.success(request, "Employee invitation created. Copy the one-time link below.")
     else:
         messages.error(request, "Please correct the employee invitation details.")
+        return _render_workspace_form_error(request, "team", {"invite_form": form})
     return _workspace_redirect(request, "team")
 
 
 @require_POST
 @team_required
 def employee_profile_update(request, pk):
+    team_mode = request.path.startswith("/team/")
+    if not team_mode and not _can_access_dashboard(request.user):
+        raise PermissionDenied
     if not _can_manage_team(request.user) and str(getattr(getattr(request.user, "employee_profile", None), "pk", "")) != str(pk):
         raise PermissionDenied
     profile = get_object_or_404(EmployeeProfile.objects.select_related("user"), pk=pk)
@@ -1103,9 +1311,11 @@ def employee_profile_update(request, pk):
     )
     if form.is_valid():
         form.save()
+        record_activity('Employee profile updated', str(profile), actor=request.user)
         messages.success(request, f"{profile} profile updated.")
     else:
         messages.error(request, "Please correct the employee profile.")
+        return _render_workspace_form_error(request, "team", {"profile_form": form})
     return _workspace_redirect(request, "team")
 
 
@@ -1169,7 +1379,7 @@ def lead_create(request):
         messages.success(request, f"{lead.name} was added to the lead pipeline.")
         return _dashboard_redirect("leads", lead=lead.pk)
     messages.error(request, "Please correct the lead details and try again.")
-    return _dashboard_redirect("leads", new="lead")
+    return _render_dashboard_form_error(request, "leads", {"lead_form": form}, new="lead")
 
 
 @require_POST
@@ -1226,6 +1436,14 @@ def lead_update_note(request, pk):
         lead = form.save()
         record_activity("Lead note updated", f"{lead.name} · Lead record", actor=request.user, lead=lead)
         messages.success(request, "Lead note saved.")
+    else:
+        messages.error(request, "Please correct the lead note and try again.")
+        return _render_dashboard_form_error(
+            request,
+            "leads",
+            {"lead_note_form": form},
+            selections={"lead": lead.pk},
+        )
     return _dashboard_redirect("leads", lead=lead.pk)
 
 
@@ -1233,7 +1451,7 @@ def lead_update_note(request, pk):
 @staff_required
 def lead_create_followup(request, pk):
     lead = get_object_or_404(Lead, pk=pk)
-    form = QuickTaskForm(request.POST, prefix="followup", staff_queryset=_staff_users())
+    form = QuickTaskForm(request.POST, prefix="followup", staff_queryset=_staff_users(), lead=lead)
     if form.is_valid():
         task = form.save(commit=False)
         task.lead = lead
@@ -1241,6 +1459,14 @@ def lead_create_followup(request, pk):
         task.save()
         record_activity("Task added", f"{lead.name} · {task.title}", actor=request.user, lead=lead)
         messages.success(request, "Task saved.")
+    else:
+        messages.error(request, "Please correct the task details and try again.")
+        return _render_dashboard_form_error(
+            request,
+            "leads",
+            {"follow_up_form": form},
+            selections={"lead": lead.pk},
+        )
     return _dashboard_redirect("leads", lead=lead.pk)
 
 
@@ -1250,6 +1476,8 @@ def _estimate_from_form(form, request):
     lead = form.cleaned_data.get("lead")
     if lead:
         estimate.client = lead.client
+    else:
+        estimate.client = form.cleaned_data.get("client")
     estimate.save()
     EstimateLineItem.objects.create(
         estimate=estimate,
@@ -1267,7 +1495,11 @@ def _estimate_from_form(form, request):
 @require_POST
 @staff_required
 def estimate_create(request):
-    form = EstimateCreateForm(request.POST, lead_queryset=Lead.objects.exclude(status=Lead.Status.LOST))
+    form = EstimateCreateForm(
+        request.POST,
+        lead_queryset=Lead.objects.exclude(status=Lead.Status.LOST),
+        client_queryset=Client.objects.all(),
+    )
     if form.is_valid():
         with transaction.atomic():
             estimate = _estimate_from_form(form, request)
@@ -1280,8 +1512,13 @@ def estimate_create(request):
             )
         messages.success(request, f"Estimate #{estimate.number} created.")
         return _dashboard_redirect("estimates", estimate=estimate.pk)
-    messages.error(request, "Please provide an estimate title and lead.")
-    return _dashboard_redirect("estimates", new="estimate")
+    messages.error(request, "Please provide an estimate title and lead or client.")
+    return _render_dashboard_form_error(
+        request,
+        "estimates",
+        {"estimate_create_form": form},
+        new="estimate",
+    )
 
 
 def _estimate_formset_total(formset):
@@ -1343,20 +1580,70 @@ def estimate_update(request, pk):
             messages.success(request, "Estimate changes saved.")
             return _dashboard_redirect("estimates", estimate=estimate.pk)
     messages.error(request, "Please correct the estimate fields and line items.")
-    return _dashboard_redirect("estimates", estimate=estimate.pk)
+    return _render_dashboard_form_error(
+        request,
+        "estimates",
+        {"estimate_form": form, "estimate_line_formset": formset},
+        selections={"estimate": estimate.pk},
+    )
 
 
 @require_POST
 @staff_required
 def estimate_send(request, pk):
-    estimate = get_object_or_404(Estimate, pk=pk)
+    estimate = get_object_or_404(Estimate.objects.select_related("lead", "client"), pk=pk)
     if estimate.status == Estimate.Status.ACCEPTED:
         messages.info(request, "This estimate has already been accepted.")
-    else:
+        return _dashboard_redirect("estimates", estimate=estimate.pk)
+
+    # The dashboard uses the same form for Save and Mark ready. Persist the
+    # submitted scope before changing visibility in the client portal.
+    has_editor_payload = "title" in request.POST or "lines-TOTAL_FORMS" in request.POST
+    form = EstimateForm(request.POST, instance=estimate) if has_editor_payload else None
+    formset = (
+        EstimateLineItemFormSet(request.POST, instance=estimate, prefix="lines")
+        if has_editor_payload
+        else None
+    )
+    if has_editor_payload and (not form.is_valid() or not formset.is_valid()):
+        messages.error(request, "Please correct the estimate fields and line items before sending.")
+        return _render_dashboard_form_error(
+            request,
+            "estimates",
+            {"estimate_form": form, "estimate_line_formset": formset},
+            selections={"estimate": estimate.pk},
+        )
+
+    if form is not None:
+        total = _estimate_formset_total(formset)
+        if form.cleaned_data["deposit_amount"] > total:
+            form.add_error("deposit_amount", "Deposit amount cannot exceed the estimate total.")
+            messages.error(request, "Please correct the estimate fields and line items before sending.")
+            return _render_dashboard_form_error(
+                request,
+                "estimates",
+                {"estimate_form": form, "estimate_line_formset": formset},
+                selections={"estimate": estimate.pk},
+            )
+
+    with transaction.atomic():
+        estimate = Estimate.objects.select_for_update().get(pk=estimate.pk)
         previous_status = estimate.status
-        estimate.status = Estimate.Status.SENT
+        if form is not None:
+            # The form was validated before the row lock. Copy its cleaned
+            # values onto the locked instance explicitly so the submitted
+            # title, notes, and deposit are not lost when marking it ready.
+            for field_name in EstimateForm.Meta.fields:
+                setattr(estimate, field_name, form.cleaned_data[field_name])
+            estimate.status = Estimate.Status.SENT
+            estimate.save()
+            formset.instance = estimate
+            formset.save()
+        else:
+            estimate.status = Estimate.Status.SENT
+            estimate.save(update_fields=["status", "updated_at"])
         _apply_estimate_status(estimate, previous_status, request.user)
-        messages.success(request, f"Estimate #{estimate.number} is ready in the client portal.")
+    messages.success(request, f"Estimate #{estimate.number} is ready in the client portal.")
     return _dashboard_redirect("estimates", estimate=estimate.pk)
 
 
@@ -1368,14 +1655,21 @@ def project_create(request):
         project = form.save(commit=False)
         if project.lead_id and not project.estimate_id:
             project.estimate = project.lead.estimates.filter(status=Estimate.Status.ACCEPTED).order_by("-accepted_at").first()
+        if project.lead_id and not project.client_id:
+            project.client = project.lead.client
+        if project.estimate_id and not project.client_id:
+            project.client = project.estimate.client
         project.created_by = request.user
         project.save()
+        # ModelForm.save(commit=False) postpones the many-to-many write. The
+        # assigned team is part of project creation, so persist it now.
+        form.save_m2m()
         _create_default_milestones(project)
         record_activity("Project created", f"{project.title} · just now", actor=request.user, project=project)
         messages.success(request, f"{project.title} was created.")
         return _dashboard_redirect("projects", project=project.pk)
     messages.error(request, "Please correct the project details and try again.")
-    return _dashboard_redirect("projects", new="project")
+    return _render_dashboard_form_error(request, "projects", {"project_form": form}, new="project")
 
 
 def _create_default_milestones(project, approved=False):
@@ -1427,12 +1721,18 @@ def estimate_create_project(request, pk):
 def project_update(request, pk):
     project = get_object_or_404(Project, pk=pk)
     form_data = request.POST.copy()
-    for field_name in ("location", "project_type", "is_published", "start_date", "target_date"):
+    for field_name in ("location", "project_type", "start_date", "target_date"):
         if field_name not in form_data:
             value = getattr(project, field_name)
-            form_data[field_name] = "on" if field_name == "is_published" and value else str(value or "")
+            form_data[field_name] = str(value or "")
+    if "is_published" not in form_data:
+        # An unchecked checkbox is intentionally absent from POST data. The
+        # owner must be able to take a published project off the public site.
+        form_data["is_published"] = ""
     if "assigned_staff" not in form_data:
-        form_data.setlist("assigned_staff", [str(user_id) for user_id in project.assigned_staff.values_list("pk", flat=True)])
+        # An empty multi-select is intentionally absent from POST data too;
+        # treat it as clearing assignments rather than preserving stale ones.
+        form_data.setlist("assigned_staff", [])
     if "lead" not in form_data and project.lead_id:
         form_data["lead"] = str(project.lead_id)
     form = ProjectForm(form_data, instance=project, staff_queryset=_staff_users())
@@ -1442,6 +1742,12 @@ def project_update(request, pk):
         messages.success(request, "Project details saved.")
     else:
         messages.error(request, "Please correct the project fields and try again.")
+        return _render_dashboard_form_error(
+            request,
+            "projects",
+            {"project_form": form},
+            selections={"project": project.pk},
+        )
     return _dashboard_redirect("projects", project=project.pk)
 
 
@@ -1465,19 +1771,23 @@ def milestone_toggle(request, pk):
 @require_POST
 @staff_or_field_required
 def project_add_update(request, pk):
+    team_mode = request.path.startswith("/team/")
+    if not team_mode and not _can_access_dashboard(request.user):
+        raise PermissionDenied
     project = get_object_or_404(_visible_projects_for_user(request.user), pk=pk)
-    if _is_field_employee(request.user) and not project.assigned_staff.filter(pk=request.user.pk).exists():
+    if team_mode and not project.assigned_staff.filter(pk=request.user.pk).exists():
         raise PermissionDenied
     form = ProjectUpdateForm(request.POST)
     if form.is_valid():
         update = form.save(commit=False)
-        if _is_field_employee(request.user):
+        if team_mode:
             update.visibility = ProjectUpdate.Visibility.INTERNAL
         update.project = project
         update.created_by = request.user
         update.save()
-        project.next_step = update.title
-        project.save(update_fields=["next_step", "updated_at"])
+        if not team_mode:
+            project.next_step = update.title
+            project.save(update_fields=["next_step", "updated_at"])
         record_activity(
             "Project update added",
             f"{project.title} · {update.get_visibility_display()}",
@@ -1487,6 +1797,12 @@ def project_add_update(request, pk):
         messages.success(request, "Project update published to the selected audience.")
     else:
         messages.error(request, "Please add a title and update message.")
+        return _render_workspace_form_error(
+            request,
+            "projects",
+            {"project_update_form": form},
+            selections={"project": project.pk},
+        )
     return _workspace_redirect(request, "projects", project=project.pk)
 
 
@@ -1508,13 +1824,14 @@ def project_create_invite(request, pk):
 @require_POST
 @staff_or_field_required
 def media_upload(request):
+    team_mode = request.path.startswith("/team/")
+    if not team_mode and not _can_access_dashboard(request.user):
+        raise PermissionDenied
     project_queryset = _visible_projects_for_user(request.user)
     form = MediaUploadForm(request.POST, request.FILES, project_queryset=project_queryset)
     if form.is_valid():
         project = form.cleaned_data["project"]
-        visibility = form.cleaned_data["visibility"]
-        if _is_field_employee(request.user) and visibility == MediaAsset.Visibility.PUBLIC:
-            raise PermissionDenied
+        visibility = MediaAsset.Visibility.INTERNAL if team_mode else form.cleaned_data["visibility"]
         created = []
         for upload in form.cleaned_data["files"]:
             content_type = (getattr(upload, "content_type", "") or "").lower()
@@ -1530,28 +1847,47 @@ def media_upload(request):
             created.append(asset)
         record_activity("Project media uploaded", f"{len(created)} file(s) · {project.title}", actor=request.user, project=project)
         messages.success(request, f"{len(created)} media file(s) added to {project.title}.")
-        return _dashboard_redirect("media", media_project=project.pk)
+        return _workspace_redirect(request, "media", media_project=project.pk)
     messages.error(request, "Please choose a project and valid media files.")
-    return _dashboard_redirect("media")
+    return _render_workspace_form_error(
+        request,
+        "media",
+        {"media_upload_form": form},
+        selections={"media_project": request.POST.get("project")},
+    )
 
 
 @require_POST
 @staff_or_field_required
 def media_edit(request, pk):
+    team_mode = request.path.startswith("/team/")
+    if not team_mode and not _can_access_dashboard(request.user):
+        raise PermissionDenied
     asset = get_object_or_404(MediaAsset, pk=pk)
     project_queryset = _visible_projects_for_user(request.user)
-    if _is_field_employee(request.user) and not asset.project_id in set(project_queryset.values_list("pk", flat=True)):
+    if team_mode and (
+        not asset.project_id
+        or not project_queryset.filter(pk=asset.project_id).exists()
+    ):
         raise PermissionDenied
     form = MediaEditForm(request.POST, instance=asset, project_queryset=project_queryset)
     if form.is_valid():
-        if _is_field_employee(request.user) and form.cleaned_data["visibility"] == MediaAsset.Visibility.PUBLIC:
-            raise PermissionDenied
-        asset = form.save()
+        if team_mode:
+            asset.caption = form.cleaned_data["caption"]
+            asset.save(update_fields=["caption", "updated_at"])
+        else:
+            asset = form.save()
         record_activity("Media details updated", f"{asset.title} · {asset.get_visibility_display()}", actor=request.user, project=asset.project)
         messages.success(request, "Media details saved.")
     else:
         messages.error(request, "Please correct the media details and try again.")
-    return _dashboard_redirect("media", media_project=asset.project_id)
+        return _render_workspace_form_error(
+            request,
+            "media",
+            {"media_edit_form": form},
+            selections={"media_project": asset.project_id},
+        )
+    return _workspace_redirect(request, "media", media_project=asset.project_id)
 
 
 @require_POST
@@ -1581,11 +1917,13 @@ def content_update(request):
         messages.success(request, "Public website content updated.")
     else:
         messages.error(request, "Please correct the content fields and try again.")
+        return _render_dashboard_form_error(request, "content", {"content_form": form})
     return _dashboard_redirect("content")
 
 
 @require_GET
 def public_project_detail(request, pk):
+    _logout_admin_from_public_site(request)
     project = get_object_or_404(
         Project.objects.select_related("client").prefetch_related("milestones", "updates", "media_assets"),
         pk=pk,
@@ -1599,6 +1937,7 @@ def public_project_detail(request, pk):
         "project": project,
         "public_media": public_media,
         "site_settings": _site_settings(),
+        "public_dashboard_url": _public_dashboard_url(request.user),
     })
 
 
@@ -1609,10 +1948,13 @@ def project_cover_file(request, pk):
     if request.user.is_authenticated and request.user.is_staff:
         allowed = bool(
             _can_access_dashboard(request.user)
-            or project.assigned_staff.filter(pk=request.user.pk).exists()
+            or (
+                _can_access_team(request.user)
+                and project.assigned_staff.filter(pk=request.user.pk).exists()
+            )
         )
     elif (
-        request.user.is_authenticated
+        _is_active_client(request.user)
         and project.client_id
         and project.client
         and project.client.user_id == request.user.id
@@ -1658,16 +2000,33 @@ def _portal_client(request):
 def portal(request):
     client = _portal_client(request)
     if client is None:
-        return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": []})
+        return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": [], "portal_estimates": [], "portal_messages": []})
     projects = list(
         Project.objects.filter(client=client)
         .select_related("estimate")
         .prefetch_related("milestones", "updates", "media_assets", "documents", "messages")
     )
+    portal_estimates = list(
+        Estimate.objects.filter(client=client)
+        .exclude(status=Estimate.Status.DRAFT)
+        .select_related("lead")
+        .prefetch_related("line_items", "projects")
+    )
+    for estimate in portal_estimates:
+        estimate.portal_project = estimate.projects.order_by("-created_at").first()
+    requested_estimate = next(
+        (estimate for estimate in portal_estimates if str(estimate.pk) == request.GET.get("estimate")),
+        None,
+    ) if request.GET.get("estimate") else None
     selected_project = None
     if request.GET.get("project"):
         selected_project = next((project for project in projects if str(project.pk) == request.GET["project"]), None)
-    if selected_project is None and projects:
+    elif requested_estimate and requested_estimate.portal_project:
+        selected_project = next(
+            (project for project in projects if project.pk == requested_estimate.portal_project.pk),
+            None,
+        )
+    if selected_project is None and not requested_estimate and projects:
         selected_project = projects[0]
     updates = list(selected_project.updates.filter(visibility=ProjectUpdate.Visibility.CLIENT)[:8]) if selected_project else []
     media = list(
@@ -1680,16 +2039,25 @@ def portal(request):
         selected_project.display_image = _project_image(selected_project)
         for media_item in media:
             media_item.display_url = reverse("operations:media-file", kwargs={"pk": media_item.pk})
-    portal_estimate = None
-    if selected_project and selected_project.estimate and selected_project.estimate.client_id == client.id:
-        portal_estimate = selected_project.estimate
+    portal_estimate = requested_estimate
+    if portal_estimate is None and selected_project and selected_project.estimate:
+        portal_estimate = next(
+            (estimate for estimate in portal_estimates if estimate.pk == selected_project.estimate_id),
+            None,
+        )
+    if portal_estimate is None and not selected_project and portal_estimates:
+        portal_estimate = portal_estimates[0]
     portal_documents = list(selected_project.documents.filter(visibility=ProjectDocument.Visibility.CLIENT)[:12]) if selected_project else []
-    portal_messages = list(selected_project.messages.select_related("sent_by")[:20]) if selected_project else list(client.messages.select_related("project", "sent_by")[:20])
+    # Conversations are client-wide, with an optional project relationship.
+    # This keeps general questions and pre-project estimate discussions visible
+    # to the same client without duplicating messages in the portal.
+    portal_messages = list(client.messages.select_related("project", "sent_by")[:30])
     if not request.user.is_staff:
         ClientMessage.objects.filter(client=client, sent_by__is_staff=True, is_read=False).update(is_read=True)
     return render(request, "operations/portal.html", {
         "portal_client": client,
         "portal_projects": projects,
+        "portal_estimates": portal_estimates,
         "portal_project": selected_project,
         "portal_estimate": portal_estimate,
         "portal_updates": updates,
@@ -1710,30 +2078,34 @@ def _client_can_access_estimate(request, estimate):
 @require_POST
 @login_required
 def portal_accept_estimate(request, pk):
-    if request.user.is_staff:
+    if not _is_active_client(request.user):
         raise PermissionDenied
     estimate = get_object_or_404(Estimate.objects.select_related("client", "lead"), pk=pk)
     if not _client_can_access_estimate(request, estimate):
         raise PermissionDenied
     if estimate.status == Estimate.Status.SENT:
-        estimate.status = Estimate.Status.ACCEPTED
-        estimate.accepted_at = timezone.now()
-        estimate.accepted_by = request.user
-        estimate.save(update_fields=["status", "accepted_at", "accepted_by", "updated_at"])
-        record_activity("Estimate accepted by client", f"Estimate #{estimate.number}", actor=request.user, estimate=estimate)
+        with transaction.atomic():
+            estimate = Estimate.objects.select_for_update().get(pk=estimate.pk)
+            if estimate.status == Estimate.Status.SENT:
+                estimate.status = Estimate.Status.ACCEPTED
+                estimate.accepted_at = timezone.now()
+                estimate.accepted_by = request.user
+                estimate.save(update_fields=["status", "accepted_at", "accepted_by", "updated_at"])
+                record_activity("Estimate accepted by client", f"Estimate #{estimate.number}", actor=request.user, estimate=estimate)
         messages.success(request, "Estimate accepted. Your project team will follow up with next steps.")
     else:
         messages.info(request, "This estimate is not currently awaiting acceptance.")
-    return redirect("operations:portal")
+    portal_url = reverse("operations:portal")
+    return redirect(f"{portal_url}?estimate={estimate.pk}")
 
 
 @require_POST
 @login_required
 def portal_send_message(request):
-    if request.user.is_staff:
+    if not _is_active_client(request.user):
         raise PermissionDenied
     client = _portal_client(request)
-    if client is None or (not request.user.is_staff and client.user_id != request.user.id):
+    if client is None or client.user_id != request.user.id:
         raise PermissionDenied
     project = None
     if request.POST.get("project"):
@@ -1749,7 +2121,13 @@ def portal_send_message(request):
         messages.success(request, "Your message was added to the project conversation.")
     else:
         messages.error(request, "Please add a message before sending.")
-    return redirect("operations:portal")
+    portal_url = reverse("operations:portal")
+    query = {}
+    if project:
+        query["project"] = project.pk
+    if request.POST.get("estimate"):
+        query["estimate"] = request.POST["estimate"]
+    return redirect(f"{portal_url}?{urlencode(query)}" if query else portal_url)
 
 
 def client_invite(request, token):
@@ -1780,10 +2158,15 @@ def media_file(request, pk):
     if request.user.is_authenticated and request.user.is_staff:
         allowed = bool(
             _can_access_dashboard(request.user)
-            or (asset.project_id and asset.project and asset.project.assigned_staff.filter(pk=request.user.pk).exists())
+            or (
+                _can_access_team(request.user)
+                and asset.project_id
+                and asset.project
+                and asset.project.assigned_staff.filter(pk=request.user.pk).exists()
+            )
         )
     if (
-        request.user.is_authenticated
+        _is_active_client(request.user)
         and asset.visibility == MediaAsset.Visibility.CLIENT
         and asset.project
         and asset.project.client

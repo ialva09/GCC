@@ -1,4 +1,4 @@
-from django.contrib.auth.views import LogoutView, PasswordChangeView
+from django.contrib.auth.views import LogoutView
 from django.urls import path, reverse_lazy
 
 from . import views
@@ -14,7 +14,7 @@ urlpatterns = [
     path("contact/", views.public_page, {"page": "contact"}, name="contact"),
     path("accounts/login/", views.GrandCoastLoginView.as_view(), name="login"),
     path("accounts/logout/", LogoutView.as_view(next_page=reverse_lazy("operations:home")), name="logout"),
-    path("accounts/password/change/", PasswordChangeView.as_view(template_name="operations/password_change.html", success_url=reverse_lazy("operations:team")), name="password-change"),
+    path("accounts/password/change/", views.GrandCoastPasswordChangeView.as_view(), name="password-change"),
     path("dashboard/", views.dashboard, name="dashboard"),
     path("dashboard/<slug:section>/", views.dashboard, name="dashboard-section"),
     path("dashboard/clients/create/", views.client_create, name="client-create"),
@@ -29,6 +29,7 @@ urlpatterns = [
     path("dashboard/tasks/<uuid:pk>/status/", views.task_set_status, name="task-status"),
     path("dashboard/calendar/create/", views.schedule_create, name="schedule-create"),
     path("dashboard/calendar/<uuid:pk>/update/", views.schedule_update, name="schedule-update"),
+    path("dashboard/calendar/<uuid:pk>/delete/", views.schedule_delete, name="schedule-delete"),
     path("dashboard/time/clock/", views.time_clock, name="time-clock"),
     path("team/time/clock/", views.time_clock, name="team-time-clock"),
     path("dashboard/time/<uuid:pk>/update/", views.time_update, name="time-update"),
