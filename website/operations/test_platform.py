@@ -6,6 +6,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -21,6 +22,8 @@ from django.utils import timezone
 
 from .forms import ProjectDocumentForm, ProjectForm
 from .models import (
+    AdminRecoveryToken,
+    AdminSecurityProfile,
     Activity,
     Client as ClientRecord,
     ClientMessage,
@@ -49,7 +52,11 @@ from .services import (
 TEST_MEDIA_ROOT = Path(tempfile.mkdtemp(prefix='gcc-platform-tests-'))
 
 
-@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
+@override_settings(
+    MEDIA_ROOT=TEST_MEDIA_ROOT,
+    CLOUDFLARE_TURNSTILE_SITE_KEY="",
+    CLOUDFLARE_TURNSTILE_SECRET_KEY="",
+)
 class PlatformWorkflowTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -328,6 +335,126 @@ class PlatformWorkflowTests(TestCase):
         self.assertEqual(owner_response.status_code, 200)
         self.assertContains(owner_response, 'Please enter a correct username and password.')
         self.assertNotContains(owner_response, '%(username)s')
+
+    @override_settings(
+        CLOUDFLARE_TURNSTILE_SITE_KEY="test-site-key",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    )
+    def test_website_turnstile_protects_login_and_contact_but_not_mobile_webview(self):
+        contact_data = {
+            "first_name": "Test",
+            "last_name": "Lead",
+            "email": "turnstile@example.com",
+            "phone": "805-555-0199",
+            "project_type": "Remodel",
+            "location": "Ventura, CA",
+            "message": "Please contact me about a project.",
+        }
+        lead_count = Lead.objects.count()
+        blocked_contact = self.browser.post(
+            reverse("operations:contact"),
+            contact_data,
+        )
+        self.assertEqual(blocked_contact.status_code, 200)
+        self.assertContains(blocked_contact, "Complete the security check and try again.")
+        self.assertEqual(Lead.objects.count(), lead_count)
+
+        contact_page = self.browser.get(reverse("operations:contact"))
+        self.assertContains(
+            contact_page,
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+        )
+        self.assertContains(contact_page, 'data-sitekey="test-site-key"')
+        self.assertContains(contact_page, 'data-action="contact"')
+
+        login_browser = DjangoClient()
+        login_page = login_browser.get(reverse("operations:login"))
+        self.assertContains(login_page, 'data-sitekey="test-site-key"')
+        self.assertContains(login_page, 'data-action="login"')
+        blocked_login = login_browser.post(
+            reverse("operations:login"),
+            {"username": self.field.username, "password": "field-pass-123"},
+        )
+        self.assertEqual(blocked_login.status_code, 200)
+        self.assertContains(blocked_login, "Complete the security check and try again.")
+
+        with patch("operations.forms.verify_turnstile_request", return_value=True):
+            allowed_login = login_browser.post(
+                reverse("operations:login"),
+                {
+                    "username": self.field.username,
+                    "password": "field-pass-123",
+                    "cf-turnstile-response": "valid-login-token",
+                },
+            )
+        self.assertRedirects(allowed_login, reverse("operations:team"))
+
+        with patch("operations.forms.verify_turnstile_request", return_value=True):
+            allowed_contact = self.browser.post(
+                reverse("operations:contact"),
+                {
+                    **contact_data,
+                    "cf-turnstile-response": "valid-contact-token",
+                },
+            )
+        self.assertRedirects(allowed_contact, reverse("operations:contact"))
+        self.assertEqual(Lead.objects.count(), lead_count + 1)
+
+        mobile_browser = DjangoClient(HTTP_USER_AGENT="GrandCoastMobile/1.0")
+        mobile_login_page = mobile_browser.get(reverse("operations:login"))
+        self.assertNotContains(mobile_login_page, "cf-turnstile")
+        mobile_login = mobile_browser.post(
+            reverse("operations:login"),
+            {"username": self.field.username, "password": "field-pass-123"},
+        )
+        self.assertRedirects(mobile_login, reverse("operations:team"))
+        mobile_contact_page = mobile_browser.get(reverse("operations:contact"))
+        self.assertNotContains(mobile_contact_page, "cf-turnstile")
+
+        native_header_browser = DjangoClient(HTTP_X_GRAND_COAST_MOBILE="1")
+        native_header_login_page = native_header_browser.get(reverse("operations:login"))
+        self.assertNotContains(native_header_login_page, "cf-turnstile")
+        native_header_login = native_header_browser.post(
+            reverse("operations:login"),
+            {"username": self.field.username, "password": "field-pass-123"},
+        )
+        self.assertRedirects(native_header_login, reverse("operations:team"))
+        native_header_contact = native_header_browser.post(
+            reverse("operations:contact"),
+            {**contact_data, "email": "native-header@example.com"},
+        )
+        self.assertRedirects(native_header_contact, reverse("operations:contact"))
+        self.assertEqual(Lead.objects.count(), lead_count + 2)
+
+    @override_settings(
+        CLOUDFLARE_TURNSTILE_SITE_KEY="test-site-key",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    )
+    def test_turnstile_verifier_posts_token_to_cloudflare(self):
+        cloudflare_response = MagicMock()
+        cloudflare_response.__enter__.return_value = cloudflare_response
+        cloudflare_response.__exit__.return_value = None
+        cloudflare_response.read.return_value = b'{"success": true, "action": "login"}'
+
+        browser = DjangoClient()
+        with patch("operations.turnstile.urlopen", return_value=cloudflare_response) as open_url:
+            response = browser.post(
+                reverse("operations:login"),
+                {
+                    "username": self.field.username,
+                    "password": "field-pass-123",
+                    "cf-turnstile-response": "server-token",
+                },
+            )
+
+        self.assertRedirects(response, reverse("operations:team"))
+        verification_request = open_url.call_args.args[0]
+        self.assertEqual(
+            verification_request.full_url,
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+        )
+        self.assertEqual(verification_request.method, "POST")
+        self.assertIn(b"response=server-token", verification_request.data)
 
     def test_public_navigation_logs_out_owner_and_routes_staff_or_clients_to_dashboard(self):
         public_response = self.browser.get(reverse('operations:home'))
@@ -1217,6 +1344,136 @@ class PlatformWorkflowTests(TestCase):
         for page in ('home', 'services', 'projects', 'process', 'contact'):
             response = self.browser.get(reverse(f'operations:{page}'))
             self.assertEqual(response.status_code, 200, page)
+
+
+    def test_employee_account_controls_and_legal_pages_are_available(self):
+        self.login(self.field)
+        overview = self.browser.get(reverse('operations:team'))
+        self.assertContains(overview, 'Manage your access')
+        self.assertContains(overview, reverse('operations:account-delete'))
+        self.assertContains(overview, 'Log out')
+
+        delete_page = self.browser.get(reverse('operations:account-delete'))
+        self.assertEqual(delete_page.status_code, 200)
+        self.assertContains(delete_page, 'Current password')
+        self.assertContains(delete_page, 'Type DELETE to confirm')
+
+        for page in ('privacy', 'terms'):
+            response = self.browser.get(reverse(f'operations:{page}'))
+            self.assertEqual(response.status_code, 200, page)
+
+        self.login(self.client_user)
+        self.assertEqual(self.browser.get(reverse('operations:account-delete')).status_code, 403)
+        self.login(self.owner)
+        self.assertEqual(self.browser.get(reverse('operations:account-delete')).status_code, 403)
+        self.browser.logout()
+        anonymous = self.browser.get(reverse('operations:account-delete'))
+        self.assertEqual(anonymous.status_code, 302)
+
+    def test_employee_account_delete_requires_exact_confirmation_and_password(self):
+        self.login(self.field)
+        original = {
+            'username': self.field.username,
+            'email': self.field.email,
+            'first_name': self.field.first_name,
+        }
+
+        for password, confirmation in (
+            ('wrong-password', 'DELETE'),
+            ('field-pass-123', 'delete'),
+        ):
+            response = self.browser.post(
+                reverse('operations:account-delete'),
+                {'password': password, 'confirmation': confirmation},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.field.refresh_from_db()
+            self.assertTrue(self.field.is_active)
+            self.assertTrue(self.field.is_staff)
+            self.assertEqual(self.field.username, original['username'])
+            self.assertEqual(self.field.email, original['email'])
+            self.assertEqual(self.field.first_name, original['first_name'])
+
+    def test_employee_account_delete_anonymizes_user_and_preserves_history(self):
+        self.login(self.field)
+        profile = self.field.employee_profile
+        field_group = Group.objects.get(name='Field')
+        AdminSecurityProfile.objects.create(user=self.field, pin_enabled=True, pin_hash='hashed-pin')
+        AdminRecoveryToken.objects.create(
+            user=self.field,
+            token_hash='f' * 64,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        EmployeeInvite.objects.create(
+            employee=profile,
+            email=self.field.email,
+            first_name=self.field.first_name,
+            last_name=self.field.last_name,
+            group=field_group,
+            token_hash='e' * 64,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        time_entry = TimeEntry.objects.create(
+            employee=self.field,
+            project=self.project,
+            task=self.task,
+            clock_in=timezone.now() - timedelta(hours=2),
+            clock_out=timezone.now() - timedelta(hours=1),
+        )
+        activity = Activity.objects.create(
+            message='Field report retained',
+            detail='History survives account deletion',
+            actor=self.field,
+            project=self.project,
+        )
+        user_id = self.field.pk
+
+        response = self.browser.post(
+            reverse('operations:account-delete'),
+            {'password': 'field-pass-123', 'confirmation': 'DELETE'},
+        )
+        self.assertRedirects(response, reverse('operations:login'))
+        self.assertIsNone(self.browser.session.get('_auth_user_id'))
+
+        self.field.refresh_from_db()
+        profile.refresh_from_db()
+        self.assertEqual(self.field.pk, user_id)
+        self.assertTrue(self.field.username.startswith('deleted-account-'))
+        self.assertFalse(self.field.is_active)
+        self.assertFalse(self.field.is_staff)
+        self.assertFalse(self.field.is_superuser)
+        self.assertEqual(self.field.email, '')
+        self.assertEqual(self.field.first_name, '')
+        self.assertEqual(self.field.last_name, '')
+        self.assertFalse(self.field.has_usable_password())
+        self.assertFalse(self.field.groups.exists())
+        self.assertFalse(self.field.user_permissions.exists())
+        self.assertFalse(profile.is_active)
+        self.assertEqual(profile.job_title, '')
+        self.assertEqual(profile.phone, '')
+        self.assertFalse(EmployeeInvite.objects.filter(employee=profile).exists())
+        self.assertFalse(AdminRecoveryToken.objects.filter(user=self.field).exists())
+        security_profile = AdminSecurityProfile.objects.get(user=self.field)
+        self.assertFalse(security_profile.pin_enabled)
+        self.assertEqual(security_profile.pin_hash, '')
+
+        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
+        self.assertEqual(Task.objects.get(pk=self.task.pk).assigned_to_id, user_id)
+        self.assertTrue(self.project.assigned_staff.filter(pk=user_id).exists())
+        self.assertTrue(TimeEntry.objects.filter(pk=time_entry.pk, employee_id=user_id).exists())
+        self.assertEqual(Activity.objects.get(pk=activity.pk).actor_id, user_id)
+
+        rejected_login = self.browser.post(
+            reverse('operations:login'),
+            {'username': 'platform-field', 'password': 'field-pass-123'},
+        )
+        self.assertEqual(rejected_login.status_code, 200)
+        self.assertContains(rejected_login, 'Please enter a correct username and password.')
+
+    def test_post_logout_redirects_to_sign_in(self):
+        self.login(self.field)
+        response = self.browser.post(reverse('operations:logout'))
+        self.assertRedirects(response, reverse('operations:login'))
 
 
 class SeedOperationsTests(TestCase):

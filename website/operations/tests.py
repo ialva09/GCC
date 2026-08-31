@@ -38,7 +38,11 @@ from .services import create_client_invite
 TEST_MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="gcc-operations-tests-"))
 
 
-@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
+@override_settings(
+    MEDIA_ROOT=TEST_MEDIA_ROOT,
+    CLOUDFLARE_TURNSTILE_SITE_KEY="",
+    CLOUDFLARE_TURNSTILE_SECRET_KEY="",
+)
 class OperationsWorkflowTests(TestCase):
     @classmethod
     def setUpTestData(cls):

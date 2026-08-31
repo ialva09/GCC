@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Grand Coast Construction",
+    "slug": "grand-coast-construction",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "scheme": "grandcoast",
+    "ios": {
+      "supportsTablet": false
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/gcc-logo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ]
+    ]
+  }
+}

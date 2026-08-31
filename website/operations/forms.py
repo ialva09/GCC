@@ -29,6 +29,7 @@ from .models import (
     TimeEntry,
     validate_uploaded_media,
 )
+from .turnstile import TURNSTILE_ERROR_MESSAGE, verify_turnstile_request
 
 
 class MultipleFileInput(forms.FileInput):
@@ -60,6 +61,16 @@ class ContactLeadForm(forms.Form):
     location = forms.CharField(max_length=160)
     message = forms.CharField(widget=forms.Textarea)
     photos = MultipleFileField(required=False)
+
+    def __init__(self, *args, request=None, **kwargs):
+        self.request = request
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.errors and not verify_turnstile_request(self.request, expected_action="contact"):
+            raise ValidationError(TURNSTILE_ERROR_MESSAGE)
+        return cleaned
 
 
 class LeadForm(forms.ModelForm):
@@ -332,6 +343,35 @@ class EmployeeProfileForm(forms.ModelForm):
             self.fields.pop("is_active", None)
 
 
+class AccountDeleteForm(forms.Form):
+    password = forms.CharField(
+        label="Current password",
+        strip=False,
+        widget=forms.PasswordInput(attrs={"autocomplete": "current-password"}),
+    )
+    confirmation = forms.CharField(
+        label='Type DELETE to confirm',
+        max_length=6,
+        widget=forms.TextInput(attrs={"autocomplete": "off", "spellcheck": "false"}),
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.user = user
+
+    def clean_password(self):
+        password = self.cleaned_data.get("password", "")
+        if not self.user or not self.user.check_password(password):
+            raise ValidationError("Enter your current password to continue.")
+        return password
+
+    def clean_confirmation(self):
+        confirmation = self.cleaned_data.get("confirmation", "")
+        if confirmation != "DELETE":
+            raise ValidationError('Type DELETE exactly to confirm account deletion.')
+        return confirmation
+
+
 class EmployeeInviteForm(forms.ModelForm):
     class Meta:
         model = EmployeeInvite
@@ -456,6 +496,11 @@ class ClientInviteAcceptForm(forms.Form):
 
 
 class PublicAuthenticationForm(AuthenticationForm):
+    def clean(self):
+        if not verify_turnstile_request(self.request, expected_action="login"):
+            raise ValidationError(TURNSTILE_ERROR_MESSAGE)
+        return super().clean()
+
     def confirm_login_allowed(self, user):
         if user.is_superuser:
             raise self.get_invalid_login_error()

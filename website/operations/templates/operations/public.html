@@ -3,6 +3,7 @@
 
 {% block title %}{% if page == "home" %}Building with confidence | {% elif page == "services" %}Services | {% elif page == "projects" %}Projects | {% elif page == "process" %}Our process | {% else %}Request an estimate | {% endif %}Grand Coast Construction Inc.{% endblock %}
 {% block body_class %}public-site{% endblock %}
+{% block extra_head %}{% if page == "contact" and turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}{% endblock %}
 
 {% block body %}
 <div class="staging-bar">
@@ -90,7 +91,7 @@
         <div class="form-row"><label>Project type{{ contact_form.project_type }}{{ contact_form.project_type.errors }}</label><label>Location{{ contact_form.location }}{{ contact_form.location.errors }}</label></div>
         <label>Tell us about the project{{ contact_form.message }}{{ contact_form.message.errors }}</label>
         <label class="file-drop"><span class="file-drop-icon">+</span><span><strong>Add reference photos</strong><small>Optional · JPG, PNG, WEBP, GIF, HEIC, or video</small></span>{{ contact_form.photos }}</label>
-        <div class="form-footer"><span class="privacy-note">Your request stays with Grand Coast.</span><button class="button button-primary" type="submit">Send request <span aria-hidden="true">→</span></button></div>
+        <div class="form-footer"><span class="privacy-note">Your request stays with Grand Coast.</span><div class="form-submit-actions"><button class="button button-primary" type="submit">Send request <span aria-hidden="true">→</span></button>{% if turnstile_site_key %}<div class="turnstile-widget"><div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="contact"></div></div>{% endif %}</div></div>
     </form></div></section>
 {% endif %}
 </main>

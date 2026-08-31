@@ -23,7 +23,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.templatetags.static import static
 from django.urls import reverse
 from django.utils import timezone
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .forms import (
     ClientInviteAcceptForm,
@@ -37,6 +37,7 @@ from .forms import (
     EmployeeInviteForm,
     EmployeeInviteAcceptForm,
     EmployeeProfileForm,
+    AccountDeleteForm,
     LeadForm,
     LeadAssignmentForm,
     LeadNoteForm,
@@ -56,6 +57,8 @@ from .forms import (
 )
 from .models import (
     Activity,
+    AdminRecoveryToken,
+    AdminSecurityProfile,
     Client,
     ClientMessage,
     Estimate,
@@ -76,6 +79,7 @@ from .models import (
     Task,
     TimeEntry,
 )
+from .turnstile import get_turnstile_site_key
 from .services import (
     complete_client_invite,
     complete_employee_invite,
@@ -199,6 +203,26 @@ def _can_access_team(user):
     if not _is_active_staff(user):
         return False
     return bool(user.is_superuser or roles & EMPLOYEE_GROUPS)
+
+
+def _can_delete_employee_account(user):
+    roles = _group_names(user)
+    return bool(
+        _is_active_staff(user)
+        and not _is_owner(user)
+        and roles & EMPLOYEE_GROUPS
+    )
+
+
+def _deleted_account_username(user_id):
+    user_model = get_user_model()
+    base = f"deleted-account-{user_id}"
+    candidate = base[:150]
+    suffix = 1
+    while user_model.objects.filter(username=candidate).exclude(pk=user_id).exists():
+        candidate = f"{base}-{suffix}"[:150]
+        suffix += 1
+    return candidate
 
 
 def _can_view_clients(user):
@@ -326,9 +350,10 @@ def public_page(request, page="home"):
     context = _public_context()
     context["page"] = page
     context["public_dashboard_url"] = _public_dashboard_url(request.user)
-    context["contact_form"] = ContactLeadForm()
+    context["contact_form"] = ContactLeadForm(request=request)
+    context["turnstile_site_key"] = get_turnstile_site_key(request)
     if page == "contact" and request.method == "POST":
-        form = ContactLeadForm(request.POST, request.FILES)
+        form = ContactLeadForm(request.POST, request.FILES, request=request)
         context["contact_form"] = form
         if form.is_valid():
             full_name = f"{form.cleaned_data['first_name'].strip()} {form.cleaned_data['last_name'].strip()}".strip()
@@ -348,6 +373,23 @@ def public_page(request, page="home"):
             messages.success(request, "Thanks for sharing your project. We will be in touch soon.")
             return redirect("operations:contact")
     return render(request, "operations/public.html", context)
+
+
+LEGAL_PAGES = {
+    "privacy": "Privacy Policy",
+    "terms": "Terms of Service",
+}
+
+
+@require_GET
+def legal_page(request, page):
+    if page not in LEGAL_PAGES:
+        raise Http404
+    return render(
+        request,
+        "operations/legal.html",
+        {"page": page, "page_title": LEGAL_PAGES[page]},
+    )
 
 
 def staff_required(view_func):
@@ -400,6 +442,11 @@ def client_required(view_func):
 class GrandCoastLoginView(LoginView):
     template_name = "operations/login.html"
     authentication_form = PublicAuthenticationForm
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["turnstile_site_key"] = get_turnstile_site_key(self.request)
+        return context
 
     def get_success_url(self):
         if self.request.user.is_staff:
@@ -913,6 +960,68 @@ def team(request, section="overview"):
     if section not in TEAM_SECTIONS:
         section = "overview"
     return render(request, "operations/workspace.html", _workspace_context(request, section, team_mode=True))
+
+
+@require_http_methods(["GET", "POST"])
+@login_required
+def account_delete(request):
+    if not _can_delete_employee_account(request.user):
+        raise PermissionDenied
+
+    form = AccountDeleteForm(request.POST or None, user=request.user)
+    if request.method == "POST" and form.is_valid():
+        user_model = get_user_model()
+        with transaction.atomic():
+            user = user_model.objects.select_for_update().get(pk=request.user.pk)
+            if not _can_delete_employee_account(user):
+                raise PermissionDenied
+
+            EmployeeProfile.objects.filter(user=user).update(
+                job_title="",
+                phone="",
+                is_active=False,
+                updated_at=timezone.now(),
+            )
+            EmployeeInvite.objects.filter(
+                Q(employee__user=user) | Q(created_by=user),
+            ).delete()
+            AdminRecoveryToken.objects.filter(user=user).delete()
+            AdminSecurityProfile.objects.filter(user=user).update(
+                pin_enabled=False,
+                pin_hash="",
+                updated_at=timezone.now(),
+            )
+
+            user.groups.clear()
+            user.user_permissions.clear()
+            user.username = _deleted_account_username(user.pk)
+            user.first_name = ""
+            user.last_name = ""
+            user.email = ""
+            user.last_login = None
+            user.is_active = False
+            user.is_staff = False
+            user.is_superuser = False
+            user.set_unusable_password()
+            user.save(
+                update_fields=[
+                    "username",
+                    "first_name",
+                    "last_name",
+                    "email",
+                    "last_login",
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "password",
+                ],
+            )
+
+        logout(request)
+        messages.success(request, "Your employee account was deleted and personal details were anonymized.")
+        return redirect("operations:login")
+
+    return render(request, "operations/account_delete.html", {"form": form})
 
 
 @require_POST

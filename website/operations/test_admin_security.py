@@ -116,8 +116,10 @@ class PrivateAdminSecurityTests(TestCase):
             self.browser.session.get('gccad_gate_pending_pin'),
             str(self.admin_user.pk),
         )
-
-
+    @override_settings(
+        CLOUDFLARE_TURNSTILE_SITE_KEY="",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="",
+    )
     def test_public_login_rejects_superuser_without_creating_session(self):
         response = self.browser.post(
             reverse("operations:login"),
