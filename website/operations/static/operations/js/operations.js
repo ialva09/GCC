@@ -73,6 +73,733 @@
         });
     }
 
+    var calendarPickerEventsBound = false;
+    var calendarPickerSequence = 0;
+
+    function padCalendarNumber(value) {
+        var text = String(value);
+        return text.length < 2 ? "0" + text : text;
+    }
+
+    function makeCalendarDate(year, monthIndex, day) {
+        var date = new Date();
+        date.setHours(0, 0, 0, 0);
+        date.setFullYear(year, monthIndex, day);
+        return date;
+    }
+
+    function parseCalendarDate(value) {
+        var match = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(value || "");
+        if (!match) {
+            return null;
+        }
+        var date = makeCalendarDate(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+        return date.getFullYear() === Number(match[1]) &&
+            date.getMonth() === Number(match[2]) - 1 &&
+            date.getDate() === Number(match[3]) ? date : null;
+    }
+
+    function calendarDateValue(date) {
+        return date.getFullYear() + "-" + padCalendarNumber(date.getMonth() + 1) + "-" + padCalendarNumber(date.getDate());
+    }
+
+    function calendarDateLabel(value) {
+        var date = parseCalendarDate(value);
+        return date ? date.toLocaleDateString("en-US", {month: "short", day: "2-digit", year: "numeric"}) : "Choose a date";
+    }
+
+    function parseCalendarTime(value) {
+        var match = /^(\\d{2}):(\\d{2})$/.exec(value || "");
+        if (!match) {
+            return null;
+        }
+        var hour24 = Number(match[1]);
+        var minute = Number(match[2]);
+        if (hour24 > 23 || minute > 59) {
+            return null;
+        }
+        return {
+            hour: hour24 % 12 || 12,
+            minute: minute,
+            period: hour24 >= 12 ? "PM" : "AM",
+        };
+    }
+
+    function calendarTimeValue(time) {
+        var hour = time.hour % 12;
+        if (time.period === "PM") {
+            hour += 12;
+        }
+        return padCalendarNumber(hour) + ":" + padCalendarNumber(time.minute);
+    }
+
+    function calendarTimeLabel(value) {
+        var time = parseCalendarTime(value);
+        return time ? padCalendarNumber(time.hour) + ":" + padCalendarNumber(time.minute) + " " + time.period : "Select time";
+    }
+
+    function emitCalendarPickerChange(input) {
+        ["input", "change"].forEach(function (eventName) {
+            var event;
+            if (typeof Event === "function") {
+                event = new Event(eventName, {bubbles: true});
+            } else {
+                event = document.createEvent("Event");
+                event.initEvent(eventName, true, true);
+            }
+            input.dispatchEvent(event);
+        });
+    }
+
+    function createCalendarPickerButton(text, className, label) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = className;
+        button.textContent = text;
+        if (label) {
+            button.setAttribute("aria-label", label);
+        }
+        return button;
+    }
+
+    function closeCalendarPicker(picker) {
+        picker.popover.hidden = true;
+        picker.popover.classList.remove("is-open");
+        picker.shell.classList.remove("is-open");
+        picker.trigger.setAttribute("aria-expanded", "false");
+        picker.popover.style.top = "";
+        picker.popover.style.left = "";
+        picker.popover.style.width = "";
+    }
+
+    function closeAllCalendarPickers(except) {
+        each(".calendar-picker.is-open", function (shell) {
+            if (except && shell === except) {
+                return;
+            }
+            var popover = shell._calendarPicker && shell._calendarPicker.popover;
+            if (popover) {
+                closeCalendarPicker(shell._calendarPicker);
+            }
+        });
+    }
+
+    function positionCalendarPicker(picker) {
+        if (!picker || picker.popover.hidden) {
+            return;
+        }
+        var triggerBounds = picker.trigger.getBoundingClientRect();
+        var viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+        var viewportHeight = window.innerHeight;
+        var width = Math.min(360, Math.max(240, viewportWidth - 24));
+        var left = Math.min(Math.max(12, triggerBounds.left), viewportWidth - width - 12);
+        picker.popover.style.width = width + "px";
+        var height = picker.popover.offsetHeight;
+        var top = triggerBounds.bottom + 8;
+        if (viewportHeight - triggerBounds.bottom < height + 12 && triggerBounds.top > height + 12) {
+            top = triggerBounds.top - height - 8;
+        }
+        top = Math.min(Math.max(12, top), Math.max(12, viewportHeight - height - 12));
+        picker.popover.style.left = left + "px";
+        picker.popover.style.top = top + "px";
+    }
+
+    function bindCalendarPickerDocumentEvents() {
+        if (calendarPickerEventsBound) {
+            return;
+        }
+        document.addEventListener("click", function (event) {
+            var target = event.target;
+            if (target && target.closest && (target.closest(".calendar-picker") || target.closest(".calendar-picker-popover"))) {
+                return;
+            }
+            closeAllCalendarPickers();
+        });
+        document.addEventListener("keydown", function (event) {
+            if (event.key === "Escape") {
+                closeAllCalendarPickers();
+            }
+        });
+        window.addEventListener("resize", function () {
+            each(".calendar-picker.is-open", function (shell) {
+                if (shell._calendarPicker) {
+                    positionCalendarPicker(shell._calendarPicker);
+                }
+            });
+        });
+        window.addEventListener("scroll", function () {
+            each(".calendar-picker.is-open", function (shell) {
+                if (shell._calendarPicker) {
+                    positionCalendarPicker(shell._calendarPicker);
+                }
+            });
+        }, true);
+        calendarPickerEventsBound = true;
+    }
+
+    function createCalendarPicker(input, type) {
+        if (!input || input.dataset.calendarPickerInitialized || !input.parentNode || !document.body) {
+            return null;
+        }
+
+        var shell = document.createElement("div");
+        shell.className = "calendar-picker calendar-picker-" + type;
+        input.parentNode.insertBefore(shell, input);
+        shell.appendChild(input);
+        input.dataset.calendarPickerInitialized = "true";
+        input.classList.add("calendar-native-picker-input");
+        input.tabIndex = -1;
+        input.setAttribute("aria-hidden", "true");
+
+        var trigger = createCalendarPickerButton("", "calendar-picker-trigger", type === "date" ? "Choose date" : "Choose time");
+        trigger.id = "calendar-picker-trigger-" + (++calendarPickerSequence);
+        var icon = document.createElement("span");
+        icon.className = "calendar-picker-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = "";
+        var value = document.createElement("span");
+        value.className = "calendar-picker-value";
+        var caret = document.createElement("span");
+        caret.className = "calendar-picker-caret";
+        caret.setAttribute("aria-hidden", "true");
+        trigger.appendChild(icon);
+        trigger.appendChild(value);
+        trigger.appendChild(caret);
+        shell.appendChild(trigger);
+
+        var popover = document.createElement("div");
+        popover.className = "calendar-picker-popover";
+        popover.hidden = true;
+        popover.id = "calendar-picker-popover-" + calendarPickerSequence;
+        popover.setAttribute("role", "dialog");
+        popover.setAttribute("aria-label", type === "date" ? "Choose a calendar date" : "Choose a time");
+        trigger.setAttribute("aria-haspopup", "dialog");
+        trigger.setAttribute("aria-controls", popover.id);
+        trigger.setAttribute("aria-expanded", "false");
+        document.body.appendChild(popover);
+
+        var picker = {input: input, shell: shell, trigger: trigger, value: value, popover: popover};
+        shell._calendarPicker = picker;
+        bindCalendarPickerDocumentEvents();
+        return picker;
+    }
+
+    function openCalendarPicker(picker) {
+        closeAllCalendarPickers(picker.shell);
+        picker.shell.classList.add("is-open");
+        picker.popover.hidden = false;
+        picker.popover.classList.add("is-open");
+        picker.trigger.setAttribute("aria-expanded", "true");
+        positionCalendarPicker(picker);
+    }
+
+    function initCalendarDatePicker(input) {
+        var picker = createCalendarPicker(input, "date");
+        if (!picker) {
+            return;
+        }
+
+        var state = {year: new Date().getFullYear(), month: new Date().getMonth()};
+
+        function syncTrigger() {
+            var hasValue = Boolean(parseCalendarDate(input.value));
+            picker.value.textContent = calendarDateLabel(input.value);
+            picker.value.classList.toggle("is-placeholder", !hasValue);
+            picker.trigger.setAttribute("aria-label", hasValue ? "Change date, " + calendarDateLabel(input.value) : "Choose date");
+        }
+
+        function chooseDate(date) {
+            input.value = calendarDateValue(date);
+            syncTrigger();
+            emitCalendarPickerChange(input);
+            closeCalendarPicker(picker);
+            picker.trigger.focus();
+        }
+
+        function render() {
+            while (picker.popover.firstChild) {
+                picker.popover.removeChild(picker.popover.firstChild);
+            }
+
+            var header = document.createElement("div");
+            header.className = "calendar-picker-date-header";
+            var title = document.createElement("strong");
+            title.className = "calendar-picker-title";
+            title.textContent = makeCalendarDate(state.year, state.month, 1).toLocaleDateString("en-US", {month: "long", year: "numeric"});
+            var navigation = document.createElement("div");
+            navigation.className = "calendar-picker-navigation";
+            var previous = createCalendarPickerButton("", "calendar-picker-nav is-previous", "Previous month");
+            var next = createCalendarPickerButton("", "calendar-picker-nav is-next", "Next month");
+            previous.addEventListener("click", function (event) {
+                event.preventDefault();
+                state.month -= 1;
+                if (state.month < 0) {
+                    state.month = 11;
+                    state.year -= 1;
+                }
+                render();
+            });
+            next.addEventListener("click", function (event) {
+                event.preventDefault();
+                state.month += 1;
+                if (state.month > 11) {
+                    state.month = 0;
+                    state.year += 1;
+                }
+                render();
+            });
+            navigation.appendChild(previous);
+            navigation.appendChild(next);
+            header.appendChild(title);
+            header.appendChild(navigation);
+
+            var weekdays = document.createElement("div");
+            weekdays.className = "calendar-picker-weekdays";
+            ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach(function (weekday) {
+                var weekdayLabel = document.createElement("span");
+                weekdayLabel.textContent = weekday;
+                weekdays.appendChild(weekdayLabel);
+            });
+
+            var grid = document.createElement("div");
+            grid.className = "calendar-picker-date-grid";
+            grid.setAttribute("role", "grid");
+            var firstDay = makeCalendarDate(state.year, state.month, 1).getDay();
+            var selectedValue = input.value;
+            var todayValue = calendarDateValue(new Date());
+            for (var index = 0; index < 42; index += 1) {
+                var date = makeCalendarDate(state.year, state.month, index - firstDay + 1);
+                var dateValue = calendarDateValue(date);
+                var day = createCalendarPickerButton(String(date.getDate()), "calendar-picker-day", date.toLocaleDateString("en-US", {month: "long", day: "numeric", year: "numeric"}));
+                day.dataset.date = dateValue;
+                day.setAttribute("role", "gridcell");
+                if (date.getMonth() !== state.month || date.getFullYear() !== state.year) {
+                    day.classList.add("is-outside");
+                }
+                if (dateValue === selectedValue) {
+                    day.classList.add("is-selected");
+                    day.setAttribute("aria-pressed", "true");
+                }
+                if (dateValue === todayValue) {
+                    day.classList.add("is-today");
+                }
+                day.addEventListener("click", function (event) {
+                    event.preventDefault();
+                    chooseDate(parseCalendarDate(event.currentTarget.dataset.date));
+                });
+                grid.appendChild(day);
+            }
+
+            var footer = document.createElement("div");
+            footer.className = "calendar-picker-footer";
+            var clear = createCalendarPickerButton("Clear", "calendar-picker-action", "Clear date");
+            var today = createCalendarPickerButton("Today", "calendar-picker-action is-primary", "Choose today");
+            clear.addEventListener("click", function (event) {
+                event.preventDefault();
+                input.value = "";
+                syncTrigger();
+                emitCalendarPickerChange(input);
+                closeCalendarPicker(picker);
+                picker.trigger.focus();
+            });
+            today.addEventListener("click", function (event) {
+                event.preventDefault();
+                var now = new Date();
+                chooseDate(makeCalendarDate(now.getFullYear(), now.getMonth(), now.getDate()));
+            });
+            footer.appendChild(clear);
+            footer.appendChild(today);
+            picker.popover.appendChild(header);
+            picker.popover.appendChild(weekdays);
+            picker.popover.appendChild(grid);
+            picker.popover.appendChild(footer);
+        }
+
+        picker.trigger.addEventListener("click", function (event) {
+            event.preventDefault();
+            if (!picker.popover.hidden) {
+                closeCalendarPicker(picker);
+                return;
+            }
+            var current = parseCalendarDate(input.value) || new Date();
+            state.year = current.getFullYear();
+            state.month = current.getMonth();
+            render();
+            openCalendarPicker(picker);
+        });
+        input.addEventListener("input", syncTrigger);
+        input.addEventListener("change", syncTrigger);
+        syncTrigger();
+    }
+
+    function initCalendarTimePicker(input) {
+        var picker = createCalendarPicker(input, "time");
+        if (!picker) {
+            return;
+        }
+
+        var state = {hour: 9, minute: 0, period: "AM"};
+        var columns = document.createElement("div");
+        columns.className = "calendar-time-columns";
+        picker.popover.appendChild(columns);
+        var heading = document.createElement("div");
+        heading.className = "calendar-picker-time-heading";
+        heading.textContent = "Select time";
+        picker.popover.insertBefore(heading, columns);
+        var footer = document.createElement("div");
+        footer.className = "calendar-picker-footer";
+        var cancel = createCalendarPickerButton("Cancel", "calendar-picker-action", "Cancel time selection");
+        var done = createCalendarPickerButton("Done", "calendar-picker-action is-primary", "Use selected time");
+        footer.appendChild(cancel);
+        footer.appendChild(done);
+        picker.popover.appendChild(footer);
+
+        function syncTrigger() {
+            var hasValue = Boolean(parseCalendarTime(input.value));
+            picker.value.textContent = calendarTimeLabel(input.value);
+            picker.value.classList.toggle("is-placeholder", !hasValue);
+            picker.trigger.setAttribute("aria-label", hasValue ? "Change time, " + calendarTimeLabel(input.value) : "Choose time");
+        }
+
+        function renderOptions() {
+            while (columns.firstChild) {
+                columns.removeChild(columns.firstChild);
+            }
+            [
+                {key: "hour", label: "Hour", values: Array.from({length: 12}, function (_, index) { return index + 1; })},
+                {key: "minute", label: "Minute", values: Array.from({length: 60}, function (_, index) { return index; })},
+                {key: "period", label: "", values: ["AM", "PM"]},
+            ].forEach(function (definition) {
+                var column = document.createElement("div");
+                column.className = "calendar-time-column";
+                var label = document.createElement("span");
+                label.className = "calendar-time-column-label";
+                label.textContent = definition.label;
+                if (definition.label) {
+                    column.appendChild(label);
+                }
+                var options = document.createElement("div");
+                options.className = "calendar-time-options";
+                options.setAttribute("role", "listbox");
+                options.setAttribute("aria-label", definition.label || "AM or PM");
+                definition.values.forEach(function (value) {
+                    var option = createCalendarPickerButton(definition.key === "minute" ? padCalendarNumber(value) : String(value), "calendar-time-option", definition.label ? definition.label + " " + value : String(value));
+                    var selected = String(state[definition.key]) === String(value);
+                    option.classList.toggle("is-selected", selected);
+                    option.setAttribute("aria-selected", String(selected));
+                    option.setAttribute("role", "option");
+                    option.addEventListener("click", function (event) {
+                        event.preventDefault();
+                        state[definition.key] = definition.key === "period" ? value : Number(value);
+                        renderOptions();
+                    });
+                    options.appendChild(option);
+                });
+                column.appendChild(options);
+                columns.appendChild(column);
+            });
+        }
+
+        picker.trigger.addEventListener("click", function (event) {
+            event.preventDefault();
+            if (!picker.popover.hidden) {
+                closeCalendarPicker(picker);
+                return;
+            }
+            state = parseCalendarTime(input.value) || {hour: 9, minute: 0, period: "AM"};
+            renderOptions();
+            openCalendarPicker(picker);
+        });
+        cancel.addEventListener("click", function (event) {
+            event.preventDefault();
+            closeCalendarPicker(picker);
+            picker.trigger.focus();
+        });
+        done.addEventListener("click", function (event) {
+            event.preventDefault();
+            input.value = calendarTimeValue(state);
+            syncTrigger();
+            emitCalendarPickerChange(input);
+            closeCalendarPicker(picker);
+            picker.trigger.focus();
+        });
+        input.addEventListener("input", syncTrigger);
+        input.addEventListener("change", syncTrigger);
+        syncTrigger();
+    }
+
+    function initCalendarPickers(form) {
+        initCalendarDatePicker(form.querySelector('input[type="date"]'));
+        each('input[type="time"]', function (input) {
+            initCalendarTimePicker(input);
+        }, form);
+    }
+
+    function initEmployeeScheduleForms() {
+        each("[data-employee-schedule-form]", function (form) {
+            if (form.dataset.employeeScheduleInitialized) {
+                return;
+            }
+            form.dataset.employeeScheduleInitialized = "true";
+            var status = form.querySelector("[name='status']");
+            var workingCheckbox = form.querySelector("input[type='checkbox'][name$='is_working']");
+            var timeFields = form.querySelectorAll(
+                "[data-employee-schedule-field='start_time'], [data-employee-schedule-field='end_time']"
+            );
+            var reasonFields = form.querySelectorAll("[data-employee-schedule-field='reason']");
+
+            function setFieldVisibility(fields, visible) {
+                fields.forEach(function (field) {
+                    field.hidden = !visible;
+                    field.setAttribute("aria-hidden", String(!visible));
+                    var control = field.querySelector("input, select, textarea");
+                    if (!control) {
+                        return;
+                    }
+                    control.disabled = !visible;
+                    if (control.type === "time") {
+                        control.required = visible;
+                    }
+                });
+            }
+
+            function syncFields() {
+                var isWorking = status
+                    ? status.value === "working"
+                    : Boolean(workingCheckbox && workingCheckbox.checked);
+                var isClear = Boolean(status && status.value === "clear");
+                form.setAttribute("data-employee-schedule-status", isWorking ? "working" : isClear ? "clear" : "off");
+                setFieldVisibility(timeFields, isWorking);
+                setFieldVisibility(reasonFields, !isClear);
+                closeAllCalendarPickers();
+            }
+
+            if (status) {
+                status.addEventListener("change", syncFields);
+            }
+            if (workingCheckbox) {
+                workingCheckbox.addEventListener("change", syncFields);
+            }
+            syncFields();
+            initCalendarPickers(form);
+        });
+    }
+
+    function initWorkerSelectors() {
+        each("select[multiple][data-worker-selector]", function (select) {
+            if (select.dataset.workerSelectorInitialized) {
+                return;
+            }
+            select.dataset.workerSelectorInitialized = "true";
+            var shell = document.createElement("div");
+            shell.className = "worker-selector-shell";
+            select.parentNode.insertBefore(shell, select);
+            shell.appendChild(select);
+            select.classList.add("worker-selector-native");
+
+            var header = document.createElement("div");
+            header.className = "worker-selector-header";
+            var search = document.createElement("input");
+            search.type = "search";
+            search.className = "worker-selector-search";
+            search.placeholder = "Search workers";
+            search.setAttribute("aria-label", "Search workers");
+            var count = document.createElement("span");
+            count.className = "worker-selector-count";
+            header.appendChild(search);
+            header.appendChild(count);
+            shell.appendChild(header);
+
+            var selectedList = document.createElement("div");
+            selectedList.className = "worker-selector-selected";
+            selectedList.setAttribute("aria-live", "polite");
+            shell.appendChild(selectedList);
+
+            var optionList = document.createElement("div");
+            optionList.className = "worker-selector-options";
+            optionList.setAttribute("role", "listbox");
+            optionList.setAttribute("aria-multiselectable", "true");
+            shell.appendChild(optionList);
+
+            var footer = document.createElement("div");
+            footer.className = "worker-selector-footer";
+            var clear = createCalendarPickerButton("Clear all", "worker-selector-clear", "Clear all selected workers");
+            footer.appendChild(clear);
+            shell.appendChild(footer);
+
+            function selectedOptions() {
+                return Array.prototype.filter.call(select.options, function (option) { return option.selected; });
+            }
+
+            function toggleOption(option) {
+                option.selected = !option.selected;
+                sync();
+            }
+
+            function renderOptions() {
+                while (optionList.firstChild) {
+                    optionList.removeChild(optionList.firstChild);
+                }
+                var query = (search.value || "").trim().toLowerCase();
+                var visibleOptions = Array.prototype.filter.call(select.options, function (option) {
+                    return !query || option.textContent.toLowerCase().indexOf(query) !== -1;
+                });
+                visibleOptions.forEach(function (option) {
+                    var button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "worker-selector-option";
+                    button.setAttribute("role", "option");
+                    button.setAttribute("aria-selected", String(option.selected));
+                    button.setAttribute("aria-label", (option.selected ? "Remove " : "Select ") + option.textContent);
+                    var checkbox = document.createElement("span");
+                    checkbox.className = "worker-selector-checkbox";
+                    checkbox.setAttribute("aria-hidden", "true");
+                    checkbox.textContent = option.selected ? "✓" : "";
+                    var label = document.createElement("span");
+                    label.textContent = option.textContent;
+                    button.appendChild(checkbox);
+                    button.appendChild(label);
+                    button.addEventListener("click", function () {
+                        toggleOption(option);
+                    });
+                    optionList.appendChild(button);
+                });
+                if (!visibleOptions.length) {
+                    var empty = document.createElement("span");
+                    empty.className = "worker-selector-empty";
+                    empty.textContent = "No workers match this search.";
+                    optionList.appendChild(empty);
+                }
+            }
+
+            function sync() {
+                var selected = selectedOptions();
+                count.textContent = selected.length + (selected.length === 1 ? " worker selected" : " workers selected");
+                while (selectedList.firstChild) {
+                    selectedList.removeChild(selectedList.firstChild);
+                }
+                selected.forEach(function (option) {
+                    var chip = document.createElement("span");
+                    chip.className = "worker-selector-chip";
+                    var chipLabel = document.createElement("span");
+                    chipLabel.textContent = option.textContent;
+                    var remove = createCalendarPickerButton("×", "worker-selector-remove", "Remove " + option.textContent);
+                    remove.addEventListener("click", function () {
+                        option.selected = false;
+                        sync();
+                    });
+                    chip.appendChild(chipLabel);
+                    chip.appendChild(remove);
+                    selectedList.appendChild(chip);
+                });
+                renderOptions();
+            }
+
+            search.addEventListener("input", renderOptions);
+            clear.addEventListener("click", function () {
+                Array.prototype.forEach.call(select.options, function (option) { option.selected = false; });
+                sync();
+                search.focus();
+            });
+            select.addEventListener("change", sync);
+            sync();
+        });
+    }
+
+    function csrfToken() {
+        var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+        return match ? decodeURIComponent(match[1]) : "";
+    }
+
+    function initNotificationActions() {
+        each("[data-notification-read]", function (form) {
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                fetch(form.action, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest"},
+                }).then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Unable to mark notification read");
+                    }
+                    var card = form.closest("[data-notification-id]");
+                    if (card) {
+                        card.classList.remove("is-unread");
+                    }
+                    form.remove();
+                }).catch(function () {
+                    form.submit();
+                });
+            });
+        });
+        each("[data-notification-read-all]", function (form) {
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                fetch(form.action, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest"},
+                }).then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Unable to mark notifications read");
+                    }
+                    each(".notification-card", function (card) {
+                        card.classList.remove("is-unread");
+                        var readForm = card.querySelector("[data-notification-read]");
+                        if (readForm) {
+                            readForm.remove();
+                        }
+                    });
+                }).catch(function () {
+                    form.submit();
+                });
+            });
+        });
+    }
+
+    function initCalendarDayForms() {
+        each("[data-calendar-day-form]", function (form) {
+            var status = form.querySelector("[name='status']");
+            if (!status) {
+                return;
+            }
+
+            var shortFields = form.querySelectorAll(
+                "[data-calendar-day-field='short_start'], [data-calendar-day-field='short_end']"
+            );
+            var reasonFields = form.querySelectorAll("[data-calendar-day-field='reason']");
+
+            function setFieldVisibility(fields, visible) {
+                fields.forEach(function (field) {
+                    field.hidden = !visible;
+                    field.setAttribute("aria-hidden", String(!visible));
+                    var control = field.querySelector("input, select, textarea");
+                    if (!control) {
+                        return;
+                    }
+                    control.disabled = !visible;
+                    if (control.type === "time") {
+                        control.required = visible;
+                    }
+                });
+            }
+
+            function syncFields() {
+                var isShort = status.value === "short";
+                var isOverride = isShort || status.value === "closed";
+                form.setAttribute("data-calendar-day-status", status.value || "normal");
+                setFieldVisibility(shortFields, isShort);
+                setFieldVisibility(reasonFields, isOverride);
+                closeAllCalendarPickers();
+            }
+
+            status.addEventListener("change", syncFields);
+            syncFields();
+            initCalendarPickers(form);
+        });
+    }
+
     function numberValue(input) {
         var value = Number.parseFloat(input && input.value);
         return Number.isFinite(value) ? value : 0;
@@ -215,6 +942,10 @@
         initNavigation();
         initProjectFilters();
         initFileInputs();
+        initCalendarDayForms();
+        initEmployeeScheduleForms();
+        initWorkerSelectors();
+        initNotificationActions();
         initEstimateEditors();
         initModal();
         initToastDismissal();

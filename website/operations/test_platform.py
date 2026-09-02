@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import tempfile
-from datetime import datetime, timedelta, timezone as datetime_timezone
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core import management
+from django.core import mail
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -20,11 +21,22 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .forms import ProjectDocumentForm, ProjectForm
+from .forms import (
+    LeadAssignmentForm,
+    LeadForm,
+    ProjectDocumentForm,
+    ProjectForm,
+    QuickTaskForm,
+    CalendarDayOverrideForm,
+    ScheduleEventForm,
+    TaskForm,
+)
 from .models import (
     AdminRecoveryToken,
     AdminSecurityProfile,
+    CALENDAR_TIME_ZONE,
     Activity,
+    CalendarDayOverride,
     Client as ClientRecord,
     ClientMessage,
     EmployeeInvite,
@@ -50,10 +62,22 @@ from .services import (
 
 
 TEST_MEDIA_ROOT = Path(tempfile.mkdtemp(prefix='gcc-platform-tests-'))
+TEST_STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+    'contact_submissions': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+}
 
 
 @override_settings(
     MEDIA_ROOT=TEST_MEDIA_ROOT,
+    STORAGES=TEST_STORAGES,
     CLOUDFLARE_TURNSTILE_SITE_KEY="",
     CLOUDFLARE_TURNSTILE_SECRET_KEY="",
 )
@@ -261,6 +285,73 @@ class PlatformWorkflowTests(TestCase):
                 {'identifier': user.username},
             )
 
+    @staticmethod
+    def pacific_datetime(day, hour, minute=0):
+        return timezone.make_aware(
+            datetime.combine(day, time(hour, minute)),
+            timezone.get_current_timezone(),
+        )
+
+    def assert_operations_badges(self, response, role, keys, expected_badge_count):
+        self.assertEqual(response.context['operations_nav_role'], role)
+        counts = response.context['operations_nav_counts']
+        markup = response.content.decode()
+        self.assertIn(f'data-workspace-kind="{role}"', markup)
+        self.assertEqual(markup.count('class="nav-count"'), expected_badge_count)
+        for key in keys:
+            self.assertIsInstance(counts[key], int)
+            self.assertIn(f'data-count-{key}="{counts[key]}"', markup)
+
+    def test_admin_operations_sidebar_always_renders_category_counts(self):
+        self.login(self.owner)
+
+        dashboard_response = self.browser.get(reverse('operations:dashboard'))
+        admin_keys = (
+            'overview', 'clients', 'tasks', 'calendar', 'time', 'documents',
+            'leads', 'estimates', 'projects', 'media', 'content', 'team', 'messages',
+        )
+        self.assert_operations_badges(dashboard_response, 'admin', admin_keys, 13)
+
+        workspace_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'tasks'})
+        )
+        self.assert_operations_badges(workspace_response, 'admin', admin_keys, 13)
+
+    def test_employee_operations_sidebar_always_renders_visible_category_counts(self):
+        self.login(self.field)
+
+        response = self.browser.get(reverse('operations:team'))
+        employee_keys = ('overview', 'projects', 'tasks', 'calendar', 'time', 'media', 'profile')
+        self.assert_operations_badges(response, 'employee', employee_keys, 7)
+        self.assertEqual(
+            response.context['operations_nav_counts']['projects'],
+            Project.objects.filter(assigned_staff=self.field)
+            .exclude(status=Project.Status.COMPLETE)
+            .distinct()
+            .count(),
+        )
+        self.assertEqual(response.context['operations_nav_counts']['leads'], 0)
+
+    def test_assignment_selectors_show_staff_full_names(self):
+        staff_queryset = get_user_model().objects.filter(pk=self.manager.pk)
+        forms_and_fields = (
+            (LeadForm(staff_queryset=staff_queryset), ('assigned_to',)),
+            (QuickTaskForm(staff_queryset=staff_queryset), ('assigned_to',)),
+            (TaskForm(staff_queryset=staff_queryset), ('assigned_to', 'watchers')),
+            (LeadAssignmentForm(staff_queryset=staff_queryset), ('assigned_to',)),
+            (ProjectForm(staff_queryset=staff_queryset), ('assigned_staff',)),
+            (ScheduleEventForm(staff_queryset=staff_queryset), ('assignees',)),
+        )
+
+        for form, field_names in forms_and_fields:
+            for field_name in field_names:
+                choices = {
+                    str(value): label
+                    for value, label in form.fields[field_name].choices
+                }
+                self.assertEqual(choices[str(self.manager.pk)], 'Project Manager')
+                self.assertNotIn('platform-manager', choices.values())
+
     def test_roles_are_idempotent_and_field_isolated(self):
         ensure_role_groups()
         ensure_role_groups()
@@ -425,6 +516,62 @@ class PlatformWorkflowTests(TestCase):
         )
         self.assertRedirects(native_header_contact, reverse("operations:contact"))
         self.assertEqual(Lead.objects.count(), lead_count + 2)
+
+    @override_settings(
+        CLOUDFLARE_TURNSTILE_SITE_KEY="test-site-key",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    )
+    def test_website_password_reset_renders_turnstile_and_requires_it(self):
+        reset_page = self.browser.get(reverse("operations:password-reset"))
+        self.assertContains(
+            reset_page,
+            "https://challenges.cloudflare.com/turnstile/v0/api.js",
+        )
+        self.assertContains(reset_page, 'data-sitekey="test-site-key"')
+        self.assertContains(reset_page, 'data-action="password-reset"')
+
+        blocked = self.browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.client_user.email},
+        )
+        self.assertEqual(blocked.status_code, 200)
+        self.assertContains(blocked, "Complete the security check and try again.")
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        CLOUDFLARE_TURNSTILE_SITE_KEY="test-site-key",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="test-secret-key",
+    )
+    def test_mobile_app_can_complete_password_reset_without_turnstile(self):
+        mobile_browser = DjangoClient(HTTP_USER_AGENT="GrandCoastMobile/1.0")
+        reset_page = mobile_browser.get(reverse("operations:password-reset"))
+        self.assertNotContains(reset_page, "cf-turnstile")
+        self.assertNotContains(reset_page, "https://challenges.cloudflare.com/turnstile/v0/api.js")
+
+        request = mobile_browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.client_user.email},
+        )
+        self.assertRedirects(request, reverse("operations:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 1)
+
+        reset_url = next(
+            line for line in mail.outbox[0].body.splitlines()
+            if "/accounts/password/reset/confirm/" in line
+        )
+        confirm = mobile_browser.get(reset_url, follow=True)
+        self.assertContains(confirm, "Choose a new password.")
+        confirm_url = reset_url.replace(reset_url.rstrip("/").rsplit("/", 1)[-1], "set-password")
+        complete = mobile_browser.post(
+            confirm_url,
+            {
+                "new_password1": "mobile-new-password-123",
+                "new_password2": "mobile-new-password-123",
+            },
+        )
+        self.assertRedirects(complete, reverse("operations:password-reset-complete"))
+        self.client_user.refresh_from_db()
+        self.assertTrue(self.client_user.check_password("mobile-new-password-123"))
 
     @override_settings(
         CLOUDFLARE_TURNSTILE_SITE_KEY="test-site-key",
@@ -725,6 +872,89 @@ class PlatformWorkflowTests(TestCase):
         self.assertIsNotNone(invite.accepted_at)
         self.assertIsNone(find_employee_invite(raw_token))
 
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_client_and_employee_password_recovery_is_scoped_one_time_and_expiring(self):
+        login_page = self.browser.get(reverse("operations:login"))
+        self.assertContains(login_page, "Forgot your password?")
+
+        client_request = self.browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.client_user.email},
+        )
+        self.assertRedirects(client_request, reverse("operations:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 1)
+        client_reset_url = next(
+            line for line in mail.outbox[0].body.splitlines()
+            if "/accounts/password/reset/confirm/" in line
+        )
+        client_form = self.browser.get(client_reset_url, follow=True)
+        self.assertContains(client_form, "Choose a new password.")
+        client_confirm_url = client_reset_url.replace(client_reset_url.rstrip("/").rsplit("/", 1)[-1], "set-password")
+        client_reset = self.browser.post(
+            client_confirm_url,
+            {
+                "new_password1": "client-new-password-123",
+                "new_password2": "client-new-password-123",
+            },
+        )
+        self.assertRedirects(client_reset, reverse("operations:password-reset-complete"))
+        self.client_user.refresh_from_db()
+        self.assertTrue(self.client_user.check_password("client-new-password-123"))
+        self.assertEqual(self.browser.get(client_reset_url).status_code, 200)
+        self.assertContains(self.browser.get(client_reset_url), "That link has expired.")
+
+        mail.outbox.clear()
+        employee_request = self.browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.manager.email},
+        )
+        self.assertRedirects(employee_request, reverse("operations:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 1)
+        employee_reset_url = next(
+            line for line in mail.outbox[0].body.splitlines()
+            if "/accounts/password/reset/confirm/" in line
+        )
+        employee_form = self.browser.get(employee_reset_url, follow=True)
+        self.assertContains(employee_form, "Choose a new password.")
+        employee_confirm_url = employee_reset_url.replace(employee_reset_url.rstrip("/").rsplit("/", 1)[-1], "set-password")
+        employee_reset = self.browser.post(
+            employee_confirm_url,
+            {
+                "new_password1": "employee-new-password-123",
+                "new_password2": "employee-new-password-123",
+            },
+        )
+        self.assertRedirects(employee_reset, reverse("operations:password-reset-complete"))
+        self.manager.refresh_from_db()
+        self.assertTrue(self.manager.check_password("employee-new-password-123"))
+
+        mail.outbox.clear()
+        admin_request = self.browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.owner.email},
+        )
+        self.assertRedirects(admin_request, reverse("operations:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_public_password_recovery_locks_after_five_unknown_emails(self):
+        reset_url = reverse("operations:password-reset")
+        done_url = reverse("operations:password-reset-done")
+
+        for attempt in range(4):
+            response = self.browser.post(
+                reset_url,
+                {"email": f"unknown-public-{attempt}@example.com"},
+            )
+            self.assertRedirects(response, done_url)
+
+        locked = self.browser.post(
+            reset_url,
+            {"email": "unknown-public-final@example.com"},
+        )
+        self.assertEqual(locked.status_code, 429)
+        self.assertContains(locked, "Too many password reset attempts.", status_code=429)
+        self.assertEqual(self.browser.get(reset_url).status_code, 429)
+
     def test_lead_assignment_conversion_and_estimate_requires_client(self):
         unconverted = Lead.objects.create(
             name='Unconverted Lead',
@@ -872,6 +1102,100 @@ class PlatformWorkflowTests(TestCase):
         self.assertEqual(task.assigned_to_id, self.manager.pk)
         self.assertEqual(task.priority, Task.Priority.HIGH)
 
+    def test_admin_can_soft_delete_and_restore_lead_without_losing_tasks(self):
+        self.login(self.owner)
+        task = Task.objects.create(
+            title='Keep deleted lead context',
+            lead=self.lead,
+            created_by=self.owner,
+        )
+
+        delete_response = self.browser.post(
+            reverse('operations:lead-delete', kwargs={'pk': self.lead.pk}),
+        )
+        self.assertRedirects(
+            delete_response,
+            reverse('operations:dashboard-section', kwargs={'section': 'leads'}),
+        )
+        self.lead.refresh_from_db()
+        self.assertIsNotNone(self.lead.deleted_at)
+        self.assertEqual(self.lead.deleted_by_id, self.owner.pk)
+        self.assertTrue(Task.objects.filter(pk=task.pk, lead=self.lead).exists())
+
+        active = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'leads'}),
+        )
+        self.assertNotIn(self.lead.pk, {lead.pk for lead in active.context['leads']})
+        self.assertEqual(active.context['operations_nav_counts']['leads'], 0)
+
+        trash = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'leads'}),
+            {'trash': '1'},
+        )
+        self.assertContains(trash, 'Deleted leads')
+        self.assertContains(trash, self.lead.name)
+        self.assertContains(trash, self.lead.email)
+        self.assertContains(trash, self.lead.service)
+        self.assertContains(trash, 'Original stage')
+        self.assertContains(trash, 'Deleted by')
+        self.assertContains(
+            trash,
+            reverse('operations:lead-restore', kwargs={'pk': self.lead.pk}),
+        )
+
+        restore_response = self.browser.post(
+            reverse('operations:lead-restore', kwargs={'pk': self.lead.pk}),
+        )
+        self.assertRedirects(
+            restore_response,
+            f"{reverse('operations:dashboard-section', kwargs={'section': 'leads'})}?trash=1",
+        )
+        self.lead.refresh_from_db()
+        self.assertIsNone(self.lead.deleted_at)
+        self.assertIsNone(self.lead.deleted_by_id)
+        self.assertTrue(Task.objects.filter(pk=task.pk, lead=self.lead).exists())
+
+    def test_admin_can_move_all_active_leads_to_trash(self):
+        second_lead = Lead.objects.create(
+            name='Second recoverable lead',
+            email='second-recoverable@example.com',
+            service='New construction',
+            location='Oxnard, CA',
+        )
+        self.login(self.owner)
+        response = self.browser.post(reverse('operations:lead-delete-all'))
+        self.assertRedirects(
+            response,
+            reverse('operations:dashboard-section', kwargs={'section': 'leads'}),
+        )
+        self.assertEqual(Lead.objects.filter(deleted_at__isnull=True).count(), 0)
+        self.assertEqual(
+            Lead.objects.filter(deleted_by=self.owner, deleted_at__isnull=False).count(),
+            2,
+        )
+
+        trash = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'leads'}),
+            {'trash': '1'},
+        )
+        self.assertContains(trash, self.lead.name)
+        self.assertContains(trash, second_lead.name)
+
+    def test_only_admin_can_delete_or_restore_leads(self):
+        self.lead.deleted_at = timezone.now()
+        self.lead.deleted_by = self.owner
+        self.lead.save(update_fields=['deleted_at', 'deleted_by', 'updated_at'])
+        self.login(self.manager)
+
+        delete_response = self.browser.post(
+            reverse('operations:lead-delete', kwargs={'pk': self.lead.pk}),
+        )
+        restore_response = self.browser.post(
+            reverse('operations:lead-restore', kwargs={'pk': self.lead.pk}),
+        )
+        self.assertEqual(delete_response.status_code, 403)
+        self.assertEqual(restore_response.status_code, 403)
+
     def test_schedule_creation_and_employee_visibility(self):
         start = timezone.now() + timedelta(days=5)
         end = start + timedelta(hours=2)
@@ -900,6 +1224,329 @@ class PlatformWorkflowTests(TestCase):
             self.browser.get(reverse('operations:team-section', kwargs={'section': 'calendar'})),
             event.title,
         )
+
+    def test_calendar_limits_day_previews_and_opens_full_day_list(self):
+        calendar_day = timezone.localdate() + timedelta(days=10)
+        for index in range(4):
+            ScheduleEvent.objects.create(
+                title=f'Overflow event {index + 1}',
+                start_at=self.pacific_datetime(calendar_day, 8 + index),
+                end_at=self.pacific_datetime(calendar_day, 9 + index),
+                created_by=self.owner,
+            )
+
+        self.login(self.owner)
+        month = calendar_day.strftime('%Y-%m')
+        preview_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+            {'month': month},
+        )
+        self.assertEqual(preview_response.status_code, 200)
+        day_context = next(
+            day
+            for week in preview_response.context['calendar_weeks']
+            for day in week
+            if day['date'] == calendar_day
+        )
+        self.assertEqual(day_context['event_count'], 4)
+        self.assertEqual(len(day_context['preview_events']), 3)
+        self.assertEqual(day_context['remaining_event_count'], 1)
+        self.assertContains(preview_response, 'Overflow event 1')
+        self.assertContains(preview_response, 'Overflow event 2')
+        self.assertContains(preview_response, 'Overflow event 3')
+        self.assertContains(preview_response, '+1 more')
+        self.assertContains(preview_response, 'View all 4 events')
+        self.assertNotContains(preview_response, 'Overflow event 4')
+        self.assertContains(
+            preview_response,
+            f'?month={month}&amp;day={calendar_day.isoformat()}',
+        )
+
+        detail_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+            {'month': month, 'day': calendar_day.isoformat()},
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(len(detail_response.context['selected_day_events']), 4)
+        for index in range(4):
+            self.assertContains(detail_response, f'Overflow event {index + 1}')
+
+    def test_calendar_groups_events_by_pacific_date_and_excludes_midnight_boundary(self):
+        calendar_day = timezone.localdate() + timedelta(days=18)
+        local_start = datetime.combine(calendar_day, time(8), tzinfo=CALENDAR_TIME_ZONE)
+        local_late_start = datetime.combine(calendar_day, time(23), tzinfo=CALENDAR_TIME_ZONE)
+        local_midnight_end = datetime.combine(calendar_day + timedelta(days=1), time.min, tzinfo=CALENDAR_TIME_ZONE)
+        ScheduleEvent.objects.create(
+            title='Pacific morning event',
+            start_at=local_start.astimezone(datetime_timezone.utc),
+            end_at=(local_start + timedelta(hours=1)).astimezone(datetime_timezone.utc),
+            created_by=self.owner,
+        )
+        ScheduleEvent.objects.create(
+            title='Pacific overnight event',
+            start_at=local_late_start.astimezone(datetime_timezone.utc),
+            end_at=local_midnight_end.astimezone(datetime_timezone.utc),
+            created_by=self.owner,
+        )
+
+        self.login(self.owner)
+        with timezone.override('UTC'):
+            response = self.browser.get(
+                reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+                {'month': calendar_day.strftime('%Y-%m'), 'day': calendar_day.isoformat()},
+            )
+        selected_day = response.context['selected_day']
+        next_day = next(
+            day
+            for week in response.context['calendar_weeks']
+            for day in week
+            if day['date'] == calendar_day + timedelta(days=1)
+        )
+        self.assertEqual(
+            [event.title for event in selected_day['events']],
+            ['Pacific morning event', 'Pacific overnight event'],
+        )
+        self.assertNotIn('Pacific overnight event', [event.title for event in next_day['events']])
+
+    def test_owner_can_set_clear_calendar_day_and_employee_sees_it(self):
+        calendar_day = timezone.localdate() + timedelta(days=12)
+        month = calendar_day.strftime('%Y-%m')
+        payload = {
+            'date': calendar_day.isoformat(),
+            'status': 'closed',
+            'short_start': '',
+            'short_end': '',
+            'reason': 'Company holiday',
+            'month': month,
+        }
+
+        self.login(self.manager)
+        self.assertEqual(
+            self.browser.post(reverse('operations:calendar-day-update'), payload).status_code,
+            403,
+        )
+
+        self.login(self.owner)
+        response = self.browser.post(reverse('operations:calendar-day-update'), payload)
+        self.assertRedirects(
+            response,
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'})
+            + f'?month={month}&day={calendar_day.isoformat()}',
+        )
+        override = CalendarDayOverride.objects.get(date=calendar_day)
+        self.assertEqual(override.status, CalendarDayOverride.Status.CLOSED)
+        self.assertEqual(override.reason, 'Company holiday')
+        self.assertTrue(
+            Activity.objects.filter(
+                message='Calendar day updated',
+                detail=f'{calendar_day.isoformat()} · Closed',
+                actor=self.owner,
+            ).exists()
+        )
+        owner_calendar_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+            {'month': month, 'day': calendar_day.isoformat()},
+        )
+        self.assertContains(owner_calendar_response, "data-calendar-day-form")
+        self.assertContains(owner_calendar_response, "data-calendar-day-field='short_start'")
+        self.assertContains(owner_calendar_response, "data-calendar-day-status='closed'")
+
+        self.login(self.field)
+        employee_response = self.browser.get(
+            reverse('operations:team-section', kwargs={'section': 'calendar'}),
+            {'month': month, 'day': calendar_day.isoformat()},
+        )
+        self.assertContains(employee_response, 'Closed')
+        self.assertContains(employee_response, 'Company holiday')
+        self.assertNotContains(employee_response, 'Owner controls')
+
+        self.login(self.owner)
+        update_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                **payload,
+                'status': 'short',
+                'short_start': '08:00',
+                'short_end': '12:00',
+                'reason': 'Short holiday hours',
+            },
+        )
+        self.assertEqual(update_response.status_code, 302)
+        override.refresh_from_db()
+        self.assertEqual(override.status, CalendarDayOverride.Status.SHORT)
+        self.assertEqual(override.short_start, time(8))
+        self.assertEqual(override.short_end, time(12))
+
+        short_owner_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+            {'month': month, 'day': calendar_day.isoformat()},
+        )
+        self.assertContains(short_owner_response, "data-calendar-day-status='short'")
+
+        self.login(self.field)
+        short_employee_response = self.browser.get(
+            reverse('operations:team-section', kwargs={'section': 'calendar'}),
+            {'month': month, 'day': calendar_day.isoformat()},
+        )
+        self.assertContains(short_employee_response, 'Short day')
+        self.assertContains(short_employee_response, 'Hours: 8:00 AM')
+        self.assertContains(short_employee_response, '12:00 PM')
+
+        self.login(self.owner)
+        reset_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                **payload,
+                'status': 'normal',
+                'reason': '',
+            },
+        )
+        self.assertEqual(reset_response.status_code, 302)
+        self.assertFalse(CalendarDayOverride.objects.filter(date=calendar_day).exists())
+        self.assertTrue(
+            Activity.objects.filter(
+                message='Calendar day reset',
+                detail=calendar_day.isoformat(),
+                actor=self.owner,
+            ).exists()
+        )
+
+    def test_short_and_closed_days_enforce_schedule_conflicts(self):
+        short_day = timezone.localdate() + timedelta(days=14)
+        month = short_day.strftime('%Y-%m')
+        self.login(self.owner)
+        short_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                'date': short_day.isoformat(),
+                'status': 'short',
+                'short_start': '08:00',
+                'short_end': '12:00',
+                'reason': 'Early close',
+                'month': month,
+            },
+        )
+        self.assertEqual(short_response.status_code, 302)
+
+        outside_event = ScheduleEvent(
+            title='Outside short-day hours',
+            start_at=self.pacific_datetime(short_day, 13),
+            end_at=self.pacific_datetime(short_day, 14),
+            created_by=self.owner,
+        )
+        with self.assertRaises(ValidationError):
+            outside_event.full_clean()
+
+        overnight_short_event = ScheduleEvent(
+            title='Overnight short-day conflict',
+            start_at=self.pacific_datetime(short_day - timedelta(days=1), 23),
+            end_at=self.pacific_datetime(short_day, 9),
+            created_by=self.owner,
+        )
+        with self.assertRaises(ValidationError):
+            overnight_short_event.full_clean()
+
+        allowed_event = ScheduleEvent(
+            title='Inside short-day hours',
+            start_at=self.pacific_datetime(short_day, 9),
+            end_at=self.pacific_datetime(short_day, 10),
+            created_by=self.owner,
+        )
+        allowed_event.full_clean()
+
+        closed_day = short_day + timedelta(days=1)
+        closed_month = closed_day.strftime('%Y-%m')
+        closed_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                'date': closed_day.isoformat(),
+                'status': 'closed',
+                'short_start': '',
+                'short_end': '',
+                'reason': 'Holiday closure',
+                'month': closed_month,
+            },
+        )
+        self.assertEqual(closed_response.status_code, 302)
+
+        overnight_event = ScheduleEvent(
+            title='Overnight closure conflict',
+            start_at=self.pacific_datetime(closed_day - timedelta(days=1), 23),
+            end_at=self.pacific_datetime(closed_day, 1),
+            created_by=self.owner,
+        )
+        with self.assertRaises(ValidationError):
+            overnight_event.full_clean()
+
+        conflict_day = closed_day + timedelta(days=1)
+        ScheduleEvent.objects.create(
+            title='Existing conflict event',
+            start_at=self.pacific_datetime(conflict_day, 9),
+            end_at=self.pacific_datetime(conflict_day, 10),
+            created_by=self.owner,
+        )
+        conflict_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                'date': conflict_day.isoformat(),
+                'status': 'closed',
+                'short_start': '',
+                'short_end': '',
+                'reason': 'Cannot close yet',
+                'month': conflict_day.strftime('%Y-%m'),
+            },
+        )
+        self.assertEqual(conflict_response.status_code, 200)
+        self.assertContains(conflict_response, 'Existing conflict event')
+        self.assertContains(conflict_response, 'Resolve these scheduled events')
+        self.assertFalse(CalendarDayOverride.objects.filter(date=conflict_day).exists())
+
+    def test_calendar_day_form_rejects_invalid_short_hours(self):
+        calendar_day = timezone.localdate() + timedelta(days=16)
+        form = CalendarDayOverrideForm(
+            {
+                'date': calendar_day.isoformat(),
+                'status': 'short',
+                'short_start': '12:00',
+                'short_end': '12:00',
+                'reason': 'Invalid hours',
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn('short_end', form.errors)
+
+    def test_calendar_handles_invalid_day_empty_day_and_month_navigation(self):
+        self.login(self.owner)
+        invalid_response = self.browser.post(
+            reverse('operations:calendar-day-update'),
+            {
+                'date': 'not-a-date',
+                'status': 'closed',
+                'short_start': '',
+                'short_end': '',
+                'reason': 'Invalid date',
+                'month': timezone.localdate().strftime('%Y-%m'),
+            },
+        )
+        self.assertEqual(invalid_response.status_code, 200)
+        self.assertContains(invalid_response, 'Enter a valid date')
+        self.assertFalse(CalendarDayOverride.objects.filter(reason='Invalid date').exists())
+
+        empty_day = timezone.localdate() + timedelta(days=60)
+        empty_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'calendar'}),
+            {'month': empty_day.strftime('%Y-%m'), 'day': empty_day.isoformat()},
+        )
+        self.assertEqual(empty_response.status_code, 200)
+        self.assertEqual(empty_response.context['selected_day_events'], [])
+        self.assertContains(empty_response, 'No schedule events are visible for this day.')
+        self.assertContains(empty_response, "data-calendar-day-status='normal'")
+        self.assertContains(empty_response, "data-calendar-day-field='reason'")
+        previous_month = empty_day.replace(day=1)
+        previous_month = (previous_month - timedelta(days=1)).strftime('%Y-%m')
+        next_month = (empty_day.replace(day=28) + timedelta(days=7)).replace(day=1).strftime('%Y-%m')
+        self.assertContains(empty_response, f'?month={previous_month}')
+        self.assertContains(empty_response, f'?month={next_month}')
 
     def test_schedule_event_edit_opens_editor_and_persists_changes(self):
         self.login(self.owner)

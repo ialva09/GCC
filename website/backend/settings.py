@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse_lazy
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -138,6 +139,32 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', '').lower() in {'1', 'true', 'yes'}
+USE_SUPABASE_CONTACT_STORAGE = os.getenv('USE_SUPABASE_CONTACT_STORAGE', '').lower() in {'1', 'true', 'yes'}
+
+SUPABASE_STORAGE_ENV_VALUES = (
+    os.getenv('SUPABASE_S3_ENDPOINT'),
+    os.getenv('SUPABASE_S3_ACCESS_KEY'),
+    os.getenv('SUPABASE_S3_SECRET_KEY'),
+    os.getenv('SUPABASE_STORAGE_BUCKET'),
+    os.getenv('SUPABASE_S3_REGION'),
+)
+if (USE_SUPABASE_STORAGE or USE_SUPABASE_CONTACT_STORAGE) and not all(SUPABASE_STORAGE_ENV_VALUES):
+    raise ImproperlyConfigured(
+        'Supabase storage requires SUPABASE_S3_ENDPOINT, SUPABASE_S3_ACCESS_KEY, '
+        'SUPABASE_S3_SECRET_KEY, SUPABASE_STORAGE_BUCKET, and SUPABASE_S3_REGION.'
+    )
+
+SUPABASE_STORAGE_OPTIONS = {
+    'endpoint_url': os.getenv('SUPABASE_S3_ENDPOINT'),
+    'access_key': os.getenv('SUPABASE_S3_ACCESS_KEY'),
+    'secret_key': os.getenv('SUPABASE_S3_SECRET_KEY'),
+    'bucket_name': os.getenv('SUPABASE_STORAGE_BUCKET'),
+    'region_name': os.getenv('SUPABASE_S3_REGION'),
+    'signature_version': 's3v4',
+    'file_overwrite': False,
+    'default_acl': None,
+    'querystring_auth': True,
+}
 
 STORAGES = {
     'default': {
@@ -146,17 +173,26 @@ STORAGES = {
     'staticfiles': {
         'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
     },
+    'contact_submissions': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
 }
+
+if USE_SUPABASE_CONTACT_STORAGE:
+    STORAGES['contact_submissions'] = {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+        'OPTIONS': SUPABASE_STORAGE_OPTIONS,
+    }
 
 if USE_SUPABASE_STORAGE:
     STORAGES['default'] = {
         'BACKEND': 'storages.backends.s3.S3Storage',
     }
-    AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_S3_ENDPOINT', '')
-    AWS_ACCESS_KEY_ID = os.getenv('SUPABASE_S3_ACCESS_KEY', '')
-    AWS_SECRET_ACCESS_KEY = os.getenv('SUPABASE_S3_SECRET_KEY', '')
-    AWS_STORAGE_BUCKET_NAME = os.getenv('SUPABASE_STORAGE_BUCKET', '')
-    AWS_S3_REGION_NAME = os.getenv('SUPABASE_S3_REGION', 'us-east-1')
+    AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_S3_ENDPOINT')
+    AWS_ACCESS_KEY_ID = os.getenv('SUPABASE_S3_ACCESS_KEY')
+    AWS_SECRET_ACCESS_KEY = os.getenv('SUPABASE_S3_SECRET_KEY')
+    AWS_STORAGE_BUCKET_NAME = os.getenv('SUPABASE_STORAGE_BUCKET')
+    AWS_S3_REGION_NAME = os.getenv('SUPABASE_S3_REGION')
     AWS_S3_SIGNATURE_VERSION = 's3v4'
     AWS_S3_FILE_OVERWRITE = False
     AWS_DEFAULT_ACL = None
@@ -167,9 +203,16 @@ LOGIN_REDIRECT_URL = 'operations:dashboard'
 LOGOUT_REDIRECT_URL = 'operations:home'
 
 ADMIN_URL_PREFIX = '/gccad/'
-DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'webmaster@localhost')
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
 OTP_TOTP_ISSUER = 'Grand Coast Construction'
 OTP_ADMIN_HIDE_SENSITIVE_DATA = True
+
+# Push delivery is intentionally opt-in. Inbox notifications are still stored
+# when this is disabled, and the retry command becomes active once production
+# Expo credentials/configuration are supplied.
+EXPO_PUSH_ENABLED = os.getenv('EXPO_PUSH_ENABLED', 'false').lower() in {'1', 'true', 'yes'}
+EXPO_PUSH_URL = os.getenv('EXPO_PUSH_URL', 'https://exp.host/--/api/v2/push/send')
+EXPO_ACCESS_TOKEN = os.getenv('EXPO_ACCESS_TOKEN', '')
 
 
 # Email
@@ -184,6 +227,7 @@ EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER')
 EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
 EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() in {'1', 'true', 'yes'}
 EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'false').lower() in {'1', 'true', 'yes'}
+PASSWORD_RESET_TIMEOUT = int(os.getenv('PASSWORD_RESET_TIMEOUT', '3600'))
 
 # Cloudflare Turnstile settings
 CLOUDFLARE_TURNSTILE_SITE_KEY = os.getenv('CLOUDFLARE_TURNSTILE_SITE_KEY')

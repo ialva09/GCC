@@ -36,13 +36,17 @@ ADMIN_OTP_VERIFIED_USER = "gccad_otp_verified_user"
 ADMIN_OTP_ENROLLMENT_DEVICE = "gccad_otp_enrollment_device"
 ADMIN_RECOVERY_ATTEMPTS = "gccad_recovery_attempts"
 ADMIN_RECOVERY_LOCKED_UNTIL = "gccad_recovery_locked_until"
+PASSWORD_RESET_ATTEMPTS = "password_reset_attempts"
+PASSWORD_RESET_LOCKED_UNTIL = "password_reset_locked_until"
 
 ADMIN_GATE_TTL = timedelta(minutes=10)
 ADMIN_RECOVERY_TTL = timedelta(minutes=30)
 ADMIN_RECOVERY_LOCKOUT = timedelta(minutes=15)
 ADMIN_PIN_ATTEMPT_LIMIT = 5
 ADMIN_OTP_ATTEMPT_LIMIT = 5
-ADMIN_RECOVERY_ATTEMPT_LIMIT = 3
+ADMIN_RECOVERY_ATTEMPT_LIMIT = 5
+PASSWORD_RESET_ATTEMPT_LIMIT = 5
+PASSWORD_RESET_LOCKOUT = timedelta(minutes=15)
 
 
 def is_active_admin(user):
@@ -347,6 +351,89 @@ def register_recovery_failure(request):
             timezone.now() + ADMIN_RECOVERY_LOCKOUT
         ).timestamp()
     request.session.modified = True
+    return attempts
+
+
+def clear_recovery_failures(request):
+    request.session.pop(ADMIN_RECOVERY_ATTEMPTS, None)
+    request.session.pop(ADMIN_RECOVERY_LOCKED_UNTIL, None)
+    request.session.modified = True
+
+
+def password_reset_is_locked(request):
+    locked_until = request.session.get(PASSWORD_RESET_LOCKED_UNTIL)
+    if not locked_until:
+        return False
+    try:
+        locked = float(locked_until) > timezone.now().timestamp()
+    except (TypeError, ValueError):
+        locked = False
+    if not locked:
+        request.session.pop(PASSWORD_RESET_LOCKED_UNTIL, None)
+        request.session.pop(PASSWORD_RESET_ATTEMPTS, None)
+        request.session.modified = True
+    return locked
+
+
+def register_password_reset_failure(request):
+    attempts = int(request.session.get(PASSWORD_RESET_ATTEMPTS, 0)) + 1
+    request.session[PASSWORD_RESET_ATTEMPTS] = attempts
+    if attempts >= PASSWORD_RESET_ATTEMPT_LIMIT:
+        request.session[PASSWORD_RESET_LOCKED_UNTIL] = (
+            timezone.now() + PASSWORD_RESET_LOCKOUT
+        ).timestamp()
+    request.session.modified = True
+    return attempts
+
+
+def clear_password_reset_failures(request):
+    request.session.pop(PASSWORD_RESET_ATTEMPTS, None)
+    request.session.pop(PASSWORD_RESET_LOCKED_UNTIL, None)
+    request.session.modified = True
+
+
+class PasswordResetThrottleMixin:
+    password_reset_reject_unknown_email = False
+
+    def _password_reset_locked_response(self, form=None):
+        return self.render_to_response(
+            self.get_context_data(
+                form=form or self.get_form(),
+                password_reset_locked=True,
+            ),
+            status=429,
+        )
+
+    def get(self, request, *args, **kwargs):
+        if password_reset_is_locked(request):
+            return self._password_reset_locked_response()
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if password_reset_is_locked(request):
+            return self._password_reset_locked_response()
+        return super().post(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        users = tuple(form.get_users(form.cleaned_data["email"]))
+        if users:
+            clear_password_reset_failures(self.request)
+        else:
+            attempts = register_password_reset_failure(self.request)
+            if password_reset_is_locked(self.request):
+                return self._password_reset_locked_response(form)
+            if self.password_reset_reject_unknown_email:
+                remaining = PASSWORD_RESET_ATTEMPT_LIMIT - attempts
+                attempt_word = "attempt" if remaining == 1 else "attempts"
+                form.add_error(
+                    "email",
+                    (
+                        "That email does not match an active administrator account. "
+                        f"You have {remaining} {attempt_word} remaining."
+                    ),
+                )
+                return self.form_invalid(form)
+        return super().form_valid(form)
 
 
 def revoke_user_sessions(user):

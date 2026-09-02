@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import calendar as calendar_module
+import json
 import mimetypes
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from functools import wraps
 from urllib.parse import urlencode
@@ -10,7 +11,14 @@ from urllib.parse import urlencode
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth import login, logout
-from django.contrib.auth.views import LoginView, PasswordChangeView
+from django.contrib.auth.views import (
+    LoginView,
+    PasswordChangeView,
+    PasswordResetCompleteView,
+    PasswordResetConfirmView,
+    PasswordResetDoneView,
+    PasswordResetView,
+)
 from django.contrib.auth.models import Group
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
@@ -21,7 +29,7 @@ from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.template.loader import render_to_string
 from django.shortcuts import get_object_or_404, redirect, render
 from django.templatetags.static import static
-from django.urls import reverse
+from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -38,12 +46,16 @@ from .forms import (
     EmployeeInviteAcceptForm,
     EmployeeProfileForm,
     AccountDeleteForm,
+    CalendarDayOverrideForm,
+    EmployeeScheduleOverrideForm,
+    EmployeeWeeklyScheduleForm,
     LeadForm,
     LeadAssignmentForm,
     LeadNoteForm,
     LeadStatusForm,
     MediaEditForm,
     MediaUploadForm,
+    PublicPasswordResetForm,
     ProjectDocumentForm,
     ProjectForm,
     ProjectUpdateForm,
@@ -58,13 +70,18 @@ from .forms import (
 from .models import (
     Activity,
     AdminRecoveryToken,
+    CALENDAR_TIME_ZONE,
     AdminSecurityProfile,
+    CalendarDayOverride,
     Client,
     ClientMessage,
     Estimate,
     EstimateLineItem,
     EmployeeInvite,
     EmployeeProfile,
+    EmployeeNotification,
+    EmployeeScheduleOverride,
+    EmployeeWeeklySchedule,
     Lead,
     LeadAttachment,
     MediaAsset,
@@ -78,8 +95,15 @@ from .models import (
     SiteSettings,
     Task,
     TimeEntry,
+    MobilePushDevice,
+    effective_employee_schedule,
+    schedule_event_local_dates,
+    sanitize_uploaded_name,
 )
 from .turnstile import get_turnstile_site_key
+from .security import (
+    PasswordResetThrottleMixin,
+)
 from .services import (
     complete_client_invite,
     complete_employee_invite,
@@ -90,11 +114,12 @@ from .services import (
     get_or_create_client_for_lead,
     record_activity,
 )
+from .notifications import queue_employee_notifications
 
 
 PUBLIC_PAGES = {"home", "services", "projects", "process", "contact"}
 DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "tasks", "calendar", "time", "media", "documents", "team", "content"}
-TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile"}
+TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile", "notifications"}
 EMPLOYEE_GROUPS = {"Manager", "Office", "Field"}
 LEADERSHIP_GROUPS = {"Owner", "Manager"}
 
@@ -248,9 +273,10 @@ def _visible_projects_for_user(user):
 
 
 def _visible_tasks_for_user(user):
+    visible_leads = Q(lead__isnull=True) | Q(lead__deleted_at__isnull=True)
     if _can_access_dashboard(user):
-        return Task.objects.all()
-    return Task.objects.filter(
+        return Task.objects.filter(visible_leads)
+    return Task.objects.filter(visible_leads).filter(
         Q(assigned_to=user)
         | Q(watchers=user)
         | Q(project__assigned_staff=user)
@@ -270,6 +296,13 @@ def _visible_team_schedule_for_user(user):
     return ScheduleEvent.objects.filter(assignees=user).distinct()
 
 
+def _active_employee_users():
+    return _staff_users().filter(
+        employee_profile__is_active=True,
+        employee_profile__user__is_active=True,
+    )
+
+
 def _visible_time_for_user(user):
     if _can_access_dashboard(user):
         return TimeEntry.objects.all()
@@ -280,6 +313,88 @@ def _visible_clients_for_user(user):
     if _can_access_dashboard(user):
         return Client.objects.all()
     return Client.objects.filter(projects__assigned_staff=user).distinct()
+
+
+def _operations_navigation_counts(user, *, team_mode=False):
+    """Return the counts shown beside operations navigation categories.
+
+    Counts are calculated from the same visibility querysets used by the
+    workspace itself so employee badges cannot disclose records outside their
+    assignments.  ``team_mode`` controls whether a superuser is rendering the
+    employee-style workspace or the full admin operations workspace.
+    """
+    now = timezone.now()
+    is_admin_workspace = _can_access_dashboard(user) and not team_mode
+    projects_qs = _visible_projects_for_user(user)
+    tasks_qs = _visible_tasks_for_user(user)
+    schedule_qs = (
+        _visible_team_schedule_for_user(user)
+        if team_mode
+        else _visible_schedule_for_user(user)
+    )
+
+    open_tasks_count = tasks_qs.filter(
+        status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS, Task.Status.BLOCKED]
+    ).count()
+    upcoming_events_count = schedule_qs.filter(start_at__gte=now).count()
+    active_time_count = _visible_time_for_user(user).filter(clock_out__isnull=True).count()
+    active_projects_count = projects_qs.exclude(status=Project.Status.COMPLETE).count()
+    visible_documents_count = ProjectDocument.objects.filter(project__in=projects_qs).count()
+    visible_media_count = MediaAsset.objects.filter(project__in=projects_qs).count()
+    unread_notifications_count = (
+        EmployeeNotification.objects.filter(employee=user, read_at__isnull=True).count()
+        if team_mode
+        else 0
+    )
+
+    if is_admin_workspace:
+        unread_messages_count = ClientMessage.objects.filter(
+            is_read=False,
+            sent_by__is_staff=False,
+        ).count()
+        open_leads_count = Lead.objects.filter(deleted_at__isnull=True).exclude(
+            status__in=[Lead.Status.WON, Lead.Status.LOST]
+        ).count()
+        pending_estimates_count = Estimate.objects.filter(
+            status__in=[Estimate.Status.DRAFT, Estimate.Status.SENT]
+        ).count()
+        content_count = (
+            Service.objects.filter(is_active=True).count()
+            + ProcessStep.objects.count()
+        )
+        team_count = EmployeeProfile.objects.filter(
+            is_active=True,
+            user__is_active=True,
+            user__is_staff=True,
+        ).count()
+        clients_count = Client.objects.count()
+        overview_count = open_tasks_count + upcoming_events_count + unread_messages_count
+    else:
+        unread_messages_count = 0
+        open_leads_count = 0
+        pending_estimates_count = 0
+        content_count = 0
+        team_count = 0
+        clients_count = 0
+        overview_count = open_tasks_count + upcoming_events_count + unread_notifications_count
+
+    return {
+        "overview": overview_count,
+        "clients": clients_count,
+        "tasks": open_tasks_count,
+        "calendar": upcoming_events_count,
+        "time": active_time_count,
+        "documents": visible_documents_count,
+        "leads": open_leads_count,
+        "estimates": pending_estimates_count,
+        "projects": active_projects_count,
+        "media": visible_media_count,
+        "content": content_count,
+        "team": team_count,
+        "messages": unread_messages_count,
+        "notifications": unread_notifications_count,
+        "profile": 0,
+    }
 
 
 def _site_settings():
@@ -367,8 +482,10 @@ def public_page(request, page="home"):
                     note=form.cleaned_data["message"],
                     source="Website form",
                 )
-                for upload in request.FILES.getlist("photos"):
-                    LeadAttachment.objects.create(lead=lead, file=upload, original_name=upload.name)
+                for upload in form.cleaned_data.get("photos", []):
+                    original_name = sanitize_uploaded_name(upload.name)
+                    upload.name = original_name
+                    LeadAttachment.objects.create(lead=lead, file=upload, original_name=original_name)
                 record_activity("New lead received", f"{lead.name} · Website form", lead=lead)
             messages.success(request, "Thanks for sharing your project. We will be in touch soon.")
             return redirect("operations:contact")
@@ -463,10 +580,45 @@ class GrandCoastPasswordChangeView(PasswordChangeView):
         return reverse("operations:portal")
 
 
+class PublicPasswordResetView(PasswordResetThrottleMixin, PasswordResetView):
+    form_class = PublicPasswordResetForm
+    template_name = "operations/password_reset_form.html"
+    email_template_name = "operations/password_reset_email.txt"
+    subject_template_name = "operations/password_reset_subject.txt"
+    success_url = reverse_lazy("operations:password-reset-done")
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["request"] = self.request
+        return kwargs
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["turnstile_site_key"] = get_turnstile_site_key(self.request)
+        return context
+
+
+class PublicPasswordResetConfirmView(PasswordResetConfirmView):
+    template_name = "operations/password_reset_confirm.html"
+    success_url = reverse_lazy("operations:password-reset-complete")
+
+
+class PublicPasswordResetDoneView(PasswordResetDoneView):
+    template_name = "operations/password_reset_done.html"
+
+
+class PublicPasswordResetCompleteView(PasswordResetCompleteView):
+    template_name = "operations/password_reset_complete.html"
+
+
 def _dashboard_redirect(section, **params):
     url = reverse("operations:dashboard-section", kwargs={"section": section})
     clean_params = {key: value for key, value in params.items() if value not in (None, "")}
     return redirect(f"{url}?{urlencode(clean_params)}" if clean_params else url)
+
+
+def _active_lead_or_404(pk):
+    return get_object_or_404(Lead, pk=pk, deleted_at__isnull=True)
 
 
 def _content_form(instance, services, process_steps, data=None):
@@ -493,7 +645,7 @@ def _dashboard_context(request, section, form_overrides=None):
 
     leads_query = request.GET.get("q", "").strip()
     leads_status = request.GET.get("status", "all")
-    leads_qs = Lead.objects.all().prefetch_related("tasks", "estimates")
+    leads_qs = Lead.objects.filter(deleted_at__isnull=True).prefetch_related("tasks", "estimates", "attachments")
     if leads_query:
         from django.db.models import Q
 
@@ -510,9 +662,21 @@ def _dashboard_context(request, section, form_overrides=None):
     if leads_status != "all" and leads_status in dict(Lead.Status.choices):
         leads_qs = leads_qs.filter(status=leads_status)
     leads = list(leads_qs)
+    active_leads_count = Lead.objects.filter(deleted_at__isnull=True).count()
+    show_deleted_leads = request.GET.get("trash") == "1"
+    deleted_leads = (
+        list(
+            Lead.objects.filter(deleted_at__isnull=False)
+            .select_related("deleted_by", "assigned_to", "client")
+            .order_by("-deleted_at")
+        )
+        if show_deleted_leads
+        else []
+    )
+    deleted_leads_count = Lead.objects.filter(deleted_at__isnull=False).count()
     selected_lead = None
     if request.GET.get("lead"):
-        selected_lead = Lead.objects.prefetch_related("tasks", "estimates").filter(pk=request.GET["lead"]).first()
+        selected_lead = Lead.objects.filter(deleted_at__isnull=True).prefetch_related("tasks", "estimates", "attachments").filter(pk=request.GET["lead"]).first()
     if selected_lead is None and leads:
         selected_lead = leads[0]
 
@@ -553,6 +717,9 @@ def _dashboard_context(request, section, form_overrides=None):
 
     if selected_lead:
         selected_lead.estimate = selected_lead.estimates.order_by("-created_at").first()
+        selected_lead.contact_attachments = list(selected_lead.attachments.all())
+        for attachment in selected_lead.contact_attachments:
+            attachment.download_url = reverse("operations:lead-attachment-file", kwargs={"pk": attachment.pk})
     if selected_estimate:
         selected_estimate.display_total = selected_estimate.total
         selected_estimate.project = selected_estimate.projects.order_by("-created_at").first()
@@ -565,7 +732,7 @@ def _dashboard_context(request, section, form_overrides=None):
         ("Quoted", [Lead.Status.QUOTED]),
         ("Won", [Lead.Status.WON]),
     ]
-    all_leads = list(Lead.objects.all())
+    all_leads = list(Lead.objects.filter(deleted_at__isnull=True))
     pipeline_columns = [
         {"title": title, "won": title == "Won", "leads": [lead for lead in all_leads if lead.status in statuses]}
         for title, statuses in pipeline
@@ -576,7 +743,7 @@ def _dashboard_context(request, section, form_overrides=None):
     dashboard_forms = {
         "lead_form": LeadForm(staff_queryset=_staff_users()),
         "estimate_create_form": EstimateCreateForm(
-            lead_queryset=Lead.objects.exclude(status=Lead.Status.LOST),
+            lead_queryset=Lead.objects.filter(deleted_at__isnull=True).exclude(status=Lead.Status.LOST),
             client_queryset=Client.objects.all(),
             initial={"lead": initial_lead.pk if initial_lead else None},
         ),
@@ -635,7 +802,13 @@ def _dashboard_context(request, section, form_overrides=None):
 
     return {
         "active_section": section,
+        "operations_nav_role": "admin",
+        "operations_nav_counts": _operations_navigation_counts(request.user),
         "leads": leads,
+        "active_leads_count": active_leads_count,
+        "show_deleted_leads": show_deleted_leads,
+        "deleted_leads": deleted_leads,
+        "deleted_leads_count": deleted_leads_count,
         "selected_lead": selected_lead,
         "estimates": estimates,
         "selected_estimate": selected_estimate,
@@ -736,31 +909,201 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
 
     schedule_queryset = _visible_team_schedule_for_user(request.user) if team_mode else _visible_schedule_for_user(request.user)
     events = list(schedule_queryset.select_related("project", "task", "created_by").prefetch_related("assignees"))
-    today = timezone.localdate()
+    today = timezone.localtime(timezone.now(), CALENDAR_TIME_ZONE).date()
     requested_month = request.GET.get("month", "")
     try:
         month_anchor = date.fromisoformat(f"{requested_month}-01") if len(requested_month) == 7 else today.replace(day=1)
     except ValueError:
         month_anchor = today.replace(day=1)
-    calendar_weeks = []
+    month_calendar = calendar_module.Calendar(firstweekday=6).monthdatescalendar(
+        month_anchor.year,
+        month_anchor.month,
+    )
+    calendar_dates = [calendar_date for week in month_calendar for calendar_date in week]
     events_by_day = {}
     for event in events:
-        event_day = timezone.localtime(event.start_at).date()
-        events_by_day.setdefault(event_day, []).append(event)
-    for week in calendar_module.Calendar(firstweekday=6).monthdatescalendar(month_anchor.year, month_anchor.month):
-        calendar_weeks.append([
-            {
-                "date": day,
-                "events": events_by_day.get(day, []),
-                "is_current_month": day.month == month_anchor.month,
-                "is_today": day == today,
+        for event_day in schedule_event_local_dates(event):
+            if event_day in calendar_dates:
+                events_by_day.setdefault(event_day, []).append(event)
+    overrides_by_day = {
+        override.date: override
+        for override in CalendarDayOverride.objects.filter(
+            date__range=(calendar_dates[0], calendar_dates[-1]),
+        )
+    }
+    calendar_weeks = []
+    calendar_day_map = {}
+    for week in month_calendar:
+        week_days = []
+        for calendar_date in week:
+            day_events = sorted(
+                events_by_day.get(calendar_date, []),
+                key=lambda event: (event.start_at, event.pk),
+            )
+            override = overrides_by_day.get(calendar_date)
+            day_context = {
+                "date": calendar_date,
+                "events": day_events,
+                "preview_events": day_events[:3],
+                "event_count": len(day_events),
+                "remaining_event_count": max(len(day_events) - 3, 0),
+                "override": override,
+                "is_short": bool(override and override.status == CalendarDayOverride.Status.SHORT),
+                "is_closed": bool(override and override.status == CalendarDayOverride.Status.CLOSED),
+                "is_current_month": calendar_date.month == month_anchor.month,
+                "is_today": calendar_date == today,
             }
-            for day in week
-        ])
+            calendar_day_map[calendar_date] = day_context
+            week_days.append(day_context)
+        calendar_weeks.append(week_days)
+
+    schedule_employees = []
+    schedule_summaries = []
+    selected_schedule_employee = None
+    schedule_week_days = []
+    schedule_week_anchor = today - timedelta(days=today.weekday())
+    schedule_override_form = None
+    employee_calendar_days = {}
+    selected_day_value = request.GET.get("day", "")
+    try:
+        selected_day_date = date.fromisoformat(selected_day_value)
+    except ValueError:
+        selected_day_date = None
+    if section == "calendar":
+        if team_mode:
+            selected_schedule_employee = request.user
+        elif _can_manage_schedule(request.user):
+            schedule_employees = list(_staff_users())
+            for schedule_employee in schedule_employees:
+                weekly_records = list(EmployeeWeeklySchedule.objects.filter(employee=schedule_employee))
+                total_minutes = sum(
+                    (
+                        record.end_time.hour * 60
+                        + record.end_time.minute
+                        - record.start_time.hour * 60
+                        - record.start_time.minute
+                    )
+                    for record in weekly_records
+                    if record.is_working and record.start_time and record.end_time
+                )
+                schedule_summaries.append(
+                    {
+                        'employee': schedule_employee,
+                        'weekly_records': weekly_records,
+                        'weekly_hours': total_minutes / 60,
+                    }
+                )
+            requested_employee = request.GET.get("schedule_employee", "")
+            selected_schedule_employee = next(
+                (
+                    employee
+                    for employee in schedule_employees
+                    if str(employee.pk) == requested_employee
+                ),
+                schedule_employees[0] if schedule_employees else None,
+            )
+
+        requested_schedule_day = request.GET.get("schedule_day", "")
+        try:
+            schedule_day = date.fromisoformat(requested_schedule_day)
+        except ValueError:
+            schedule_day = selected_day_date or today
+        requested_schedule_week = request.GET.get("week", "")
+        try:
+            schedule_week_anchor = date.fromisoformat(requested_schedule_week)
+        except ValueError:
+            schedule_week_anchor = schedule_day
+        schedule_week_anchor -= timedelta(days=schedule_week_anchor.weekday())
+
+        if selected_schedule_employee is not None:
+            employee_calendar_days = {
+                calendar_date: effective_employee_schedule(
+                    selected_schedule_employee,
+                    calendar_date,
+                )
+                for calendar_date in calendar_dates
+            }
+            for calendar_date in calendar_dates:
+                calendar_day_map[calendar_date]["effective_shift"] = employee_calendar_days[calendar_date]
+
+            if _can_manage_schedule(request.user) and not team_mode:
+                schedule_week_dates = [
+                    schedule_week_anchor + timedelta(days=offset)
+                    for offset in range(7)
+                ]
+                weekly_form_override = form_overrides.get("weekly_form")
+                for weekly_date in schedule_week_dates:
+                    weekly_record = EmployeeWeeklySchedule.objects.filter(
+                        employee=selected_schedule_employee,
+                        weekday=weekly_date.weekday(),
+                    ).first()
+                    weekly_form = EmployeeWeeklyScheduleForm(
+                        instance=weekly_record,
+                        prefix=f"weekday-{weekly_date.weekday()}",
+                    )
+                    if (
+                        weekly_form_override is not None
+                        and getattr(weekly_form_override, "weekday", None) == weekly_date.weekday()
+                    ):
+                        weekly_form = weekly_form_override
+                    schedule_week_days.append(
+                        {
+                            "date": weekly_date,
+                            "weekday": weekly_date.weekday(),
+                            "shift": effective_employee_schedule(
+                                selected_schedule_employee,
+                                weekly_date,
+                            ),
+                            "weekly_record": weekly_record,
+                            "form": weekly_form,
+                        }
+                    )
+
+                selected_schedule_override = EmployeeScheduleOverride.objects.filter(
+                    employee=selected_schedule_employee,
+                    date=schedule_day,
+                ).first()
+                schedule_override_form = EmployeeScheduleOverrideForm(
+                    instance=selected_schedule_override,
+                    employee_queryset=_staff_users(),
+                    initial={
+                        "employee": selected_schedule_employee.pk,
+                        "date": schedule_day,
+                    },
+                )
+        if form_overrides.get("schedule_override_form") is not None:
+            schedule_override_form = form_overrides["schedule_override_form"]
+
+    for calendar_date, shift in employee_calendar_days.items():
+        calendar_day_map[calendar_date]["effective_shift"] = shift
+    calendar_month_days = [
+        calendar_day_map[calendar_date]
+        for calendar_date in calendar_dates
+        if calendar_date.month == month_anchor.month
+        and (
+            events_by_day.get(calendar_date)
+            or overrides_by_day.get(calendar_date)
+            or employee_calendar_days.get(calendar_date, {}).get("is_working")
+            or employee_calendar_days.get(calendar_date, {}).get("employee_override")
+        )
+    ]
+    calendar_preview_events = [
+        event
+        for day_context in calendar_month_days
+        for event in day_context['preview_events']
+    ]
     previous_month = month_anchor.month - 1 or 12
     previous_year = month_anchor.year - (1 if month_anchor.month == 1 else 0)
     next_month = month_anchor.month + 1 if month_anchor.month < 12 else 1
     next_year = month_anchor.year + (1 if month_anchor.month == 12 else 0)
+    selected_day_value = request.GET.get("day", "")
+    try:
+        selected_day_date = date.fromisoformat(selected_day_value)
+    except ValueError:
+        selected_day_date = None
+    selected_day = calendar_day_map.get(selected_day_date)
+    selected_day_events = selected_day["events"] if selected_day else []
+    selected_day_override = selected_day["override"] if selected_day else None
     event_id = request.GET.get("event")
     selected_event = next((event for event in events if str(event.pk) == event_id), None) if event_id else None
     selected_task_id = request.GET.get("task")
@@ -822,6 +1165,14 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         # part of the filtered task list.
         task_queryset=_visible_tasks_for_user(request.user),
     )
+    day_form = (
+        CalendarDayOverrideForm(
+            instance=selected_day_override,
+            initial={'date': selected_day['date']} if selected_day and not selected_day_override else {},
+        )
+        if selected_day and _can_manage_schedule(request.user)
+        else None
+    )
     client_form = ClientForm(instance=selected_client if request.GET.get("edit") == "client" else None)
     document_form = ProjectDocumentForm(project_queryset=projects_qs)
     media_upload_form = MediaUploadForm(project_queryset=projects_qs)
@@ -842,6 +1193,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     client_form = form_overrides.get("client_form", client_form)
     task_form = form_overrides.get("task_form", task_form)
     event_form = form_overrides.get("event_form", event_form)
+    day_form = form_overrides.get("day_form", day_form)
     document_form = form_overrides.get("document_form", document_form)
     media_upload_form = form_overrides.get("media_upload_form", media_upload_form)
     time_form = form_overrides.get("time_form", time_form)
@@ -870,6 +1222,8 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     return {
         "active_section": section,
         "team_mode": team_mode,
+        "operations_nav_role": "employee" if team_mode else "admin",
+        "operations_nav_counts": _operations_navigation_counts(request.user, team_mode=team_mode),
         "projects": projects,
         "selected_project": selected_project,
         "tasks": tasks,
@@ -887,11 +1241,25 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "media_assets": media_assets,
         "media_visibility": media_visibility,
         "media_visibility_choices": MediaAsset.Visibility.choices,
-        "events": events,
+        "events": calendar_preview_events,
+        "calendar_preview_events": calendar_preview_events,
         "calendar_weeks": calendar_weeks,
+        "calendar_month_days": calendar_month_days,
         "calendar_month_label": month_anchor.strftime("%B %Y"),
+        "calendar_month_key": month_anchor.strftime("%Y-%m"),
         "calendar_previous": f"{previous_year:04d}-{previous_month:02d}",
         "calendar_next": f"{next_year:04d}-{next_month:02d}",
+        "selected_day": selected_day,
+        "selected_day_events": selected_day_events,
+        "selected_day_override": selected_day_override,
+        "schedule_employees": schedule_employees,
+        "schedule_summaries": schedule_summaries,
+        "selected_schedule_employee": selected_schedule_employee,
+        "schedule_week_anchor": schedule_week_anchor,
+        "schedule_week_previous": schedule_week_anchor - timedelta(days=7),
+        "schedule_week_next": schedule_week_anchor + timedelta(days=7),
+        "schedule_week_days": schedule_week_days,
+        "schedule_override_form": schedule_override_form,
         "selected_event": selected_event,
         "time_entries": time_entries,
         "active_time_entry": active_time_entry,
@@ -903,6 +1271,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "profile": profile,
         "task_form": task_form,
         "event_form": event_form,
+        "day_form": day_form,
         "client_form": client_form,
         "document_form": document_form,
         "media_upload_form": media_upload_form,
@@ -925,6 +1294,9 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "can_edit_selected_task": can_edit_selected_task,
         "last_employee_invite_url": request.session.pop("last_employee_invite_url", ""),
         "last_reset_url": request.session.pop("last_reset_url", ""),
+        "employee_notifications": list(
+            EmployeeNotification.objects.filter(employee=request.user)[:100]
+        ),
     }
 
 
@@ -1084,7 +1456,7 @@ def client_revoke_access(request, pk):
 @require_POST
 @staff_required
 def lead_convert_client(request, pk):
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     client = get_or_create_client_for_lead(lead, actor=request.user)
     record_activity("Lead converted to client", f"{lead.name} · {client.email}", actor=request.user, lead=lead)
     messages.success(request, f"{lead.name} is now a client record.")
@@ -1167,6 +1539,180 @@ def task_set_status(request, pk):
     return _workspace_redirect(request, "tasks", task=task.pk)
 
 
+def _calendar_notification_url(day):
+    return (
+        reverse("operations:team-section", kwargs={"section": "calendar"})
+        + "?"
+        + urlencode({"month": day.strftime("%Y-%m"), "day": day.isoformat()})
+    )
+
+
+def _friendly_calendar_date(day):
+    return day.strftime('%b %d, %Y').replace(' 0', ' ')
+
+
+def _employee_schedule_signature(schedule):
+    if schedule is None:
+        return None
+    return (
+        schedule.employee_id,
+        schedule.weekday,
+        schedule.is_working,
+        schedule.start_time,
+        schedule.end_time,
+    )
+
+
+def _employee_override_signature(override):
+    if override is None:
+        return None
+    return (
+        override.employee_id,
+        override.date,
+        override.status,
+        override.start_time,
+        override.end_time,
+        override.reason,
+    )
+
+
+@require_POST
+@staff_required
+def calendar_day_update(request):
+    if not _can_manage_schedule(request.user):
+        raise PermissionDenied
+
+    form = CalendarDayOverrideForm(request.POST)
+    month_value = request.POST.get('month', '').strip()
+    day_value = request.POST.get('date', '').strip()
+
+    def render_error():
+        query = request.GET.copy()
+        if month_value:
+            query['month'] = month_value
+        if day_value:
+            query['day'] = day_value
+        request.GET = query
+        return render(
+            request,
+            'operations/workspace.html',
+            _workspace_context(request, 'calendar', form_overrides={'day_form': form}),
+        )
+
+    if not form.is_valid():
+        return render_error()
+
+    override_date = form.cleaned_data['date']
+    try:
+        if len(month_value) != 7:
+            raise ValueError
+        date.fromisoformat(f'{month_value}-01')
+    except ValueError:
+        month_value = override_date.strftime('%Y-%m')
+
+    status = form.cleaned_data['status']
+    if status == CalendarDayOverrideForm.NORMAL:
+        changed = False
+        with transaction.atomic():
+            override = CalendarDayOverride.objects.select_for_update().filter(date=override_date).first()
+            if override:
+                override.delete()
+                changed = True
+            if changed:
+                record_activity(
+                    'Calendar day reset',
+                    override_date.isoformat(),
+                    actor=request.user,
+                )
+                queue_employee_notifications(
+                    _active_employee_users(),
+                    kind='company-day',
+                    title='Company calendar day reset',
+                    body=f'{_friendly_calendar_date(override_date)} is back to its normal schedule.',
+                    destination_url=_calendar_notification_url(override_date),
+                    metadata={'date': override_date.isoformat(), 'status': 'normal'},
+                    created_by=request.user,
+                )
+        if changed:
+            messages.success(request, f'{override_date.isoformat()} returned to a normal day.')
+        else:
+            messages.info(request, f'{override_date.isoformat()} was already a normal day.')
+        return _workspace_redirect(
+            request,
+            'calendar',
+            month=month_value,
+            day=override_date.isoformat(),
+        )
+
+    with transaction.atomic():
+        override = CalendarDayOverride.objects.select_for_update().filter(date=override_date).first()
+        was_existing = override is not None
+        previous_signature = (
+            (override.status, override.short_start, override.short_end, override.reason)
+            if override is not None
+            else None
+        )
+        if override is None:
+            override = CalendarDayOverride(
+                date=override_date,
+                created_by=request.user,
+            )
+        override.status = status
+        override.short_start = form.cleaned_data['short_start']
+        override.short_end = form.cleaned_data['short_end']
+        override.reason = form.cleaned_data['reason']
+        try:
+            override.full_clean()
+        except ValidationError as error:
+            for message in error.messages:
+                form.add_error(None, message)
+        else:
+            next_signature = (
+                status,
+                form.cleaned_data['short_start'],
+                form.cleaned_data['short_end'],
+                form.cleaned_data['reason'],
+            )
+            changed = previous_signature != next_signature
+            override.save()
+            if changed:
+                record_activity(
+                    'Calendar day updated',
+                    f'{override_date.isoformat()} · {override.get_status_display()}',
+                    actor=request.user,
+                )
+                queue_employee_notifications(
+                    _active_employee_users(),
+                    kind='company-day',
+                    title='Company calendar updated',
+                    body=(
+                        f'{_friendly_calendar_date(override_date)} is now '
+                        f'{override.get_status_display().lower()}.'
+                    ),
+                    destination_url=_calendar_notification_url(override_date),
+                    metadata={
+                        'date': override_date.isoformat(),
+                        'status': override.status,
+                    },
+                    created_by=request.user,
+                )
+
+    if form.errors:
+        return render_error()
+
+    action = 'updated' if was_existing else 'added'
+    if changed:
+        messages.success(request, f'{override_date.isoformat()} {override.get_status_display().lower()} setting {action}.')
+    else:
+        messages.info(request, f'{override_date.isoformat()} already has that setting.')
+    return _workspace_redirect(
+        request,
+        'calendar',
+        month=month_value,
+        day=override_date.isoformat(),
+    )
+
+
 @require_POST
 @team_required
 def schedule_create(request):
@@ -1179,11 +1725,24 @@ def schedule_create(request):
         task_queryset=_visible_tasks_for_user(request.user),
     )
     if form.is_valid():
-        event = form.save(commit=False)
-        event.created_by = request.user
-        event.save()
-        form.save_m2m()
-        record_activity('Calendar event created', event.title, actor=request.user, project=event.project)
+        with transaction.atomic():
+            event = form.save(commit=False)
+            event.created_by = request.user
+            event.save()
+            form.save_m2m()
+            assigned_employees = list(event.assignees.all())
+            record_activity('Calendar event created', event.title, actor=request.user, project=event.project)
+            if assigned_employees:
+                event_day = timezone.localtime(event.start_at, CALENDAR_TIME_ZONE).date()
+                queue_employee_notifications(
+                    assigned_employees,
+                    kind='calendar-event',
+                    title='You were added to a calendar event',
+                    body=f'{event.title} · {event_day.isoformat()}',
+                    destination_url=_calendar_notification_url(event_day),
+                    metadata={'event_id': str(event.pk), 'date': event_day.isoformat()},
+                    created_by=request.user,
+                )
         messages.success(request, f"{event.title} was added to the calendar.")
         return _workspace_redirect(request, "calendar", event=event.pk)
     messages.error(request, "Please correct the calendar event details.")
@@ -1196,6 +1755,16 @@ def schedule_update(request, pk):
     if not _can_manage_schedule(request.user):
         raise PermissionDenied
     event = get_object_or_404(ScheduleEvent, pk=pk)
+    previous_values = (
+        event.title,
+        event.project_id,
+        event.task_id,
+        event.start_at,
+        event.end_at,
+        event.location,
+        event.notes,
+        tuple(sorted(event.assignees.values_list('pk', flat=True))),
+    )
     form = ScheduleEventForm(
         request.POST,
         instance=event,
@@ -1204,11 +1773,45 @@ def schedule_update(request, pk):
         task_queryset=_visible_tasks_for_user(request.user),
     )
     if form.is_valid():
-        event = form.save(commit=False)
-        event.save()
-        form.save_m2m()
-        record_activity('Calendar event updated', event.title, actor=request.user, project=event.project)
-        messages.success(request, "Calendar event updated.")
+        with transaction.atomic():
+            locked_event = ScheduleEvent.objects.select_for_update().get(pk=pk)
+            form.instance = locked_event
+            # ModelForm validation populated the original instance before the
+            # transaction began. Copy its validated model fields onto the
+            # locked row before saving so a concurrent-safe update does not
+            # accidentally write the old values back.
+            for field_name in form.fields:
+                if field_name != 'assignees' and field_name in form.cleaned_data:
+                    setattr(locked_event, field_name, form.cleaned_data[field_name])
+            event = form.save(commit=False)
+            event.save()
+            form.save_m2m()
+            current_values = (
+                event.title,
+                event.project_id,
+                event.task_id,
+                event.start_at,
+                event.end_at,
+                event.location,
+                event.notes,
+                tuple(sorted(event.assignees.values_list('pk', flat=True))),
+            )
+            changed = previous_values != current_values
+            if changed:
+                record_activity('Calendar event updated', event.title, actor=request.user, project=event.project)
+                affected_ids = set(previous_values[-1]) | set(current_values[-1])
+                if affected_ids:
+                    event_day = timezone.localtime(event.start_at, CALENDAR_TIME_ZONE).date()
+                    queue_employee_notifications(
+                        affected_ids,
+                        kind='calendar-event',
+                        title='A calendar event was updated',
+                        body=f'{event.title} · {event_day.isoformat()}',
+                        destination_url=_calendar_notification_url(event_day),
+                        metadata={'event_id': str(event.pk), 'date': event_day.isoformat()},
+                        created_by=request.user,
+                    )
+        messages.success(request, "Calendar event updated." if changed else "No calendar event changes were needed.")
         return _workspace_redirect(request, "calendar", event=event.pk)
     messages.error(request, "Please correct the calendar event details.")
     return _render_workspace_form_error(request, "calendar", {"event_form": form}, selections={"event": event.pk}, edit="event")
@@ -1219,17 +1822,300 @@ def schedule_update(request, pk):
 def schedule_delete(request, pk):
     if not _can_manage_schedule(request.user):
         raise PermissionDenied
-    event = get_object_or_404(ScheduleEvent, pk=pk)
-    event_title = event.title
-    record_activity(
-        "Calendar event deleted",
-        event_title,
-        actor=request.user,
-        project=event.project,
-    )
-    event.delete()
+    with transaction.atomic():
+        event = get_object_or_404(ScheduleEvent.objects.select_for_update(), pk=pk)
+        event_title = event.title
+        assigned_employees = list(event.assignees.all())
+        event_day = timezone.localtime(event.start_at, CALENDAR_TIME_ZONE).date()
+        record_activity(
+            "Calendar event deleted",
+            event_title,
+            actor=request.user,
+            project=event.project,
+        )
+        event.delete()
+        if assigned_employees:
+            queue_employee_notifications(
+                assigned_employees,
+                kind='calendar-event',
+                title='A calendar event was removed',
+                body=f'{event_title} · {event_day.isoformat()}',
+                destination_url=_calendar_notification_url(event_day),
+                metadata={'date': event_day.isoformat()},
+                created_by=request.user,
+            )
     messages.success(request, f"{event_title} was removed from the calendar.")
     return _workspace_redirect(request, "calendar")
+
+
+@require_POST
+@team_required
+def weekly_schedule_update(request):
+    if not _can_manage_schedule(request.user):
+        raise PermissionDenied
+
+    employee = get_object_or_404(_staff_users(), pk=request.POST.get('employee'))
+    try:
+        weekday = int(request.POST.get('weekday', ''))
+    except (TypeError, ValueError):
+        weekday = -1
+    if weekday not in range(7):
+        raise Http404
+
+    prefix = f'weekday-{weekday}'
+    form = EmployeeWeeklyScheduleForm(request.POST, prefix=prefix)
+    form.weekday = weekday
+    requested_week = request.POST.get('week', '')
+    try:
+        week_anchor = date.fromisoformat(requested_week)
+        week_anchor -= timedelta(days=week_anchor.weekday())
+    except ValueError:
+        week_anchor = timezone.localtime(timezone.now(), CALENDAR_TIME_ZONE).date()
+        week_anchor -= timedelta(days=week_anchor.weekday())
+
+    if not form.is_valid():
+        messages.error(request, 'Please correct the weekly shift details.')
+        return _render_workspace_form_error(
+            request,
+            'calendar',
+            {'weekly_form': form},
+            selections={
+                'schedule_employee': employee.pk,
+                'week': week_anchor.isoformat(),
+            },
+        )
+
+    with transaction.atomic():
+        schedule = EmployeeWeeklySchedule.objects.select_for_update().filter(
+            employee=employee,
+            weekday=weekday,
+        ).first()
+        previous_signature = _employee_schedule_signature(schedule)
+        is_working = form.cleaned_data['is_working']
+        if schedule is None and not is_working:
+            # Blank-by-default is the same effective state as an explicit
+            # not-scheduled record, so do not create noise or notify anyone.
+            changed = False
+        else:
+            if schedule is None:
+                schedule = EmployeeWeeklySchedule(
+                    employee=employee,
+                    weekday=weekday,
+                )
+            schedule.is_working = is_working
+            schedule.start_time = form.cleaned_data['start_time'] if schedule.is_working else None
+            schedule.end_time = form.cleaned_data['end_time'] if schedule.is_working else None
+            schedule.full_clean()
+            schedule.save()
+            changed = previous_signature != _employee_schedule_signature(schedule)
+        if changed:
+            record_activity(
+                'Employee weekly schedule updated',
+                f'{employee.get_username()} · {schedule.get_weekday_display()}',
+                actor=request.user,
+            )
+            queue_employee_notifications(
+                [employee],
+                kind='employee-schedule',
+                title='Your weekly schedule was updated',
+                body=f'{schedule.get_weekday_display()} hours were updated by your administrator.',
+                destination_url=_calendar_notification_url(week_anchor),
+                metadata={
+                    'employee_id': employee.pk,
+                    'weekday': weekday,
+                    'week': week_anchor.isoformat(),
+                },
+                created_by=request.user,
+            )
+
+    messages.success(
+        request,
+        f'{schedule.get_weekday_display()} was updated.' if changed else 'No weekly schedule changes were needed.',
+    )
+    return _workspace_redirect(
+        request,
+        'calendar',
+        schedule_employee=employee.pk,
+        week=week_anchor.isoformat(),
+    )
+
+
+@require_POST
+@team_required
+def employee_day_schedule_update(request):
+    if not _can_manage_schedule(request.user):
+        raise PermissionDenied
+
+    form = EmployeeScheduleOverrideForm(
+        request.POST,
+        employee_queryset=_staff_users(),
+    )
+    if not form.is_valid():
+        messages.error(request, 'Please correct the employee day override details.')
+        return _render_workspace_form_error(
+            request,
+            'calendar',
+            {'schedule_override_form': form},
+            selections={
+                'schedule_employee': request.POST.get('employee'),
+                'schedule_day': request.POST.get('date'),
+            },
+        )
+
+    employee = form.cleaned_data['employee']
+    override_date = form.cleaned_data['date']
+    status = form.cleaned_data['status']
+    try:
+        week_anchor = override_date - timedelta(days=override_date.weekday())
+    except (TypeError, AttributeError):
+        week_anchor = override_date
+
+    with transaction.atomic():
+        override = EmployeeScheduleOverride.objects.select_for_update().filter(
+            employee=employee,
+            date=override_date,
+        ).first()
+        previous_signature = _employee_override_signature(override)
+        if status == EmployeeScheduleOverrideForm.CLEAR:
+            if override is not None:
+                override.delete()
+            changed = previous_signature is not None
+            action_description = 'cleared'
+        else:
+            if override is None:
+                override = EmployeeScheduleOverride(
+                    employee=employee,
+                    date=override_date,
+                    created_by=request.user,
+                )
+            override.status = status
+            override.start_time = form.cleaned_data['start_time']
+            override.end_time = form.cleaned_data['end_time']
+            override.reason = form.cleaned_data['reason']
+            override.full_clean()
+            override.save()
+            changed = previous_signature != _employee_override_signature(override)
+            action_description = 'updated'
+
+        if changed:
+            record_activity(
+                f'Employee day schedule {action_description}',
+                f'{employee.get_username()} · {override_date.isoformat()}',
+                actor=request.user,
+            )
+            queue_employee_notifications(
+                [employee],
+                kind='employee-schedule',
+                title='Your schedule was updated',
+                body=(
+                    f'{_friendly_calendar_date(override_date)} is now '
+                    f'{"a working day" if status == EmployeeScheduleOverride.Status.WORKING else "a day off" if status == EmployeeScheduleOverride.Status.OFF else "using your weekly schedule"}.'
+                ),
+                destination_url=_calendar_notification_url(override_date),
+                metadata={
+                    'employee_id': employee.pk,
+                    'date': override_date.isoformat(),
+                    'status': status,
+                },
+                created_by=request.user,
+            )
+
+    messages.success(
+        request,
+        f'{_friendly_calendar_date(override_date)} {action_description}.'
+        if changed
+        else 'No employee day schedule changes were needed.',
+    )
+    return _workspace_redirect(
+        request,
+        'calendar',
+        schedule_employee=employee.pk,
+        schedule_day=override_date.isoformat(),
+        week=week_anchor.isoformat(),
+    )
+
+
+def _notification_request_data(request):
+    if request.content_type == 'application/json':
+        try:
+            return json.loads(request.body.decode('utf-8') or '{}')
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+    return request.POST
+
+
+@require_POST
+@team_required
+def notification_device_register(request):
+    data = _notification_request_data(request)
+    token = str(data.get('token') or data.get('expo_push_token') or '').strip()
+    if not token or len(token) > 255 or not token.startswith(('ExpoPushToken[', 'ExponentPushToken[')):
+        return JsonResponse({'error': 'A valid Expo push token is required.'}, status=400)
+
+    now = timezone.now()
+    with transaction.atomic():
+        MobilePushDevice.objects.filter(token=token).exclude(employee=request.user).update(
+            is_active=False,
+            deactivated_at=now,
+            updated_at=now,
+        )
+        device, _ = MobilePushDevice.objects.update_or_create(
+            token=token,
+            defaults={
+                'employee': request.user,
+                'platform': str(data.get('platform') or '')[:20],
+                'is_active': True,
+                'last_seen_at': now,
+                'deactivated_at': None,
+            },
+        )
+    return JsonResponse({'ok': True, 'device_id': str(device.pk)})
+
+
+@require_POST
+@team_required
+def notification_device_deactivate(request):
+    data = _notification_request_data(request)
+    token = str(data.get('token') or data.get('expo_push_token') or '').strip()
+    devices = MobilePushDevice.objects.filter(employee=request.user, is_active=True)
+    if token:
+        devices = devices.filter(token=token)
+    updated = devices.update(
+        is_active=False,
+        deactivated_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    return JsonResponse({'ok': True, 'deactivated': updated})
+
+
+@require_GET
+@team_required
+def employee_notifications(request):
+    return render(
+        request,
+        'operations/workspace.html',
+        _workspace_context(request, 'notifications', team_mode=True),
+    )
+
+
+@require_POST
+@team_required
+def employee_notification_mark_read(request, pk):
+    notification = get_object_or_404(EmployeeNotification, pk=pk, employee=request.user)
+    if notification.read_at is None:
+        notification.read_at = timezone.now()
+        notification.save(update_fields=['read_at', 'updated_at'])
+    return JsonResponse({'ok': True, 'unread': EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True).count()})
+
+
+@require_POST
+@team_required
+def employee_notifications_mark_all_read(request):
+    updated = EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True).update(
+        read_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    return JsonResponse({'ok': True, 'marked_read': updated})
 
 
 @require_POST
@@ -1493,8 +2379,57 @@ def lead_create(request):
 
 @require_POST
 @staff_required
+def lead_delete(request, pk):
+    lead = _active_lead_or_404(pk)
+    now = timezone.now()
+    lead.deleted_at = now
+    lead.deleted_by = request.user
+    lead.save(update_fields=["deleted_at", "deleted_by", "updated_at"])
+    record_activity("Lead moved to trash", lead.name, actor=request.user, lead=lead)
+    messages.success(request, f"{lead.name} was moved to Trash. You can restore it from the lead pipeline.")
+    return _dashboard_redirect("leads")
+
+
+@require_POST
+@staff_required
+def lead_delete_all(request):
+    now = timezone.now()
+    deleted_count = Lead.objects.filter(deleted_at__isnull=True).update(
+        deleted_at=now,
+        deleted_by_id=request.user.pk,
+        updated_at=now,
+    )
+    if deleted_count:
+        record_activity(
+            "All leads moved to trash",
+            f"{deleted_count} active lead(s)",
+            actor=request.user,
+        )
+        messages.success(
+            request,
+            f"{deleted_count} lead(s) moved to Trash. You can restore them from the lead pipeline.",
+        )
+    else:
+        messages.info(request, "There are no active leads to move to Trash.")
+    return _dashboard_redirect("leads")
+
+
+@require_POST
+@staff_required
+def lead_restore(request, pk):
+    lead = get_object_or_404(Lead, pk=pk, deleted_at__isnull=False)
+    lead.deleted_at = None
+    lead.deleted_by = None
+    lead.save(update_fields=["deleted_at", "deleted_by", "updated_at"])
+    record_activity("Lead restored", lead.name, actor=request.user, lead=lead)
+    messages.success(request, f"{lead.name} was restored to the lead pipeline.")
+    return _dashboard_redirect("leads", trash="1")
+
+
+@require_POST
+@staff_required
 def lead_update_status(request, pk):
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     form = LeadStatusForm(request.POST, instance=lead)
     if form.is_valid():
         lead = form.save()
@@ -1508,7 +2443,7 @@ def lead_update_status(request, pk):
 def lead_assign(request, pk):
     if not _can_manage_tasks(request.user):
         raise PermissionDenied
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     form = LeadAssignmentForm(request.POST, instance=lead, staff_queryset=_staff_users())
     if form.is_valid():
         lead = form.save()
@@ -1523,7 +2458,7 @@ def lead_assign(request, pk):
 @require_POST
 @staff_required
 def lead_toggle_priority(request, pk):
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     lead.priority = not lead.priority
     lead.save(update_fields=["priority", "updated_at"])
     record_activity(
@@ -1539,7 +2474,7 @@ def lead_toggle_priority(request, pk):
 @require_POST
 @staff_required
 def lead_update_note(request, pk):
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     form = LeadNoteForm(request.POST, instance=lead, prefix="note")
     if form.is_valid():
         lead = form.save()
@@ -1559,7 +2494,7 @@ def lead_update_note(request, pk):
 @require_POST
 @staff_required
 def lead_create_followup(request, pk):
-    lead = get_object_or_404(Lead, pk=pk)
+    lead = _active_lead_or_404(pk)
     form = QuickTaskForm(request.POST, prefix="followup", staff_queryset=_staff_users(), lead=lead)
     if form.is_valid():
         task = form.save(commit=False)
@@ -1606,7 +2541,7 @@ def _estimate_from_form(form, request):
 def estimate_create(request):
     form = EstimateCreateForm(
         request.POST,
-        lead_queryset=Lead.objects.exclude(status=Lead.Status.LOST),
+        lead_queryset=Lead.objects.filter(deleted_at__isnull=True).exclude(status=Lead.Status.LOST),
         client_queryset=Client.objects.all(),
     )
     if form.is_valid():
@@ -2298,6 +3233,30 @@ def media_file(request, pk):
     if asset.fallback_image:
         return redirect(_asset(asset.fallback_image))
     raise Http404
+
+
+@require_GET
+@staff_required
+def lead_attachment_file(request, pk):
+    attachment = get_object_or_404(LeadAttachment.objects.select_related("lead"), pk=pk)
+    if not attachment.file:
+        raise Http404
+    try:
+        opened = attachment.file.open("rb")
+    except (FileNotFoundError, OSError) as exc:
+        raise Http404 from exc
+    filename = sanitize_uploaded_name(attachment.original_name or attachment.file.name.rsplit("/", 1)[-1])
+    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    response = FileResponse(
+        opened,
+        as_attachment=True,
+        filename=filename,
+        content_type=content_type,
+    )
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cross-Origin-Resource-Policy"] = "same-origin"
+    return response
 
 
 def legacy_dashboard(request, section="overview"):

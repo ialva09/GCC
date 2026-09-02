@@ -40,7 +40,7 @@ The application now includes:
 - Unfold for the private /gccad/ interface
 - Operations search from the Unfold admin home
 
-I intentionally did not add Stripe, payment processing, payment webhooks, card collection, email delivery, external calendar synchronization, payroll functionality, or geolocation tracking.
+I intentionally did not add Stripe, payment processing, payment webhooks, card collection, contact-form email notifications, external calendar synchronization, payroll functionality, or geolocation tracking.
 
 ## Project layout
 
@@ -310,7 +310,7 @@ I can:
 - Revoke access.
 - Review client messages and unread state.
 
-The application does not send email yet. I copy the generated invite link and send it manually.
+The application sends password-recovery email for client and employee accounts. Client invitations still use a generated link that I copy and send manually.
 
 The client invite:
 
@@ -501,7 +501,14 @@ A schedule event supports:
 - Location
 - Notes
 
-The calendar is internal and non-recurring. There is no Google Calendar or Outlook synchronization.
+The calendar is internal and does not synchronize with Google Calendar or Outlook. The Owner can also manage blank-by-default recurring employee templates at the bottom of the calendar page:
+
+- one continuous shift per employee and weekday
+- Pacific-time date overrides for adjusted hours or days off
+- Clear / use weekly schedule to remove an exception without changing the template
+- company-wide short and closed days that constrain or suppress effective employee hours
+
+Closed and short days never delete schedule events or employee templates. Existing event validation prevents a new event from conflicting with a company closure or short-day window.
 
 Managers view the complete read-only Team calendar at:
 
@@ -516,6 +523,12 @@ Office and Field employees view only their own assigned schedule at:
 ~~~
 
 The Team workspace provides a monthly calendar with a mobile-friendly list fallback. Each event shows the complete range, such as Monday · 4:00 PM – 8:00 PM, in America/Los_Angeles. Clicking an employee event opens read-only details for non-Owners.
+
+Schedule mutations also create persistent employee inbox notifications. When a native employee app is configured, the same notification is sent through Expo Push Service with the device default sound and a link back to the relevant calendar day. Failed deliveries remain retryable with:
+
+~~~powershell
+python manage.py dispatch_push_notifications
+~~~
 
 ## 15. I test employee clock-in and time tracking
 
@@ -590,7 +603,7 @@ From there, the Owner can:
 - Control which projects, tasks, milestones, and schedule events employees can see.
 - Create a one-time password reset link.
 
-The employee onboarding link expires after seven days. Password reset links expire after one day and can only be used once. Since email delivery is deferred, I copy these links manually.
+The employee onboarding link expires after seven days. Manager-issued password reset links expire after one day and can only be used once. Employees can also request a password-recovery email from the public sign-in page; those links expire after one hour and can only be used once. After five unmatched recovery-email submissions, that browser is paused for 15 minutes. Since onboarding and manager-issued reset email delivery is deferred, I copy those links manually.
 
 Employees can update only their own profile details. They cannot change another employee's schedule, access, assignments, or visibility.
 
@@ -742,7 +755,9 @@ When I open /gccad/, I first enter the administrator username or email. If that 
 
 After I sign in, I can open Security settings from the Unfold account area. I can enable or disable my own PIN and enroll or disable my own authenticator app without re-entering credentials. PIN setup uses two six-digit fields, and authenticator setup displays a QR code that I scan with my app before choosing the enable button. Existing superusers start with PIN and authenticator protection disabled until I turn them on.
 
-If I forget the PIN or lose the authenticator, I choose the recovery link on the private access screen and submit the verified administrator email. The response is intentionally generic. After three incorrect recovery-email attempts, that browser is locked for 15 minutes. A matching request uses the configured email backend to send a one-time link that expires after 30 minutes. Recovery lets me choose a new six-digit PIN, disables authenticator verification, revokes existing administrator sessions, and never signs me in automatically. Locally, email uses the console backend; production SMTP values come from environment variables.
+If I forget the administrator password, I choose the password-recovery link on the private login or access screen and submit the verified administrator email. The form only proceeds for an active superuser email. An unmatched email stays on the form and shows the remaining attempts; after five unmatched submissions, that browser is paused for 15 minutes. A matching request uses the configured email backend to send a one-time link that expires after one hour. Password recovery changes only the password, does not disable PIN or authenticator protection, and never signs me in automatically.
+
+If I forget the PIN or lose the authenticator, I choose the separate recovery link on the private access screen and submit the verified administrator email. The form only proceeds for an active superuser email. An unmatched email stays on the form and shows the remaining attempts; after five unmatched submissions, that browser is paused for 15 minutes. A matching request uses the configured email backend to send a one-time recovery link that expires after 30 minutes. Recovery lets me choose a new six-digit PIN, disables authenticator verification, revokes existing administrator sessions, and never signs me in automatically. Locally, email uses the console backend; production SMTP values come from environment variables.
 
 The website is also installable as a Progressive Web App. Public pages register /service-worker.js and reference /manifest.webmanifest. Public static assets can be cached for faster repeat visits, while public navigation uses the network first and falls back to /offline/. The service worker never caches POST requests, credentials, CSRF tokens, administrator pages, Team pages, client portal pages, account pages, private documents, or private media. Private routes require a live connection.
 
@@ -770,7 +785,11 @@ $env:SUPABASE_STORAGE_BUCKET = "<bucket-name>"
 $env:SUPABASE_S3_REGION = "us-east-1"
 ~~~
 
-I keep these values out of source control. If USE_SUPABASE_STORAGE is not enabled, the application makes no Supabase storage request and uses local filesystem storage.
+I keep these values out of source control. If neither Supabase storage flag is enabled, the application makes no Supabase storage request and uses local filesystem storage.
+
+For the current scoped rollout, I enable only contact-form attachments with USE_SUPABASE_CONTACT_STORAGE=true. This keeps the default storage for project, client, employee, and administrator uploads unchanged. USE_SUPABASE_STORAGE is the broader switch for moving every Django FileField to Supabase once those workflows are ready. The public URL base is not required; contact files use the protected storage path and signed access behavior.
+
+Contact-form attachments are stored under the contact-form/YYYY/MM/ prefix inside the configured bucket. Other upload fields keep their existing projects/... prefixes until their client, employee, and administrator sharing workflows are finalized.
 
 Before a real deployment, I also configure:
 
@@ -960,11 +979,11 @@ This is now a real backend-powered construction-management foundation, but it is
 - Local SQLite for development
 - Local filesystem media by default
 - Optional Supabase S3-compatible storage configuration
-- Manual copying of invite and reset links
-- Internal calendar only
+- Manual copying of onboarding invites and manager-issued reset links
+- Internal calendar, recurring employee scheduling, and employee notification inbox
 - Informational estimate deposits
 - No payment collection
-- No email notifications
+- No contact-form email notifications
 - No external calendar synchronization
 - No real construction photography added yet
 - No payroll or compliance timekeeping

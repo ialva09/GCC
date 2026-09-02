@@ -90,7 +90,7 @@
         <div class="form-row"><label>Email{{ contact_form.email }}{{ contact_form.email.errors }}</label><label>Phone{{ contact_form.phone }}{{ contact_form.phone.errors }}</label></div>
         <div class="form-row"><label>Project type{{ contact_form.project_type }}{{ contact_form.project_type.errors }}</label><label>Location{{ contact_form.location }}{{ contact_form.location.errors }}</label></div>
         <label>Tell us about the project{{ contact_form.message }}{{ contact_form.message.errors }}</label>
-        <label class="file-drop"><span class="file-drop-icon">+</span><span><strong>Add reference photos</strong><small>Optional · JPG, PNG, WEBP, GIF, HEIC, or video</small></span>{{ contact_form.photos }}</label>
+        <label class="file-drop"><span class="file-drop-icon">+</span><span><strong>Add photos or files</strong><small>Optional · photos, video, PDF, DOCX, spreadsheet, or text file</small></span>{{ contact_form.photos }}</label>
         <div class="form-footer"><span class="privacy-note">Your request stays with Grand Coast.</span><div class="form-submit-actions"><button class="button button-primary" type="submit">Send request <span aria-hidden="true">→</span></button>{% if turnstile_site_key %}<div class="turnstile-widget"><div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="contact"></div></div>{% endif %}</div></div>
     </form></div></section>
 {% endif %}

@@ -5,17 +5,24 @@ from decimal import Decimal
 
 from django import forms
 from django.contrib.auth import get_user_model
-from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.forms import AuthenticationForm, PasswordResetForm
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.forms import BaseInlineFormSet, inlineformset_factory
 
 from .models import (
     Client,
     ClientMessage,
+    CalendarDayOverride,
+    CONTACT_MAX_FILES,
+    CONTACT_MAX_TOTAL_SIZE,
+    CONTACT_UPLOAD_ACCEPT,
     EmployeeInvite,
     EmployeeProfile,
+    EmployeeScheduleOverride,
+    EmployeeWeeklySchedule,
     Estimate,
     EstimateLineItem,
     Lead,
@@ -27,9 +34,16 @@ from .models import (
     Service,
     Task,
     TimeEntry,
+    validate_contact_upload,
     validate_uploaded_media,
 )
 from .turnstile import TURNSTILE_ERROR_MESSAGE, verify_turnstile_request
+
+
+def user_choice_label(user):
+    """Show a person's name in staff selectors, with a safe username fallback."""
+    full_name = user.get_full_name().strip()
+    return full_name or user.get_username()
 
 
 class MultipleFileInput(forms.FileInput):
@@ -38,6 +52,7 @@ class MultipleFileInput(forms.FileInput):
 
 class MultipleFileField(forms.FileField):
     widget = MultipleFileInput
+    upload_validator = staticmethod(validate_uploaded_media)
 
     def clean(self, data, initial=None):
         single_file_clean = super().clean
@@ -48,8 +63,19 @@ class MultipleFileField(forms.FileField):
         else:
             cleaned = [single_file_clean(data, initial)]
         for upload in cleaned:
-            validate_uploaded_media(upload)
+            self.upload_validator(upload)
         return cleaned
+
+
+class ContactUploadInput(MultipleFileInput):
+    def __init__(self, attrs=None, **kwargs):
+        attrs = {**(attrs or {}), "accept": CONTACT_UPLOAD_ACCEPT}
+        super().__init__(attrs=attrs, **kwargs)
+
+
+class ContactUploadField(MultipleFileField):
+    widget = ContactUploadInput
+    upload_validator = staticmethod(validate_contact_upload)
 
 
 class ContactLeadForm(forms.Form):
@@ -60,7 +86,7 @@ class ContactLeadForm(forms.Form):
     project_type = forms.CharField(max_length=120)
     location = forms.CharField(max_length=160)
     message = forms.CharField(widget=forms.Textarea)
-    photos = MultipleFileField(required=False)
+    photos = ContactUploadField(required=False)
 
     def __init__(self, *args, request=None, **kwargs):
         self.request = request
@@ -71,6 +97,14 @@ class ContactLeadForm(forms.Form):
         if not self.errors and not verify_turnstile_request(self.request, expected_action="contact"):
             raise ValidationError(TURNSTILE_ERROR_MESSAGE)
         return cleaned
+
+    def clean_photos(self):
+        uploads = self.cleaned_data.get("photos") or []
+        if len(uploads) > CONTACT_MAX_FILES:
+            raise ValidationError(f"You can upload up to {CONTACT_MAX_FILES} files per request.")
+        if sum(upload.size for upload in uploads) > CONTACT_MAX_TOTAL_SIZE:
+            raise ValidationError("The combined upload size must be 100 MB or smaller.")
+        return uploads
 
 
 class LeadForm(forms.ModelForm):
@@ -84,6 +118,7 @@ class LeadForm(forms.ModelForm):
     def __init__(self, *args, staff_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["assigned_to"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
+        self.fields["assigned_to"].label_from_instance = user_choice_label
 
 
 class LeadStatusForm(forms.ModelForm):
@@ -113,6 +148,7 @@ class QuickTaskForm(forms.ModelForm):
             # model validation runs.
             self.instance.lead = lead
         self.fields["assigned_to"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
+        self.fields["assigned_to"].label_from_instance = user_choice_label
 
 
 class TaskForm(forms.ModelForm):
@@ -122,7 +158,11 @@ class TaskForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 4}),
             "due_date": forms.DateInput(attrs={"type": "date"}),
-            "watchers": forms.SelectMultiple(attrs={"size": 4}),
+            "watchers": forms.SelectMultiple(attrs={
+                "size": 4,
+                "data-worker-selector": "watchers",
+                "aria-label": "Task watchers",
+            }),
         }
 
     def __init__(self, *args, staff_queryset=None, project_queryset=None, **kwargs):
@@ -130,6 +170,8 @@ class TaskForm(forms.ModelForm):
         staff = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
         self.fields["assigned_to"].queryset = staff
         self.fields["watchers"].queryset = staff
+        self.fields["assigned_to"].label_from_instance = user_choice_label
+        self.fields["watchers"].label_from_instance = user_choice_label
         self.fields["project"].queryset = project_queryset if project_queryset is not None else Project.objects.all()
 
 
@@ -151,6 +193,7 @@ class LeadAssignmentForm(forms.ModelForm):
     def __init__(self, *args, staff_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["assigned_to"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
+        self.fields["assigned_to"].label_from_instance = user_choice_label
 
 
 class EstimateCreateForm(forms.ModelForm):
@@ -249,12 +292,17 @@ class ProjectForm(forms.ModelForm):
             "summary": forms.Textarea(attrs={"rows": 4}),
             "start_date": forms.DateInput(attrs={"type": "date"}),
             "target_date": forms.DateInput(attrs={"type": "date"}),
-            "assigned_staff": forms.SelectMultiple(attrs={"size": 4}),
+            "assigned_staff": forms.SelectMultiple(attrs={
+                "size": 4,
+                "data-worker-selector": "assigned-staff",
+                "aria-label": "Assigned workers",
+            }),
         }
 
     def __init__(self, *args, staff_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["assigned_staff"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
+        self.fields["assigned_staff"].label_from_instance = user_choice_label
 
     def clean(self):
         cleaned = super().clean()
@@ -387,7 +435,11 @@ class ScheduleEventForm(forms.ModelForm):
         model = ScheduleEvent
         fields = ["title", "assignees", "project", "task", "start_at", "end_at", "location", "notes"]
         widgets = {
-            "assignees": forms.SelectMultiple(attrs={"size": 4}),
+            "assignees": forms.SelectMultiple(attrs={
+                "size": 4,
+                "data-worker-selector": "assignees",
+                "aria-label": "Calendar event assignees",
+            }),
             "start_at": forms.DateTimeInput(attrs={"type": "datetime-local"}),
             "end_at": forms.DateTimeInput(attrs={"type": "datetime-local"}),
             "notes": forms.Textarea(attrs={"rows": 3}),
@@ -396,8 +448,153 @@ class ScheduleEventForm(forms.ModelForm):
     def __init__(self, *args, staff_queryset=None, project_queryset=None, task_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["assignees"].queryset = staff_queryset if staff_queryset is not None else get_user_model().objects.filter(is_staff=True)
+        self.fields["assignees"].label_from_instance = user_choice_label
         self.fields["project"].queryset = project_queryset if project_queryset is not None else Project.objects.all()
         self.fields["task"].queryset = task_queryset if task_queryset is not None else Task.objects.all()
+
+
+class CalendarDayOverrideForm(forms.Form):
+    NORMAL = 'normal'
+    STATUS_CHOICES = (
+        (NORMAL, 'Normal'),
+        *CalendarDayOverride.Status.choices,
+    )
+
+    date = forms.DateField(
+        label='Date',
+        widget=forms.DateInput(attrs={'type': 'date'}),
+    )
+    status = forms.ChoiceField(label='Day type', choices=STATUS_CHOICES)
+    short_start = forms.TimeField(
+        label='Short-day start',
+        required=False,
+        widget=forms.TimeInput(attrs={'type': 'time'}),
+    )
+    short_end = forms.TimeField(
+        label='Short-day end',
+        required=False,
+        widget=forms.TimeInput(attrs={'type': 'time'}),
+    )
+    reason = forms.CharField(
+        label='Reason or note',
+        required=False,
+        max_length=180,
+        widget=forms.TextInput(attrs={'placeholder': 'Holiday, training, or other note'}),
+    )
+
+    def __init__(self, *args, instance=None, **kwargs):
+        initial = kwargs.get('initial') or {}
+        kwargs['initial'] = initial
+        self.instance = instance
+        if instance is not None:
+            initial.setdefault('date', instance.date)
+            initial.setdefault('status', instance.status)
+            initial.setdefault('short_start', instance.short_start)
+            initial.setdefault('short_end', instance.short_end)
+            initial.setdefault('reason', instance.reason)
+        else:
+            initial.setdefault('status', self.NORMAL)
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        status = cleaned_data.get('status')
+        short_start = cleaned_data.get('short_start')
+        short_end = cleaned_data.get('short_end')
+
+        if status == CalendarDayOverride.Status.SHORT:
+            if not short_start:
+                self.add_error('short_start', 'Short days need a start time.')
+            if not short_end:
+                self.add_error('short_end', 'Short days need an end time.')
+            if short_start and short_end and short_end <= short_start:
+                self.add_error('short_end', 'The short-day end time must be after its start time.')
+        else:
+            cleaned_data['short_start'] = None
+            cleaned_data['short_end'] = None
+            if status == self.NORMAL:
+                cleaned_data['reason'] = ''
+        return cleaned_data
+
+
+class EmployeeWeeklyScheduleForm(forms.ModelForm):
+    class Meta:
+        model = EmployeeWeeklySchedule
+        fields = ["is_working", "start_time", "end_time"]
+        widgets = {
+            "start_time": forms.TimeInput(attrs={"type": "time"}),
+            "end_time": forms.TimeInput(attrs={"type": "time"}),
+        }
+
+
+class EmployeeScheduleOverrideForm(forms.Form):
+    CLEAR = "clear"
+    STATUS_CHOICES = (
+        *EmployeeScheduleOverride.Status.choices,
+        (CLEAR, "Clear / use weekly schedule"),
+    )
+
+    employee = forms.ModelChoiceField(queryset=get_user_model().objects.none(), label="Employee")
+    date = forms.DateField(
+        label="Date",
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    status = forms.ChoiceField(label="Day status", choices=STATUS_CHOICES)
+    start_time = forms.TimeField(
+        label="Override start",
+        required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}),
+    )
+    end_time = forms.TimeField(
+        label="Override end",
+        required=False,
+        widget=forms.TimeInput(attrs={"type": "time"}),
+    )
+    reason = forms.CharField(
+        label="Reason or note",
+        required=False,
+        max_length=180,
+        widget=forms.TextInput(attrs={"placeholder": "Adjusted hours, appointment, or day off"}),
+    )
+
+    def __init__(self, *args, employee_queryset=None, instance=None, initial=None, **kwargs):
+        initial = {**(initial or {})}
+        self.instance = instance
+        if employee_queryset is not None:
+            self.employee_queryset = employee_queryset
+        else:
+            self.employee_queryset = get_user_model().objects.none()
+        initial.setdefault("status", EmployeeScheduleOverride.Status.WORKING)
+        if instance is not None:
+            initial.setdefault("employee", instance.employee_id)
+            initial.setdefault("date", instance.date)
+            initial.setdefault("status", instance.status)
+            initial.setdefault("start_time", instance.start_time)
+            initial.setdefault("end_time", instance.end_time)
+            initial.setdefault("reason", instance.reason)
+        kwargs["initial"] = initial
+        super().__init__(*args, **kwargs)
+        self.fields["employee"].queryset = self.employee_queryset
+        self.fields["employee"].label_from_instance = user_choice_label
+
+    def clean(self):
+        cleaned_data = super().clean()
+        status = cleaned_data.get("status")
+        start_time = cleaned_data.get("start_time")
+        end_time = cleaned_data.get("end_time")
+        if status == EmployeeScheduleOverride.Status.WORKING:
+            if not start_time:
+                self.add_error("start_time", "Working overrides need a start time.")
+            if not end_time:
+                self.add_error("end_time", "Working overrides need an end time.")
+            if start_time and end_time and end_time <= start_time:
+                self.add_error("end_time", "The end time must be after the start time.")
+        else:
+            cleaned_data["start_time"] = None
+            cleaned_data["end_time"] = None
+            if status == self.CLEAR:
+                cleaned_data["reason"] = ""
+        return cleaned_data
 
 
 class TimeEntryForm(forms.ModelForm):
@@ -512,6 +709,45 @@ class PublicAuthenticationForm(AuthenticationForm):
         elif not Client.objects.filter(user=user).exists():
             raise self.get_invalid_login_error()
         super().confirm_login_allowed(user)
+
+
+class PublicPasswordResetForm(PasswordResetForm):
+    def __init__(self, *args, request=None, **kwargs):
+        self.request = request
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned = super().clean()
+        if not self.errors and not verify_turnstile_request(self.request, expected_action="password-reset"):
+            raise ValidationError(TURNSTILE_ERROR_MESSAGE)
+        return cleaned
+
+    def get_users(self, email):
+        user_model = get_user_model()
+        eligible_users = user_model._default_manager.filter(
+            email__iexact=email,
+            is_active=True,
+        ).filter(
+            Q(
+                is_staff=True,
+                is_superuser=False,
+                groups__name__in=("Manager", "Office", "Field"),
+            )
+            | Q(is_staff=False, client_record__isnull=False)
+        ).exclude(employee_profile__is_active=False).distinct()
+        return (user for user in eligible_users if user.has_usable_password())
+
+
+class AdminPasswordResetForm(PasswordResetForm):
+    def get_users(self, email):
+        user_model = get_user_model()
+        eligible_users = user_model._default_manager.filter(
+            email__iexact=email,
+            is_active=True,
+            is_staff=True,
+            is_superuser=True,
+        )
+        return (user for user in eligible_users if user.has_usable_password())
 
 
 class GrandCoastAdminAuthenticationForm(AuthenticationForm):

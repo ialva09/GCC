@@ -2,10 +2,13 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.test import Client as DjangoClient
+from django.test import RequestFactory
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from .admin import grand_coast_admin_site
+from .models import Lead, Project, Task
 from .security import (
     ADMIN_GATE_EXPIRES_AT,
     ADMIN_GATE_NEXT,
@@ -53,6 +56,31 @@ class UnfoldAdminTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Leads')
+
+    def test_native_admin_assignment_selectors_show_staff_full_names(self):
+        named_staff = get_user_model().objects.create_user(
+            username='staff-code',
+            first_name='Riley',
+            last_name='Stone',
+            is_staff=True,
+        )
+        request = RequestFactory().get(reverse('admin:index'))
+        lead_admin = grand_coast_admin_site._registry[Lead]
+        task_admin = grand_coast_admin_site._registry[Task]
+        project_admin = grand_coast_admin_site._registry[Project]
+
+        assignment_fields = (
+            (lead_admin, Lead._meta.get_field('assigned_to'), 'foreignkey'),
+            (task_admin, Task._meta.get_field('assigned_to'), 'foreignkey'),
+            (project_admin, Project._meta.get_field('assigned_staff'), 'manytomany'),
+        )
+        for model_admin, db_field, field_type in assignment_fields:
+            if field_type == 'foreignkey':
+                formfield = model_admin.formfield_for_foreignkey(db_field, request)
+            else:
+                formfield = model_admin.formfield_for_manytomany(db_field, request)
+            self.assertEqual(formfield.label_from_instance(named_staff), 'Riley Stone')
+            self.assertNotEqual(formfield.label_from_instance(named_staff), named_staff.username)
 
     def test_unfold_admin_actions_include_a_visible_run_control(self):
         response = self.browser.get(reverse('admin:auth_user_changelist'))

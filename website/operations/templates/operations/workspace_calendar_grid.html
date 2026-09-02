@@ -11,30 +11,169 @@
     <div class='calendar-weekdays' aria-hidden='true'>
         <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
     </div>
-    <div class='calendar-grid'>
+    <div class='calendar-grid' aria-label='{{ calendar_month_label }}'>
         {% for week in calendar_weeks %}
             {% for day in week %}
-                <div class='calendar-day{% if not day.is_current_month %} is-outside{% endif %}{% if day.is_today %} is-today{% endif %}'>
-                    <strong>{{ day.date|date:'j' }}</strong>
-                    <div class='calendar-day-events'>
-                        {% for event in day.events %}
-                            <a href='?event={{ event.pk }}{% if can_manage_schedule %}&amp;edit=event#calendar-editor{% endif %}' title='{{ event.title }}'>
-                                <span>{{ event.start_at|date:'g:i A' }} – {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}
-                            </a>
+                <a class='calendar-day{% if not day.is_current_month %} is-outside{% endif %}{% if day.is_today %} is-today{% endif %}{% if selected_day and selected_day.date == day.date %} is-selected{% endif %}{% if day.is_short %} is-short{% endif %}{% if day.is_closed %} is-closed{% endif %}{% if day.effective_shift and not day.effective_shift.is_working %} is-employee-off{% endif %}' href='?month={{ calendar_month_key }}&amp;day={{ day.date|date:"Y-m-d" }}' aria-label='Open {{ day.date|date:"F j, Y" }} calendar details'>
+                    <span class='calendar-day-top'>
+                        <strong>{{ day.date|date:'j' }}</strong>
+                        {% if day.override %}
+                            <span class='calendar-day-status-wrap'>
+                                <span class='calendar-day-status'>{{ day.override.get_status_display }}</span>
+                                {% if day.is_short %}<span class='calendar-day-hours'>{{ day.override.short_start|time:'g:i A' }} &ndash; {{ day.override.short_end|time:'g:i A' }}</span>{% endif %}
+                            </span>
+                        {% endif %}
+                    </span>
+                    <span class='calendar-day-events'>
+                        {% if day.effective_shift and day.effective_shift.is_working %}
+                            <span class='calendar-day-shift'>Shift {{ day.effective_shift.start_time|time:'g:i A' }} &ndash; {{ day.effective_shift.end_time|time:'g:i A' }}</span>
+                        {% elif day.effective_shift and day.effective_shift.is_company_closed %}
+                            <span class='calendar-day-shift is-closed'>No employee shift</span>
+                        {% elif day.effective_shift and day.effective_shift.is_company_short %}
+                            <span class='calendar-day-shift is-short'>No shift in short-day hours</span>
+                        {% elif day.effective_shift and day.effective_shift.employee_override %}
+                            <span class='calendar-day-shift is-off'>Day off{% if day.effective_shift.reason %} &middot; {{ day.effective_shift.reason }}{% endif %}</span>
+                        {% endif %}
+                        {% for event in day.preview_events %}
+                            <span class='calendar-day-event' title='{{ event.title }}'>
+                                <span>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}
+                            </span>
                         {% empty %}
                             <span class='calendar-day-empty'></span>
                         {% endfor %}
-                    </div>
-                </div>
+                        {% if day.remaining_event_count %}
+                            <span class='calendar-day-more'>+{{ day.remaining_event_count }} more</span>
+                        {% endif %}
+                    </span>
+                </a>
             {% endfor %}
         {% endfor %}
     </div>
+
+    <div class='calendar-overflow-links'>
+        {% for day in calendar_month_days %}
+            {% if day.remaining_event_count %}
+                <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ day.date|date:"Y-m-d" }}'>View all {{ day.event_count }} events on {{ day.date|date:'M j' }} &rarr;</a>
+            {% endif %}
+        {% endfor %}
+    </div>
+
+    <div class='calendar-mobile-list'>
+        <div class='admin-section-heading compact'>
+            <div><span class='section-kicker'>List view</span><h3>Scheduled days</h3></div>
+        </div>
+        {% for day in calendar_month_days %}
+            <article class='calendar-mobile-day{% if day.is_short %} is-short{% endif %}{% if day.is_closed %} is-closed{% endif %}{% if day.effective_shift and not day.effective_shift.is_working %} is-employee-off{% endif %}'>
+                <a class='calendar-mobile-day-header' href='?month={{ calendar_month_key }}&amp;day={{ day.date|date:"Y-m-d" }}'>
+                    <strong>{{ day.date|date:'l, M j' }}</strong>
+                    {% if day.override %}
+                        <span class='calendar-day-status-wrap'>
+                            <span class='calendar-day-status'>{{ day.override.get_status_display }}</span>
+                            {% if day.is_short %}<span class='calendar-day-hours'>{{ day.override.short_start|time:'g:i A' }} &ndash; {{ day.override.short_end|time:'g:i A' }}</span>{% endif %}
+                        </span>
+                    {% endif %}
+                </a>
+                <div class='calendar-mobile-day-events'>
+                    {% if day.effective_shift and day.effective_shift.is_company_short and not day.effective_shift.employee_override %}<span class='calendar-mobile-shift is-short'>No shift in short-day hours</span>{% endif %}
+                    {% if day.effective_shift and day.effective_shift.is_working %}<span class='calendar-mobile-shift'>Shift {{ day.effective_shift.start_time|time:'g:i A' }} &ndash; {{ day.effective_shift.end_time|time:'g:i A' }}</span>{% elif day.effective_shift and day.effective_shift.employee_override and not day.effective_shift.is_company_closed %}<span class='calendar-mobile-shift is-off'>Day off{% if day.effective_shift.reason %} · {{ day.effective_shift.reason }}{% endif %}</span>{% endif %}
+                    {% for event in day.preview_events %}
+                        <span class='calendar-mobile-event'><span>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}</span>
+                    {% endfor %}
+                    {% if day.remaining_event_count %}
+                        <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ day.date|date:"Y-m-d" }}'>View all {{ day.event_count }} events &rarr;</a>
+                    {% endif %}
+                </div>
+            </article>
+        {% empty %}
+            <p class='detail-value'>No scheduled events or special days this month.</p>
+        {% endfor %}
+    </div>
+
+    {% if selected_day %}
+        <section id='calendar-day-details' class='record-detail calendar-day-details' tabindex='-1'>
+            <div class='admin-section-heading compact'>
+                <div>
+                    <span class='section-kicker'>Day details</span>
+                    <h3>{{ selected_day.date|date:'l, F j, Y' }}</h3>
+                </div>
+                <div class='calendar-day-heading-status'>
+                    {% if selected_day_override %}
+                        <span class='calendar-status-badge{% if selected_day.is_short %} is-short{% endif %}{% if selected_day.is_closed %} is-closed{% endif %}'>{{ selected_day_override.get_status_display }}</span>
+                        {% if selected_day.is_short %}<span class='calendar-day-hours'>Hours: {{ selected_day_override.short_start|time:'g:i A' }} &ndash; {{ selected_day_override.short_end|time:'g:i A' }}</span>{% endif %}
+                    {% else %}
+                        <span class='calendar-status-badge'>Normal day</span>
+                    {% endif %}
+                    <span class='time-zone-label'>America/Los_Angeles</span>
+                </div>
+            </div>
+            {% if selected_day_override.reason %}<p class='calendar-day-reason'>{{ selected_day_override.reason }}</p>{% endif %}
+            {% if selected_day.effective_shift %}<div class='selected-day-shift'>{% if selected_day.effective_shift.is_working %}<strong>Your effective shift</strong><span>{{ selected_day.effective_shift.start_time|time:'g:i A' }} &ndash; {{ selected_day.effective_shift.end_time|time:'g:i A' }}</span>{% elif selected_day.effective_shift.is_company_closed %}<strong>Company closed</strong><span>Your recurring schedule resumes after this closure.</span>{% elif selected_day.effective_shift.is_company_short %}<strong>No effective shift</strong><span>Your weekly hours do not overlap this short-day window.</span>{% else %}<strong>Not scheduled</strong><span>No employee shift is configured for this day.</span>{% endif %}</div>{% endif %}
+            <div class='calendar-day-event-list'>
+                {% for event in selected_day_events %}
+                    <article class='calendar-day-detail'>
+                        <div>
+                            <span class='section-kicker'>{{ event.project.title|default:'Internal event' }}</span>
+                            <h4>{{ event.title }}</h4>
+                            <p>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}{% if event.location %} &middot; {{ event.location }}{% endif %}</p>
+                        </div>
+                        {% if can_manage_schedule %}
+                            <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ selected_day.date|date:"Y-m-d" }}&amp;event={{ event.pk }}&amp;edit=event#calendar-editor'>Edit event &rarr;</a>
+                        {% else %}
+                            <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ selected_day.date|date:"Y-m-d" }}&amp;event={{ event.pk }}#calendar-day-details'>View details &rarr;</a>
+                        {% endif %}
+                    </article>
+                {% empty %}
+                    <p class='detail-value'>No schedule events are visible for this day.</p>
+                {% endfor %}
+            </div>
+
+            {% if can_manage_schedule and day_form %}
+                <section class='calendar-day-controls'>
+                    <div class='admin-section-heading compact'>
+                        <div><span class='section-kicker'>Owner controls</span><h4>Set this day</h4></div>
+                    </div>
+                    {{ day_form.non_field_errors }}
+                    <form class='workspace-form calendar-day-form' method='post' action='{% url "operations:calendar-day-update" %}' data-calendar-day-form data-calendar-day-status='{{ day_form.status.value|default:"normal" }}'>
+                        {% csrf_token %}
+                        <input type='hidden' name='month' value='{{ calendar_month_key }}'>
+                        <div class='workspace-form-grid calendar-day-form-grid'>
+                            {% for field in day_form %}
+                                <label class='form-field' data-calendar-day-field='{{ field.name }}'>{{ field.label }}{{ field }}{{ field.errors }}</label>
+                            {% endfor %}
+                        </div>
+                        <p class='detail-value'>Normal clears the exception. Short-day events must fit between the configured hours; closed days cannot contain events.</p>
+                        <button class='button button-primary' type='submit'>Save day setting</button>
+                    </form>
+                </section>
+            {% endif %}
+        </section>
+    {% endif %}
+
+    {% if can_manage_schedule and day_form and day_form.errors and not selected_day %}
+        <section id='calendar-day-details' class='record-detail calendar-day-details'>
+            <div class='admin-section-heading compact'>
+                <div><span class='section-kicker'>Owner controls</span><h3>Set a calendar day</h3></div>
+            </div>
+            {{ day_form.non_field_errors }}
+            <form class='workspace-form calendar-day-form' method='post' action='{% url "operations:calendar-day-update" %}' data-calendar-day-form data-calendar-day-status='{{ day_form.status.value|default:"normal" }}'>
+                {% csrf_token %}
+                <input type='hidden' name='month' value='{{ request.GET.month }}'>
+                <div class='workspace-form-grid calendar-day-form-grid'>
+                    {% for field in day_form %}
+                        <label class='form-field' data-calendar-day-field='{{ field.name }}'>{{ field.label }}{{ field }}{{ field.errors }}</label>
+                    {% endfor %}
+                </div>
+                <button class='button button-primary' type='submit'>Save day setting</button>
+            </form>
+        </section>
+    {% endif %}
+
     {% if selected_event and not can_manage_schedule %}
         <section class='record-detail workspace-form calendar-read-only'>
             <div class='admin-section-heading compact'><div><span class='section-kicker'>Schedule details</span><h3>{{ selected_event.title }}</h3></div><span class='time-zone-label'>America/Los_Angeles</span></div>
-            <div class='detail-columns'><div><span class='detail-label'>When</span><span class='detail-value'>{{ selected_event.start_at|date:'l, F j · g:i A' }} – {{ selected_event.end_at|date:'g:i A' }}</span><span class='detail-label'>Location</span><span class='detail-value'>{{ selected_event.location|default:'No location set' }}</span></div><div><span class='detail-label'>Assigned to</span>{% if team_mode and not can_view_full_team_calendar %}<span class='detail-value'>Me</span>{% else %}<span class='detail-value'>{% for person in selected_event.assignees.all %}{{ person.get_full_name|default:person.username }}{% if not forloop.last %}, {% endif %}{% empty %}Team{% endfor %}</span>{% endif %}<span class='detail-label'>Notes</span><span class='detail-value'>{{ selected_event.notes|default:'No notes added.' }}</span></div></div>
+            <div class='detail-columns'><div><span class='detail-label'>When</span><span class='detail-value'>{{ selected_event.start_at|date:'l, F j &middot; g:i A' }} &ndash; {{ selected_event.end_at|date:'g:i A' }}</span><span class='detail-label'>Location</span><span class='detail-value'>{{ selected_event.location|default:'No location set' }}</span></div><div><span class='detail-label'>Assigned to</span>{% if team_mode and not can_view_full_team_calendar %}<span class='detail-value'>Me</span>{% else %}<span class='detail-value'>{% for person in selected_event.assignees.all %}{{ person.get_full_name|default:person.username }}{% if not forloop.last %}, {% endif %}{% empty %}Team{% endfor %}</span>{% endif %}<span class='detail-label'>Notes</span><span class='detail-value'>{{ selected_event.notes|default:'No notes added.' }}</span></div></div>
         </section>
     {% endif %}
-    <p class='calendar-mobile-note'>On smaller screens, scheduled work is listed below.</p>
+    <p class='calendar-mobile-note'>On smaller screens, use the scheduled-day list or select a calendar day for the complete event list.</p>
 </section>
 {% endif %}

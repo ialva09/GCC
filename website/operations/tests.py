@@ -16,7 +16,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from .forms import MediaUploadForm
+from .forms import ContactLeadForm, MediaUploadForm
 from .models import (
     Activity,
     Client,
@@ -24,6 +24,7 @@ from .models import (
     Estimate,
     EstimateLineItem,
     Lead,
+    LeadAttachment,
     MediaAsset,
     Milestone,
     ProcessStep,
@@ -36,10 +37,23 @@ from .services import create_client_invite
 
 
 TEST_MEDIA_ROOT = Path(tempfile.mkdtemp(prefix="gcc-operations-tests-"))
+VALID_PNG = b"\x89PNG\r\n\x1a\n" + (b"\x00" * 16)
+TEST_STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+    "contact_submissions": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+}
 
 
 @override_settings(
     MEDIA_ROOT=TEST_MEDIA_ROOT,
+    STORAGES=TEST_STORAGES,
     CLOUDFLARE_TURNSTILE_SITE_KEY="",
     CLOUDFLARE_TURNSTILE_SECRET_KEY="",
 )
@@ -205,6 +219,147 @@ class OperationsWorkflowTests(TestCase):
         self.assertEqual(lead.name, "New Homeowner")
         self.assertEqual(lead.status, Lead.Status.NEW)
         self.assertTrue(Activity.objects.filter(lead=lead, message="New lead received").exists())
+
+    def test_contact_form_attachment_uses_contact_form_storage_prefix(self):
+        response = self.browser.post(
+            reverse("operations:contact"),
+            {
+                "first_name": "Reference",
+                "last_name": "Uploader",
+                "email": "reference.uploader@example.com",
+                "phone": "805-555-0101",
+                "project_type": "Restoration",
+                "location": "Ojai, CA",
+                "message": "Please review the attached reference photo.",
+                "photos": SimpleUploadedFile(
+                    "front-elevation.png",
+                    VALID_PNG,
+                    content_type="image/png",
+                ),
+            },
+        )
+        self.assertRedirects(response, reverse("operations:contact"))
+        attachment = LeadAttachment.objects.get(lead__email="reference.uploader@example.com")
+        self.assertTrue(attachment.file.name.startswith("contact-form/"))
+        self.assertTrue((TEST_MEDIA_ROOT / Path(*attachment.file.name.split("/"))).exists())
+
+    def test_contact_form_accepts_documents_and_admin_can_view_message_and_file(self):
+        response = self.browser.post(
+            reverse("operations:contact"),
+            {
+                "first_name": "Plans",
+                "last_name": "Uploader",
+                "email": "plans.uploader@example.com",
+                "phone": "805-555-0102",
+                "project_type": "New build",
+                "location": "Ojai, CA",
+                "message": "Please review these plans before we schedule a call.",
+                "photos": SimpleUploadedFile(
+                    "site-plans.pdf",
+                    b"%PDF-1.7\ncontact plans",
+                    content_type="application/pdf",
+                ),
+            },
+        )
+        self.assertRedirects(response, reverse("operations:contact"))
+        lead = Lead.objects.get(email="plans.uploader@example.com")
+        attachment = lead.attachments.get()
+        self.login_staff()
+
+        dashboard = self.browser.get(
+            reverse("operations:dashboard-section", kwargs={"section": "leads"}),
+            {"lead": lead.pk},
+        )
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertContains(dashboard, lead.note)
+        self.assertContains(dashboard, "site-plans.pdf")
+        download_url = reverse("operations:lead-attachment-file", kwargs={"pk": attachment.pk})
+        self.assertContains(dashboard, download_url)
+
+        download = self.browser.get(download_url)
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(b"".join(download.streaming_content), b"%PDF-1.7\ncontact plans")
+        self.assertIn("attachment", download["Content-Disposition"])
+        self.assertIn("site-plans.pdf", download["Content-Disposition"])
+        self.assertEqual(download["Cache-Control"], "private, no-store")
+        self.assertEqual(download["X-Content-Type-Options"], "nosniff")
+
+        self.login_client()
+        self.assertEqual(self.browser.get(download_url).status_code, 403)
+        self.browser.logout()
+        self.assertEqual(self.browser.get(download_url).status_code, 302)
+
+    def test_admin_lead_detail_shows_contact_message_and_attachment(self):
+        lead = Lead.objects.create(
+            name="Admin Review Lead",
+            email="admin.review@example.com",
+            service="Planning",
+            location="Ojai, CA",
+            note="Please review the attached site plan.",
+            source="Website form",
+        )
+        attachment = LeadAttachment(lead=lead, original_name="admin-site-plan.png")
+        attachment.file.save("admin-site-plan.png", ContentFile(VALID_PNG), save=True)
+        self.login_staff()
+
+        response = self.browser.get(
+            reverse("admin:operations_lead_change", kwargs={"object_id": lead.pk})
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, lead.note)
+        self.assertContains(response, "admin-site-plan.png")
+        self.assertContains(
+            response,
+            reverse("operations:lead-attachment-file", kwargs={"pk": attachment.pk}),
+        )
+
+    def test_contact_upload_rejects_spoofed_file_content(self):
+        form = ContactLeadForm(
+            data={
+                "first_name": "Spoof",
+                "last_name": "Uploader",
+                "email": "spoof@example.com",
+                "phone": "",
+                "project_type": "Testing",
+                "location": "Ojai, CA",
+                "message": "This should not be saved.",
+            },
+            files={
+                "photos": SimpleUploadedFile(
+                    "not-really-an-image.jpg",
+                    b"plain text pretending to be an image",
+                    content_type="image/jpeg",
+                ),
+            },
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("contents do not match", str(form.errors["photos"]))
+
+    def test_contact_upload_rejects_more_than_eight_files(self):
+        uploads = [
+            SimpleUploadedFile(f"reference-{index}.txt", b"safe text", content_type="text/plain")
+            for index in range(9)
+        ]
+        form = ContactLeadForm(
+            data={
+                "first_name": "Many",
+                "last_name": "Files",
+                "email": "many.files@example.com",
+                "phone": "",
+                "project_type": "Testing",
+                "location": "Ojai, CA",
+                "message": "This should not be saved.",
+            },
+            files={"photos": uploads},
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("up to 8 files", str(form.errors["photos"]))
+
+    def test_contact_picker_advertises_media_and_document_extensions(self):
+        response = self.browser.get(reverse("operations:contact"))
+        self.assertEqual(response.status_code, 200)
+        for extension in (".png", ".mp4", ".pdf", ".docx", ".xlsx", ".txt"):
+            self.assertContains(response, extension)
 
     def test_staff_dashboard_is_protected_from_clients_and_anonymous_users(self):
         response = self.browser.get(reverse("operations:dashboard"))

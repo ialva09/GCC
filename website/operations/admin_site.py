@@ -8,10 +8,16 @@ from django.contrib.auth import get_user_model, login, logout
 from django.contrib import messages
 from django.contrib.auth import REDIRECT_FIELD_NAME
 from django.contrib.auth.hashers import make_password
-from django.contrib.auth.views import LoginView
+from django.contrib.auth.views import (
+    LoginView,
+    PasswordResetCompleteView,
+    PasswordResetConfirmView,
+    PasswordResetDoneView,
+    PasswordResetView,
+)
 from django.http import HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import redirect, render
-from django.urls import path, reverse
+from django.urls import path, reverse, reverse_lazy
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -20,6 +26,7 @@ from unfold.sites import UnfoldAdminSite
 from .forms import (
     AdminGateIdentifierForm,
     AdminOtpForm,
+    AdminPasswordResetForm,
     AdminPinForm,
     AdminPinSettingsForm,
     AdminRecoveryRequestForm,
@@ -28,6 +35,7 @@ from .forms import (
     GrandCoastAdminAuthenticationForm,
 )
 from .security import (
+    ADMIN_RECOVERY_ATTEMPT_LIMIT,
     ADMIN_GATE_PENDING_PIN,
     ADMIN_GATE_NEXT,
     ADMIN_OTP_ENROLLMENT_DEVICE,
@@ -38,6 +46,7 @@ from .security import (
     clear_admin_challenges,
     clear_gate,
     clear_otp_challenge,
+    clear_recovery_failures,
     consume_admin_recovery_token,
     confirmed_totp_device,
     create_admin_recovery_token,
@@ -51,6 +60,7 @@ from .security import (
     pending_otp_next,
     pending_otp_user,
     pin_is_enabled,
+    PasswordResetThrottleMixin,
     register_gate_failure,
     register_otp_failure,
     register_recovery_failure,
@@ -88,6 +98,20 @@ class GrandCoastAdminLoginView(LoginView):
 
     def get_success_url(self):
         return gate_next(self.request)
+
+
+class GrandCoastAdminPasswordResetView(PasswordResetThrottleMixin, PasswordResetView):
+    password_reset_reject_unknown_email = True
+    form_class = AdminPasswordResetForm
+    template_name = "admin/password_reset_form.html"
+    email_template_name = "admin/password_reset_email.txt"
+    subject_template_name = "admin/password_reset_subject.txt"
+    success_url = reverse_lazy("admin:password-reset-done")
+
+
+class GrandCoastAdminPasswordResetConfirmView(PasswordResetConfirmView):
+    template_name = "admin/password_reset_confirm.html"
+    success_url = reverse_lazy("admin:password-reset-complete")
 
 
 class GrandCoastAdminSite(UnfoldAdminSite):
@@ -187,6 +211,22 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 "recover/<str:token>/",
                 self.recovery_confirm,
                 name="recovery-confirm",
+            ),
+            path("password-reset/", GrandCoastAdminPasswordResetView.as_view(), name="password-reset"),
+            path(
+                "password-reset/done/",
+                PasswordResetDoneView.as_view(template_name="admin/password_reset_done.html"),
+                name="password-reset-done",
+            ),
+            path(
+                "password-reset/confirm/<uidb64>/<token>/",
+                GrandCoastAdminPasswordResetConfirmView.as_view(),
+                name="password-reset-confirm",
+            ),
+            path(
+                "password-reset/complete/",
+                PasswordResetCompleteView.as_view(template_name="admin/password_reset_complete.html"),
+                name="password-reset-complete",
             ),
             path(
                 "security/",
@@ -351,9 +391,40 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 is_superuser=True,
             ).first()
             if admin_user is not None and admin_user.email:
+                clear_recovery_failures(request)
                 create_admin_recovery_token(request, admin_user)
             else:
-                register_recovery_failure(request)
+                attempts = register_recovery_failure(request)
+                if recovery_is_locked(request):
+                    return self._render_admin_page(
+                        request,
+                        "admin/recovery.html",
+                        {
+                            "title": "Recover administration access",
+                            "site_title": self.site_title,
+                            "form": form,
+                            "locked": True,
+                        },
+                        status=429,
+                    )
+                remaining = ADMIN_RECOVERY_ATTEMPT_LIMIT - attempts
+                attempt_word = "attempt" if remaining == 1 else "attempts"
+                form.add_error(
+                    "email",
+                    (
+                        "That email does not match an active administrator account. "
+                        f"You have {remaining} {attempt_word} remaining."
+                    ),
+                )
+                return self._render_admin_page(
+                    request,
+                    "admin/recovery.html",
+                    {
+                        "title": "Recover administration access",
+                        "site_title": self.site_title,
+                        "form": form,
+                    },
+                )
             if recovery_is_locked(request):
                 return self._render_admin_page(
                     request,

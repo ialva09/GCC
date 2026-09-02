@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Animated,
   BackHandler,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Linking,
@@ -15,6 +16,8 @@ import {
   View,
 } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
+import * as Constants from 'expo-constants';
+import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -50,9 +53,11 @@ const ACCOUNT_DELETE_PATH = '/accounts/delete/';
 const PRIVACY_PATH = '/privacy/';
 const TERMS_PATH = '/terms/';
 const HOME_PATH = '/';
+const ADMIN_WORKSPACE_PATH = '/dashboard/';
 const EMPLOYEE_WORKSPACE_PATH = '/team/';
 const EMPLOYEE_PROJECTS_PATH = '/team/projects/';
 const EMPLOYEE_PROFILE_PATH = '/team/profile/';
+const EMPLOYEE_NOTIFICATIONS_PATH = '/team/notifications/';
 const CLIENT_WORKSPACE_PATH = '/portal/';
 const PRIVATE_ROUTE_PREFIXES = ['/dashboard', '/team', '/portal'];
 const LAUNCH_SPLASH_HOLD_MS = 1000;
@@ -74,11 +79,23 @@ const EMPTY_NATIVE_CONTACT_FORM = {
 
 SplashScreen.setOptions({ duration: 0, fade: false });
 SplashScreen.preventAutoHideAsync().catch(() => {});
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const Drawer = createDrawerNavigator();
 const SessionContext = createContext(null);
 const SharedWebViewContext = createContext({
+  beginAuthTransition: () => {},
+  cancelAuthTransition: () => {},
   consumeLogoutRequest: () => false,
+  finishAuthTransition: () => {},
   hideLaunchSplash: () => Promise.resolve(),
   launchSplashVisible: true,
   navigate: () => {},
@@ -109,13 +126,30 @@ const clientDrawerPages = [
 ];
 
 const employeeDrawerPages = [
-  { label: 'Overview', icon: 'home-outline', path: EMPLOYEE_WORKSPACE_PATH, tab: 'Workspace' },
-  { label: 'Projects', icon: 'folder-outline', path: EMPLOYEE_PROJECTS_PATH, tab: 'Workspace' },
-  { label: 'Tasks', icon: 'checkmark-outline', path: '/team/tasks/', tab: 'Workspace' },
-  { label: 'Calendar', icon: 'calendar-outline', path: '/team/calendar/', tab: 'Workspace' },
-  { label: 'Time', icon: 'time-outline', path: '/team/time/', tab: 'Workspace' },
-  { label: 'Media', icon: 'images-outline', path: '/team/media/', tab: 'Workspace' },
-  { label: 'Profile', icon: 'person-circle-outline', path: '/team/profile/', tab: 'Workspace' },
+  { label: 'Overview', icon: 'home-outline', path: EMPLOYEE_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview' },
+  { label: 'Projects', icon: 'folder-outline', path: EMPLOYEE_PROJECTS_PATH, tab: 'Workspace', countKey: 'projects' },
+  { label: 'Tasks', icon: 'checkmark-outline', path: '/team/tasks/', tab: 'Workspace', countKey: 'tasks' },
+  { label: 'Calendar', icon: 'calendar-outline', path: '/team/calendar/', tab: 'Workspace', countKey: 'calendar' },
+  { label: 'Time', icon: 'time-outline', path: '/team/time/', tab: 'Workspace', countKey: 'time' },
+  { label: 'Media', icon: 'images-outline', path: '/team/media/', tab: 'Workspace', countKey: 'media' },
+  { label: 'Notifications', icon: 'notifications-outline', path: EMPLOYEE_NOTIFICATIONS_PATH, tab: 'Workspace', countKey: 'notifications' },
+  { label: 'Profile', icon: 'person-circle-outline', path: '/team/profile/', tab: 'Workspace', countKey: 'profile' },
+];
+
+const adminDrawerPages = [
+  { label: 'Overview', icon: 'home-outline', path: ADMIN_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview' },
+  { label: 'Clients', icon: 'people-outline', path: '/dashboard/clients/', tab: 'Workspace', countKey: 'clients' },
+  { label: 'Tasks', icon: 'checkmark-outline', path: '/dashboard/tasks/', tab: 'Workspace', countKey: 'tasks' },
+  { label: 'Calendar', icon: 'calendar-outline', path: '/dashboard/calendar/', tab: 'Workspace', countKey: 'calendar' },
+  { label: 'Time', icon: 'time-outline', path: '/dashboard/time/', tab: 'Workspace', countKey: 'time' },
+  { label: 'Documents', icon: 'document-text-outline', path: '/dashboard/documents/', tab: 'Workspace', countKey: 'documents' },
+  { label: 'Leads', icon: 'funnel-outline', path: '/dashboard/leads/', tab: 'Workspace', countKey: 'leads' },
+  { label: 'Estimates', icon: 'receipt-outline', path: '/dashboard/estimates/', tab: 'Workspace', countKey: 'estimates' },
+  { label: 'Projects', icon: 'folder-outline', path: '/dashboard/projects/', tab: 'Workspace', countKey: 'projects' },
+  { label: 'Media', icon: 'images-outline', path: '/dashboard/media/', tab: 'Workspace', countKey: 'media' },
+  { label: 'Content', icon: 'sparkles-outline', path: '/dashboard/content/', tab: 'Workspace', countKey: 'content' },
+  { label: 'Team', icon: 'people-circle-outline', path: '/dashboard/team/', tab: 'Workspace', countKey: 'team' },
+  { label: 'Messages', icon: 'chatbubbles-outline', path: '/dashboard/clients/', tab: 'Workspace', countKey: 'messages' },
 ];
 
 const tabIcons = {
@@ -149,12 +183,19 @@ const employeeMorePages = [
   { label: 'Delete account', icon: 'trash-outline', path: ACCOUNT_DELETE_PATH, danger: true },
 ];
 
+const adminMorePages = [
+  { label: 'Privacy Policy', icon: 'shield-checkmark-outline', path: PRIVACY_PATH },
+  { label: 'Terms of Service', icon: 'document-text-outline', path: TERMS_PATH },
+  { label: 'Log out', icon: 'log-out-outline', path: ADMIN_WORKSPACE_PATH, action: 'logout' },
+];
+
 const employeeMoreContactPage = {
   label: 'Contact Grand Coast',
   icon: 'chatbubble-ellipses-outline',
 };
 
 const employeeDrawerLogout = employeeMorePages[2];
+const adminDrawerLogout = adminMorePages[2];
 
 const MOBILE_CHROME_SCRIPT = [
   '(function () {',
@@ -171,6 +212,77 @@ const MOBILE_CHROME_SCRIPT = [
   "    style.textContent = '.site-header, .site-footer, .portal-header, .portal-footer, .admin-topbar, .staging-bar, .portal-staging-bar, .admin-workspace-notice { display: none !important; } .auth-site .auth-card > .text-link { display: none !important; }';",
   '  } catch (error) {',
   '    // The page can still render if a WebView engine rejects the style injection.',
+  '  }',
+  '',
+  '  try {',
+  "    var navData = document.querySelector('[data-operations-notifications]');",
+  '    if (navData && window.ReactNativeWebView) {',
+  '      window.ReactNativeWebView.postMessage(JSON.stringify({',
+  "        type: 'operations-navigation-counts',",
+  '        workspaceKind: navData.getAttribute(\'data-workspace-kind\'),',
+  '        counts: {',
+  "          overview: Number(navData.getAttribute('data-count-overview')) || 0,",
+  "          clients: Number(navData.getAttribute('data-count-clients')) || 0,",
+  "          tasks: Number(navData.getAttribute('data-count-tasks')) || 0,",
+  "          calendar: Number(navData.getAttribute('data-count-calendar')) || 0,",
+  "          time: Number(navData.getAttribute('data-count-time')) || 0,",
+  "          documents: Number(navData.getAttribute('data-count-documents')) || 0,",
+  "          leads: Number(navData.getAttribute('data-count-leads')) || 0,",
+  "          estimates: Number(navData.getAttribute('data-count-estimates')) || 0,",
+  "          projects: Number(navData.getAttribute('data-count-projects')) || 0,",
+  "          media: Number(navData.getAttribute('data-count-media')) || 0,",
+  "          content: Number(navData.getAttribute('data-count-content')) || 0,",
+  "          team: Number(navData.getAttribute('data-count-team')) || 0,",
+  "          messages: Number(navData.getAttribute('data-count-messages')) || 0,",
+  "          profile: Number(navData.getAttribute('data-count-profile')) || 0,",
+  "          notifications: Number(navData.getAttribute('data-count-notifications')) || 0,",
+  '        },',
+  '      }));',
+  '    }',
+  '  } catch (error) {',
+  '    // Count metadata is optional on public pages and must never block navigation.',
+  '  }',
+  '',
+  '  try {',
+  "    if (!window.__grandCoastPullRefreshBound) {",
+  '      var pullStartY = null;',
+  '      var getScrollTop = function () {',
+  '        var scrollingElement = document.scrollingElement || document.documentElement;',
+  '        return window.pageYOffset || scrollingElement.scrollTop || document.body.scrollTop || 0;',
+  '      };',
+  '      document.addEventListener(\'touchstart\', function (event) {',
+  '        if (event.touches.length !== 1 || getScrollTop() > 0) {',
+  '          pullStartY = null;',
+  '          return;',
+  '        }',
+  '        var target = event.target;',
+  '        var interactiveTarget = target && typeof target.closest === \'function\' ? target.closest(\'input, textarea, select, button, a, [contenteditable=true]\') : null;',
+  '        pullStartY = interactiveTarget ? null : event.touches[0].clientY;',
+  '      }, { passive: true });',
+  '      document.addEventListener(\'touchmove\', function (event) {',
+  '        if (pullStartY === null || event.touches.length !== 1 || !window.ReactNativeWebView) {',
+  '          return;',
+  '        }',
+  '        var pullDistance = Math.max(0, Math.min((event.touches[0].clientY - pullStartY) * 0.55, 96));',
+  "        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mobile-pull-to-refresh-progress', distance: pullDistance }));",
+  '      }, { passive: true });',
+  '      document.addEventListener(\'touchend\', function (event) {',
+  '        if (pullStartY !== null && event.changedTouches.length === 1 && window.ReactNativeWebView) {',
+  '          var pullDistance = event.changedTouches[0].clientY - pullStartY;',
+  "          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mobile-pull-to-refresh-release', distance: pullDistance }));",
+  '        }',
+  '        pullStartY = null;',
+  '      }, { passive: true });',
+  '      document.addEventListener(\'touchcancel\', function () {',
+  '        if (pullStartY !== null && window.ReactNativeWebView) {',
+  "          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mobile-pull-to-refresh-cancel' }));",
+  '        }',
+  '        pullStartY = null;',
+  '      }, { passive: true });',
+  '      window.__grandCoastPullRefreshBound = true;',
+  '    }',
+  '  } catch (error) {',
+  '    // Pull-to-refresh is an enhancement and must never block page interaction.',
   '  }',
   '',
   '  true;',
@@ -195,6 +307,40 @@ const MOBILE_LOGOUT_SCRIPT = [
   '  true;',
   '})();',
 ].join('\n');
+
+const MOBILE_LOGOUT_WITH_DEVICE_SCRIPT = `
+(function () {
+  try {
+    var form = document.querySelector('form[action$="/accounts/logout/"]');
+    if (!form) {
+      return true;
+    }
+    var submitLogout = function () {
+      if (typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+    };
+    var token = window.__grandCoastPushToken || '';
+    if (!token || typeof fetch !== 'function') {
+      submitLogout();
+      return true;
+    }
+    var csrfMatch = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    var csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
+    fetch('/team/notifications/devices/deactivate/', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken},
+      body: 'token=' + encodeURIComponent(token),
+    }).catch(function () {}).then(submitLogout, submitLogout);
+  } catch (error) {
+    // The existing Django logout form remains the source of truth.
+  }
+  return true;
+})();
+`;
 
 function useSession() {
   return useContext(SessionContext);
@@ -295,6 +441,10 @@ function isPrivatePath(pathname) {
 }
 
 function workspaceKindFromPath(pathname) {
+  if (pathname === '/dashboard' || pathname.startsWith('/dashboard/')) {
+    return 'admin';
+  }
+
   if (pathname === '/team' || pathname.startsWith('/team/')) {
     return 'employee';
   }
@@ -328,8 +478,11 @@ function AppHeader({ navigation }) {
 
   const openProfile = useCallback(() => {
     const isEmployee = workspaceKind === 'employee';
-    const profilePath = isEmployee ? EMPLOYEE_PROFILE_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
-    setActiveTab('Workspace');
+    const isAdmin = workspaceKind === 'admin';
+    const profilePath = isEmployee
+      ? EMPLOYEE_PROFILE_PATH
+      : isAdmin ? ADMIN_WORKSPACE_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
+    setActiveTab(isAdmin ? 'Dashboard' : 'Workspace');
     setActiveWebPath(profilePath);
     navigate(profilePath);
   }, [navigate, setActiveTab, setActiveWebPath, workspaceKind, workspacePath]);
@@ -352,7 +505,7 @@ function AppHeader({ navigation }) {
         </View>
 
         <Pressable
-          accessibilityLabel={workspaceKind === 'employee' ? 'Open profile' : 'Open workspace'}
+          accessibilityLabel={workspaceKind === 'employee' ? 'Open profile' : workspaceKind === 'admin' ? 'Open operations' : 'Open workspace'}
           hitSlop={10}
           onPress={openProfile}
           style={styles.headerButton}
@@ -364,7 +517,17 @@ function AppHeader({ navigation }) {
   );
 }
 
-function NativeDrawerItem({ navigation, page, isEmployee }) {
+function NativeNotificationBadge({ count }) {
+  const numericCount = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
+
+  return (
+    <View accessibilityLabel={`${numericCount} notifications`} style={styles.nativeNavCount}>
+      <Text style={styles.nativeNavCountText}>{numericCount}</Text>
+    </View>
+  );
+}
+
+function NativeDrawerItem({ navigation, notificationCount, page, isEmployee }) {
   const { navigate } = useContext(SharedWebViewContext);
   const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
 
@@ -376,8 +539,14 @@ function NativeDrawerItem({ navigation, page, isEmployee }) {
         <Ionicons color={color} name={page.icon} size={size} />
       )}
       inactiveTintColor={isEmployee ? '#F5F7FA' : undefined}
-      label={page.label}
-      labelStyle={isEmployee ? styles.employeeDrawerItemLabel : styles.drawerItemLabel}
+      label={() => (
+        <View style={styles.drawerItemLabelRow}>
+          <Text style={[isEmployee ? styles.employeeDrawerItemLabel : styles.drawerItemLabel, styles.drawerItemLabelText]}>
+            {page.label}
+          </Text>
+          {page.countKey ? <NativeNotificationBadge count={notificationCount} /> : null}
+        </View>
+      )}
       onPress={() => {
         setActiveTab(page.tab);
         setActiveWebPath(page.path);
@@ -390,7 +559,7 @@ function NativeDrawerItem({ navigation, page, isEmployee }) {
   );
 }
 
-function NativeDrawerAction({ action, navigation }) {
+function NativeDrawerAction({ action, isAdmin, navigation }) {
   const { requestLogout } = useContext(SharedWebViewContext);
   const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
 
@@ -403,9 +572,9 @@ function NativeDrawerAction({ action, navigation }) {
       label={action.label}
       labelStyle={styles.employeeDrawerItemLabel}
       onPress={() => {
-        setActiveTab('Workspace');
-        setActiveWebPath(EMPLOYEE_WORKSPACE_PATH);
-        requestLogout();
+        requestLogout(isAdmin ? ADMIN_WORKSPACE_PATH : EMPLOYEE_WORKSPACE_PATH);
+        setActiveTab(isAdmin ? 'Dashboard' : 'Workspace');
+        setActiveWebPath(isAdmin ? ADMIN_WORKSPACE_PATH : EMPLOYEE_WORKSPACE_PATH);
         navigation.closeDrawer();
       }}
       pressColor="rgba(255, 255, 255, 0.08)"
@@ -415,9 +584,11 @@ function NativeDrawerAction({ action, navigation }) {
 }
 
 function AppDrawerContent({ navigation, ...props }) {
-  const { isAuthenticated, workspaceKind, workspacePath } = useSession();
+  const { isAuthenticated, navigationCounts, workspaceKind, workspacePath } = useSession();
+  const isAdmin = workspaceKind === 'admin';
   const isEmployee = workspaceKind === 'employee';
-  const pages = isEmployee ? employeeDrawerPages : clientDrawerPages;
+  const isOperations = isAdmin || isEmployee;
+  const pages = isAdmin ? adminDrawerPages : isEmployee ? employeeDrawerPages : clientDrawerPages;
 
   const accountPages = useMemo(
     () => [
@@ -438,18 +609,30 @@ function AppDrawerContent({ navigation, ...props }) {
   return (
     <DrawerContentScrollView
       {...props}
-      contentContainerStyle={isEmployee ? styles.employeeDrawerContent : styles.drawerContent}
+      contentContainerStyle={isOperations ? styles.employeeDrawerContent : styles.drawerContent}
       showsVerticalScrollIndicator={false}
     >
-      {isEmployee ? (
+      {isOperations ? (
         <>
           <View style={styles.employeeDrawerTopRule} />
-          <Text style={[styles.drawerSectionLabel, styles.employeeDrawerSectionLabel]}>My Workspace</Text>
+          <Text style={[styles.drawerSectionLabel, styles.employeeDrawerSectionLabel]}>
+            {isAdmin ? 'Operations' : 'My Workspace'}
+          </Text>
           {pages.map((page) => (
-            <NativeDrawerItem isEmployee key={page.path} navigation={navigation} page={page} />
+            <NativeDrawerItem
+              isEmployee
+              key={page.path}
+              navigation={navigation}
+              notificationCount={navigationCounts?.[page.countKey] ?? 0}
+              page={page}
+            />
           ))}
           <View style={styles.employeeDrawerBottomRule} />
-          <NativeDrawerAction action={employeeDrawerLogout} navigation={navigation} />
+          <NativeDrawerAction
+            action={isAdmin ? adminDrawerLogout : employeeDrawerLogout}
+            isAdmin={isAdmin}
+            navigation={navigation}
+          />
         </>
       ) : (
         <>
@@ -489,25 +672,189 @@ function useWebViewChrome(webViewRef) {
   }, [webViewRef]);
 }
 
-function SignInGate({ webViewRef }) {
+function PushNotificationBridge() {
+  const { isAuthenticated, workspaceKind, workspacePath } = useSession();
+  const { navigate, webViewRef } = useContext(SharedWebViewContext);
+  const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
+  const pushTokenRef = useRef(null);
+  const registrationAttemptedRef = useRef(false);
+  const pendingNotificationDestinationRef = useRef(null);
+
+  const registerTokenInWebView = useCallback((token) => {
+    if (!token || !webViewRef.current) {
+      return;
+    }
+    const platform = Platform.OS;
+    const script = `
+(function () {
+  var token = ${JSON.stringify(token)};
+  var platform = ${JSON.stringify(platform)};
+  window.__grandCoastPushToken = token;
+  window.__grandCoastRegisterPushToken = function (value, devicePlatform) {
+    var csrfMatch = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    var csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
+    return fetch('/team/notifications/devices/', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken},
+      body: 'token=' + encodeURIComponent(value) + '&platform=' + encodeURIComponent(devicePlatform || ''),
+    }).catch(function () {});
+  };
+  window.__grandCoastRegisterPushToken(token, platform);
+})();
+true;`;
+    webViewRef.current.injectJavaScript(script);
+  }, [webViewRef]);
+
+  const openNotificationDestination = useCallback((response) => {
+    const data = response?.notification?.request?.content?.data || {};
+    const destination = typeof data.url === 'string' && data.url.startsWith('/')
+      ? data.url
+      : EMPLOYEE_NOTIFICATIONS_PATH;
+    if (!isAuthenticated || workspaceKind !== 'employee' || !webViewRef.current) {
+      pendingNotificationDestinationRef.current = destination;
+      return false;
+    }
+    setActiveTab('Workspace');
+    setActiveWebPath(destination);
+    return navigate(destination);
+  }, [isAuthenticated, navigate, setActiveTab, setActiveWebPath, webViewRef, workspaceKind]);
+
+  useEffect(() => {
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener(
+      openNotificationDestination,
+    );
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        if (response) {
+          openNotificationDestination(response);
+        }
+      })
+      .catch(() => {});
+    return () => responseSubscription.remove();
+  }, [openNotificationDestination]);
+
+  useEffect(() => {
+    const destination = pendingNotificationDestinationRef.current;
+    if (!destination || !isAuthenticated || workspaceKind !== 'employee' || !webViewRef.current) {
+      return;
+    }
+    pendingNotificationDestinationRef.current = null;
+    setActiveTab('Workspace');
+    setActiveWebPath(destination);
+    navigate(destination);
+  }, [isAuthenticated, navigate, setActiveTab, setActiveWebPath, webViewRef, workspaceKind, workspacePath]);
+
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('schedule-updates', {
+        name: 'Schedule updates',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        sound: 'default',
+        vibrationPattern: [0, 250, 250, 250],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      }).catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || workspaceKind !== 'employee') {
+      registrationAttemptedRef.current = false;
+      pushTokenRef.current = null;
+      return undefined;
+    }
+    if (registrationAttemptedRef.current) {
+      return undefined;
+    }
+    registrationAttemptedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        let permission = await Notifications.getPermissionsAsync();
+        if (permission.status !== 'granted') {
+          permission = await Notifications.requestPermissionsAsync();
+        }
+        if (permission.status !== 'granted' || cancelled) {
+          return;
+        }
+        const configuredProjectId = Constants.expoConfig?.extra?.expoProjectId
+          || Constants.easConfig?.projectId
+          || process.env.EXPO_PUBLIC_EXPO_PROJECT_ID;
+        const projectId = configuredProjectId && !configuredProjectId.startsWith('REPLACE_')
+          ? configuredProjectId
+          : undefined;
+        const tokenResponse = await Notifications.getExpoPushTokenAsync(
+          projectId ? { projectId } : {},
+        );
+        if (cancelled || !tokenResponse?.data) {
+          return;
+        }
+        pushTokenRef.current = tokenResponse.data;
+        registerTokenInWebView(tokenResponse.data);
+      } catch {
+        // Push is optional; the in-app inbox remains available when setup is incomplete.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, registerTokenInWebView, workspaceKind]);
+
+  useEffect(() => {
+    if (isAuthenticated && workspaceKind === 'employee' && pushTokenRef.current && workspacePath) {
+      registerTokenInWebView(pushTokenRef.current);
+    }
+  }, [isAuthenticated, registerTokenInWebView, workspaceKind, workspacePath]);
+
+  return null;
+}
+
+function SignInGate({ onWebViewLoadEnd, webViewRef }) {
   const pendingWorkspacePathRef = useRef(null);
   const {
     isAuthenticated,
     markAuthenticated,
     markUnauthenticated,
+    updateNavigationCounts,
     updateWorkspacePath,
   } = useSession();
   const {
+    beginAuthTransition,
+    cancelAuthTransition,
     consumeLogoutRequest,
+    finishAuthTransition,
     hideLaunchSplash,
     launchSplashVisible,
     setCurrentPath,
   } = useContext(SharedWebViewContext);
   const [canGoBack, setCanGoBack] = useState(false);
+  const [currentWebViewPath, setCurrentWebViewPath] = useState(AUTH_PATH);
   const [hasError, setHasError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const androidPullOffset = useRef(new Animated.Value(0)).current;
+  const refreshInFlightRef = useRef(false);
+  const canPullToRefresh = isAuthenticated && isPrivatePath(pathnameFromUrl(currentWebViewPath));
   const injectMobileChrome = useWebViewChrome(webViewRef);
   const loginSource = useMemo(() => ({ uri: pageUrl(AUTH_PATH) }), []);
+  const webViewMotionStyle = Platform.OS === 'android'
+    ? { transform: [{ translateY: androidPullOffset }] }
+    : null;
+  const isRefreshActive = isRefreshing || refreshInFlightRef.current;
+
+  const recoilPullOffset = useCallback(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    androidPullOffset.stopAnimation();
+    Animated.timing(androidPullOffset, {
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      toValue: 0,
+      useNativeDriver: true,
+    }).start();
+  }, [androidPullOffset]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') {
@@ -531,6 +878,7 @@ function SignInGate({ webViewRef }) {
 
     const relativePath = relativePathFromUrl(state.url);
     const pathname = pathnameFromUrl(relativePath);
+    setCurrentWebViewPath(relativePath);
     setCurrentPath(relativePath);
 
     if (isPrivatePath(pathname)) {
@@ -538,10 +886,16 @@ function SignInGate({ webViewRef }) {
         updateWorkspacePath(relativePath);
       } else {
         pendingWorkspacePathRef.current = relativePath;
+        if (!launchSplashVisible) {
+          beginAuthTransition();
+        }
       }
     } else if (isLoginPath(pathname)) {
       pendingWorkspacePathRef.current = null;
       if (isAuthenticated) {
+        if (!launchSplashVisible) {
+          beginAuthTransition();
+        }
         markUnauthenticated();
       }
     }
@@ -563,18 +917,27 @@ function SignInGate({ webViewRef }) {
 
   const handleLoadEnd = (event) => {
     setIsLoading(false);
+    setIsRefreshing(false);
+    refreshInFlightRef.current = false;
+    recoilPullOffset();
     injectMobileChrome();
 
     const loadedPath = relativePathFromUrl(event?.nativeEvent?.url || AUTH_PATH);
+    const loadedPathname = pathnameFromUrl(loadedPath);
+    setCurrentWebViewPath(loadedPath);
     setCurrentPath(loadedPath);
+    onWebViewLoadEnd?.(loadedPath);
     const pendingWorkspacePath = pendingWorkspacePathRef.current;
     pendingWorkspacePathRef.current = null;
     if (consumeLogoutRequest()) {
-      webViewRef.current?.injectJavaScript(MOBILE_LOGOUT_SCRIPT);
+      webViewRef.current?.injectJavaScript(MOBILE_LOGOUT_WITH_DEVICE_SCRIPT);
     }
     hideLaunchSplash().then(() => {
       if (pendingWorkspacePath && !isAuthenticated) {
         markAuthenticated(pendingWorkspacePath);
+      }
+      if (isLoginPath(loadedPathname) || (pendingWorkspacePath && !isAuthenticated)) {
+        finishAuthTransition();
       }
     });
   };
@@ -583,42 +946,137 @@ function SignInGate({ webViewRef }) {
     pendingWorkspacePathRef.current = null;
     setHasError(true);
     setIsLoading(false);
+    setIsRefreshing(false);
+    refreshInFlightRef.current = false;
+    recoilPullOffset();
+    cancelAuthTransition();
     hideLaunchSplash();
+  };
+
+  const handleMessage = (event) => {
+    try {
+      const message = JSON.parse(event.nativeEvent.data);
+      if (message.type === 'mobile-pull-to-refresh-progress') {
+        if (Platform.OS === 'android' && canPullToRefresh && !refreshInFlightRef.current) {
+          const distance = Number(message.distance);
+          androidPullOffset.stopAnimation();
+          androidPullOffset.setValue(
+            Number.isFinite(distance) ? Math.max(0, Math.min(distance, 96)) : 0,
+          );
+        }
+        return;
+      }
+
+      if (message.type === 'mobile-pull-to-refresh-cancel') {
+        recoilPullOffset();
+        return;
+      }
+
+      if (
+        message.type === 'mobile-pull-to-refresh-release'
+        || message.type === 'mobile-pull-to-refresh'
+      ) {
+        if (
+          Platform.OS !== 'android'
+          || !canPullToRefresh
+          || refreshInFlightRef.current
+        ) {
+          recoilPullOffset();
+          return;
+        }
+
+        const pullDistance = message.type === 'mobile-pull-to-refresh'
+          ? 72
+          : Number(message.distance);
+        if (!Number.isFinite(pullDistance) || pullDistance < 72) {
+          recoilPullOffset();
+          return;
+        }
+
+        refreshInFlightRef.current = true;
+        setIsRefreshing(true);
+        androidPullOffset.stopAnimation();
+        Animated.timing(androidPullOffset, {
+          duration: 180,
+          easing: Easing.out(Easing.cubic),
+          toValue: 56,
+          useNativeDriver: true,
+        }).start(() => {
+          if (webViewRef.current) {
+            webViewRef.current.reload();
+            return;
+          }
+
+          refreshInFlightRef.current = false;
+          setIsRefreshing(false);
+          recoilPullOffset();
+        });
+        return;
+      }
+
+      if (
+        message.type === 'operations-navigation-counts'
+        && (message.workspaceKind === 'admin' || message.workspaceKind === 'employee')
+        && message.counts
+      ) {
+        updateNavigationCounts(message.workspaceKind, message.counts);
+      }
+    } catch {
+      // Ignore unrelated WebView messages.
+    }
   };
 
   return (
     <View style={styles.authGate}>
-      <WebView
-        allowsBackForwardNavigationGestures
-        domStorageEnabled
-        injectedJavaScript={MOBILE_CHROME_SCRIPT}
-        injectedJavaScriptBeforeContentLoaded={MOBILE_CHROME_SCRIPT}
-        javaScriptEnabled
-        onError={handleError}
-        onLoadEnd={handleLoadEnd}
-        onLoadStart={() => {
-          setHasError(false);
-          setIsLoading(true);
-        }}
-        onMessage={() => {}}
-        onNavigationStateChange={handleNavigationStateChange}
-        onShouldStartLoadWithRequest={handleRequest}
-        originWhitelist={['http://*', 'https://*']}
-        ref={webViewRef}
-        renderError={() => null}
-        sharedCookiesEnabled
-        source={loginSource}
-        startInLoadingState
-        style={styles.webView}
-        testID="webview-sign-in"
-        thirdPartyCookiesEnabled
-        userAgent={MOBILE_WEBVIEW_USER_AGENT}
-      />
+      <Animated.View style={[styles.webViewFrame, webViewMotionStyle]}>
+        <WebView
+          allowsBackForwardNavigationGestures
+          domStorageEnabled
+          injectedJavaScript={MOBILE_CHROME_SCRIPT}
+          injectedJavaScriptBeforeContentLoaded={MOBILE_CHROME_SCRIPT}
+          javaScriptEnabled
+          onError={handleError}
+          onLoadEnd={handleLoadEnd}
+          onLoadStart={() => {
+            setHasError(false);
+            setIsLoading(true);
+            setIsRefreshing(refreshInFlightRef.current);
+          }}
+          onMessage={handleMessage}
+          onNavigationStateChange={handleNavigationStateChange}
+          onShouldStartLoadWithRequest={handleRequest}
+          originWhitelist={['http://*', 'https://*']}
+          overScrollMode={Platform.OS === 'android' ? 'never' : undefined}
+          pullToRefreshEnabled={Platform.OS === 'ios' && canPullToRefresh}
+          ref={webViewRef}
+          renderError={() => null}
+          sharedCookiesEnabled
+          source={loginSource}
+          startInLoadingState
+          style={styles.webView}
+          testID="webview-sign-in"
+          thirdPartyCookiesEnabled
+          userAgent={MOBILE_WEBVIEW_USER_AGENT}
+        />
+      </Animated.View>
 
-      {isLoading && !launchSplashVisible && !hasError ? (
+      {isLoading
+        && !launchSplashVisible
+        && !hasError
+        && !canPullToRefresh
+        && !isRefreshActive ? (
         <View pointerEvents="none" style={styles.loadingOverlay}>
           <ActivityIndicator color={colors.blue} size="large" />
-          <Text style={styles.loadingText}>Loading sign in...</Text>
+          <Text style={styles.loadingText}>
+            {isAuthenticated ? 'Loading Grand Coast...' : 'Loading sign in...'}
+          </Text>
+        </View>
+      ) : null}
+
+      {isRefreshActive ? (
+        <View pointerEvents="none" style={styles.refreshOverlay}>
+          <ActivityIndicator color={colors.blue} size="small" />
+          <Text style={styles.refreshText}>Refreshing Grand Coast...</Text>
         </View>
       ) : null}
 
@@ -833,20 +1291,20 @@ function EmployeeContactScreen({ onBack }) {
   );
 }
 
-function EmployeeMoreScreen() {
+function EmployeeMoreScreen({ onNavigate }) {
   const [showContactForm, setShowContactForm] = useState(false);
-  const { navigate, requestLogout } = useContext(SharedWebViewContext);
+  const { requestLogout } = useContext(SharedWebViewContext);
   const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
   const openPage = useCallback((page) => {
-    setActiveTab('Workspace');
-    setActiveWebPath(page.action === 'logout' ? EMPLOYEE_WORKSPACE_PATH : page.path);
     if (page.action === 'logout') {
-      requestLogout();
+      requestLogout(EMPLOYEE_WORKSPACE_PATH);
+      setActiveTab('Workspace');
+      setActiveWebPath(EMPLOYEE_WORKSPACE_PATH);
       return;
     }
 
-    navigate(page.path);
-  }, [navigate, requestLogout, setActiveTab, setActiveWebPath]);
+    onNavigate('Workspace', page.path);
+  }, [onNavigate, requestLogout, setActiveTab, setActiveWebPath]);
   const openContactForm = useCallback(() => {
     setShowContactForm(true);
   }, []);
@@ -879,6 +1337,39 @@ function EmployeeMoreScreen() {
             page={page}
           />
         ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+function AdminMoreScreen({ onNavigate }) {
+  const { requestLogout } = useContext(SharedWebViewContext);
+  const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
+  const openPage = useCallback((page) => {
+    if (page.action === 'logout') {
+      requestLogout(ADMIN_WORKSPACE_PATH);
+      setActiveTab('Dashboard');
+      setActiveWebPath(ADMIN_WORKSPACE_PATH);
+      return;
+    }
+
+    onNavigate('Workspace', page.path);
+  }, [onNavigate, requestLogout, setActiveTab, setActiveWebPath]);
+
+  return (
+    <View style={styles.moreScreen}>
+      <ScrollView contentContainerStyle={styles.moreContent} showsVerticalScrollIndicator={false}>
+        <Text style={styles.moreSectionLabel}>Account & support</Text>
+        {adminMorePages.slice(0, 2).map((page) => (
+          <EmployeeMoreItem
+            key={page.path}
+            onPress={() => openPage(page)}
+            page={page}
+          />
+        ))}
+
+        <Text style={[styles.moreSectionLabel, styles.moreSectionLabelSpaced]}>Session</Text>
+        <EmployeeMoreItem page={adminDrawerLogout} onPress={() => openPage(adminDrawerLogout)} />
       </ScrollView>
     </View>
   );
@@ -924,6 +1415,7 @@ function NativeTabBar({ activeTab, insets, isEmployee, onSelect }) {
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
+  const pendingTabRef = useRef(null);
   const { isAuthenticated, workspaceKind, workspacePath } = useSession();
   const { navigate, webViewRef } = useContext(SharedWebViewContext);
   const {
@@ -932,9 +1424,29 @@ function MainTabs() {
     setActiveTab,
     setActiveWebPath,
   } = useContext(NativeShellContext);
+  const isAdmin = workspaceKind === 'admin';
   const isEmployee = workspaceKind === 'employee';
-  const isMore = isEmployee && activeTab === 'More';
+  const isOperations = isAdmin || isEmployee;
+  const isMore = isOperations && activeTab === 'More';
   const tabBarHeight = 62 + insets.bottom;
+  const handleWebViewLoadEnd = useCallback((loadedPath) => {
+    const pendingTab = pendingTabRef.current;
+    if (!pendingTab || pathnameFromUrl(loadedPath) !== pathnameFromUrl(pendingTab.path)) {
+      return;
+    }
+
+    pendingTabRef.current = null;
+    setActiveTab(pendingTab.name);
+  }, [setActiveTab]);
+  const navigateFromMore = useCallback((tabName, path) => {
+    const pendingTab = { name: tabName, path };
+    pendingTabRef.current = pendingTab;
+    setActiveWebPath(path);
+    if (navigate(path) === false) {
+      pendingTabRef.current = null;
+      setActiveTab(tabName);
+    }
+  }, [navigate, setActiveTab, setActiveWebPath]);
   const activeWebPath = useMemo(() => {
     if (!isAuthenticated || isMore) {
       return null;
@@ -944,7 +1456,11 @@ function MainTabs() {
       return selectedWebPath;
     }
 
-    if (isEmployee) {
+    if (isOperations) {
+      if (isAdmin) {
+        return ADMIN_WORKSPACE_PATH;
+      }
+
       return activeTab === 'Dashboard' ? EMPLOYEE_WORKSPACE_PATH : EMPLOYEE_PROJECTS_PATH;
     }
 
@@ -957,7 +1473,7 @@ function MainTabs() {
     }
 
     return workspacePath || CLIENT_WORKSPACE_PATH;
-  }, [activeTab, isAuthenticated, isEmployee, isMore, selectedWebPath, workspacePath]);
+  }, [activeTab, isAdmin, isAuthenticated, isOperations, isMore, selectedWebPath, workspacePath]);
 
   useEffect(() => {
     if (activeWebPath) {
@@ -966,19 +1482,29 @@ function MainTabs() {
   }, [activeWebPath, navigate]);
 
   const selectTab = useCallback((tabName) => {
-    setActiveTab(tabName);
     if (tabName === 'More') {
+      pendingTabRef.current = null;
+      setActiveTab(tabName);
       setActiveWebPath(null);
       return;
     }
 
-    const tabPath = isEmployee
-      ? tabName === 'Dashboard' ? EMPLOYEE_WORKSPACE_PATH : EMPLOYEE_PROJECTS_PATH
+    const tabPath = isOperations
+      ? isAdmin ? ADMIN_WORKSPACE_PATH
+        : tabName === 'Dashboard' ? EMPLOYEE_WORKSPACE_PATH : EMPLOYEE_PROJECTS_PATH
       : tabName === 'Projects' ? '/projects/'
         : tabName === 'Contact' ? '/contact/'
           : workspacePath || CLIENT_WORKSPACE_PATH;
+
+    if (activeTab === 'More') {
+      navigateFromMore(tabName, tabPath);
+      return;
+    }
+
+    pendingTabRef.current = null;
+    setActiveTab(tabName);
     setActiveWebPath(tabPath);
-  }, [isEmployee, setActiveTab, setActiveWebPath, workspacePath]);
+  }, [activeTab, isAdmin, isOperations, navigateFromMore, setActiveTab, setActiveWebPath, workspacePath]);
 
   return (
     <View style={styles.mainTabs}>
@@ -990,12 +1516,14 @@ function MainTabs() {
           isMore && styles.mainTabsWebViewHidden,
         ]}
       >
-        <SignInGate webViewRef={webViewRef} />
+        <SignInGate onWebViewLoadEnd={handleWebViewLoadEnd} webViewRef={webViewRef} />
       </View>
 
       {isMore ? (
         <View style={[styles.nativeContentOverlay, { bottom: tabBarHeight }]}>
-          <EmployeeMoreScreen />
+          {isAdmin
+            ? <AdminMoreScreen onNavigate={navigateFromMore} />
+            : <EmployeeMoreScreen onNavigate={navigateFromMore} />}
         </View>
       ) : null}
 
@@ -1003,7 +1531,7 @@ function MainTabs() {
         <NativeTabBar
           activeTab={activeTab}
           insets={insets}
-          isEmployee={isEmployee}
+          isEmployee={isOperations}
           onSelect={selectTab}
         />
       ) : null}
@@ -1013,19 +1541,21 @@ function MainTabs() {
 
 function AppShell() {
   const { isAuthenticated, workspaceKind } = useSession();
+  const isAdmin = workspaceKind === 'admin';
   const isEmployee = workspaceKind === 'employee';
+  const isOperations = isAdmin || isEmployee;
   const [activeTab, setActiveTab] = useState(null);
   const [activeWebPath, setActiveWebPath] = useState(null);
-  const validTabs = isEmployee ? employeeBottomTabs : clientBottomTabs;
+  const validTabs = isOperations ? employeeBottomTabs : clientBottomTabs;
   const selectedTab = !isAuthenticated
     ? null
     : validTabs.some((tab) => tab.name === activeTab)
       ? activeTab
-      : isEmployee ? 'Dashboard' : 'Workspace';
+      : isOperations ? 'Dashboard' : 'Workspace';
   useEffect(() => {
-    setActiveTab(isAuthenticated ? (isEmployee ? 'Dashboard' : 'Workspace') : null);
+    setActiveTab(isAuthenticated ? (isOperations ? 'Dashboard' : 'Workspace') : null);
     setActiveWebPath(null);
-  }, [isAuthenticated, isEmployee]);
+  }, [isAuthenticated, isOperations]);
 
   const nativeShellValue = useMemo(
     () => ({
@@ -1039,6 +1569,7 @@ function AppShell() {
 
   return (
     <NativeShellContext.Provider value={nativeShellValue}>
+      <PushNotificationBridge />
       <View style={styles.appShell}>
         <NavigationContainer theme={transparentNavigationTheme}>
           <Drawer.Navigator
@@ -1046,7 +1577,7 @@ function AppShell() {
             screenOptions={{
               drawerStyle: !isAuthenticated
                 ? [styles.drawer, styles.hiddenDrawer]
-                : isEmployee ? [styles.drawer, styles.employeeDrawer] : styles.drawer,
+                : isOperations ? [styles.drawer, styles.employeeDrawer] : styles.drawer,
               drawerType: 'front',
               header: (props) => <AppHeader {...props} />,
               headerShown: isAuthenticated,
@@ -1067,23 +1598,93 @@ export default function App() {
   const sharedWebViewRef = useRef(null);
   const sharedWebViewPathRef = useRef(null);
   const sharedWebViewLogoutPendingRef = useRef(false);
+  const navigationCountsRef = useRef({});
   const launchSplashStartedAtRef = useRef(Date.now());
   const launchSplashHandledRef = useRef(false);
   const launchSplashOpacity = useRef(new Animated.Value(1)).current;
+  const authTransitionTimeoutRef = useRef(null);
+  const authTransitionActiveRef = useRef(false);
+  const authTransitionOpacity = useRef(new Animated.Value(0)).current;
   const [launchSplashVisible, setLaunchSplashVisible] = useState(true);
+  const [authTransitionVisible, setAuthTransitionVisible] = useState(false);
   const [session, setSession] = useState({
     isAuthenticated: false,
+    navigationCounts: {},
     workspaceKind: null,
     workspacePath: null,
   });
 
+  const beginAuthTransition = useCallback(() => {
+    if (authTransitionTimeoutRef.current) {
+      clearTimeout(authTransitionTimeoutRef.current);
+      authTransitionTimeoutRef.current = null;
+    }
+
+    authTransitionActiveRef.current = true;
+    setAuthTransitionVisible(true);
+    authTransitionOpacity.stopAnimation();
+    Animated.timing(authTransitionOpacity, {
+      duration: 160,
+      easing: Easing.out(Easing.cubic),
+      toValue: 1,
+      useNativeDriver: true,
+    }).start();
+  }, [authTransitionOpacity]);
+
+  const finishAuthTransition = useCallback(() => {
+    if (!authTransitionActiveRef.current) {
+      return;
+    }
+
+    authTransitionActiveRef.current = false;
+    if (authTransitionTimeoutRef.current) {
+      clearTimeout(authTransitionTimeoutRef.current);
+    }
+
+    authTransitionTimeoutRef.current = setTimeout(() => {
+      authTransitionTimeoutRef.current = null;
+      Animated.timing(authTransitionOpacity, {
+        duration: 280,
+        easing: Easing.out(Easing.cubic),
+        toValue: 0,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setAuthTransitionVisible(false);
+        }
+      });
+    }, 90);
+  }, [authTransitionOpacity]);
+
+  const cancelAuthTransition = useCallback(() => {
+    authTransitionActiveRef.current = false;
+    if (authTransitionTimeoutRef.current) {
+      clearTimeout(authTransitionTimeoutRef.current);
+      authTransitionTimeoutRef.current = null;
+    }
+
+    authTransitionOpacity.stopAnimation();
+    authTransitionOpacity.setValue(0);
+    setAuthTransitionVisible(false);
+  }, [authTransitionOpacity]);
+
+  useEffect(() => () => {
+    authTransitionActiveRef.current = false;
+    if (authTransitionTimeoutRef.current) {
+      clearTimeout(authTransitionTimeoutRef.current);
+    }
+    authTransitionOpacity.stopAnimation();
+  }, [authTransitionOpacity]);
+
   const markAuthenticated = useCallback((urlOrPath) => {
     const relativePath = relativePathFromUrl(urlOrPath);
     const pathname = pathnameFromUrl(relativePath);
+    const workspaceKind = workspaceKindFromPath(pathname);
 
     setSession({
       isAuthenticated: true,
-      workspaceKind: workspaceKindFromPath(pathname),
+      navigationCounts: navigationCountsRef.current[workspaceKind] || {},
+      workspaceKind,
       workspacePath: isPrivatePath(pathname) ? relativePath : null,
     });
   }, []);
@@ -1091,9 +1692,11 @@ export default function App() {
   const markUnauthenticated = useCallback(() => {
     setSession({
       isAuthenticated: false,
+      navigationCounts: {},
       workspaceKind: null,
       workspacePath: null,
     });
+    navigationCountsRef.current = {};
   }, []);
 
   const setSharedWebViewPath = useCallback((urlOrPath) => {
@@ -1103,29 +1706,37 @@ export default function App() {
   const navigateSharedWebView = useCallback((path) => {
     const relativePath = relativePathFromUrl(path);
     if (sharedWebViewPathRef.current === relativePath) {
-      return;
+      return false;
+    }
+
+    const webView = sharedWebViewRef.current;
+    if (!webView) {
+      return false;
     }
 
     sharedWebViewPathRef.current = relativePath;
-    sharedWebViewRef.current?.injectJavaScript(
+    webView.injectJavaScript(
       'window.location.assign(' + JSON.stringify(pageUrl(relativePath)) + '); true;',
     );
+    return true;
   }, []);
 
-  const requestSharedWebViewLogout = useCallback(() => {
+  const requestSharedWebViewLogout = useCallback((fallbackWorkspacePath = EMPLOYEE_WORKSPACE_PATH) => {
+    beginAuthTransition();
     const currentPath = sharedWebViewPathRef.current;
-    if (pathnameFromUrl(currentPath) !== pathnameFromUrl(EMPLOYEE_WORKSPACE_PATH)) {
+    if (!isPrivatePath(pathnameFromUrl(currentPath))) {
       sharedWebViewLogoutPendingRef.current = true;
-      sharedWebViewPathRef.current = EMPLOYEE_WORKSPACE_PATH;
+      sharedWebViewPathRef.current = fallbackWorkspacePath;
       sharedWebViewRef.current?.injectJavaScript(
-        'window.location.assign(' + JSON.stringify(pageUrl(EMPLOYEE_WORKSPACE_PATH)) + '); true;',
+        'window.location.assign(' + JSON.stringify(pageUrl(fallbackWorkspacePath)) + '); true;',
       );
       return;
     }
 
     sharedWebViewLogoutPendingRef.current = false;
-    sharedWebViewRef.current?.injectJavaScript(MOBILE_LOGOUT_SCRIPT);
-  }, []);
+    sharedWebViewPathRef.current = fallbackWorkspacePath;
+    sharedWebViewRef.current?.injectJavaScript(MOBILE_LOGOUT_WITH_DEVICE_SCRIPT);
+  }, [beginAuthTransition]);
 
   const consumeLogoutRequest = useCallback(() => {
     const isPending = sharedWebViewLogoutPendingRef.current;
@@ -1152,6 +1763,7 @@ export default function App() {
         () => new Promise((resolve) => {
           Animated.timing(launchSplashOpacity, {
             duration: LAUNCH_SPLASH_FADE_MS,
+            easing: Easing.out(Easing.cubic),
             toValue: 0,
             useNativeDriver: true,
           }).start(() => {
@@ -1187,20 +1799,65 @@ export default function App() {
     });
   }, []);
 
+  const updateNavigationCounts = useCallback((workspaceKind, counts) => {
+    if (workspaceKind !== 'admin' && workspaceKind !== 'employee') {
+      return;
+    }
+
+    const countKeys = [
+      'overview',
+      'clients',
+      'tasks',
+      'calendar',
+      'time',
+      'documents',
+      'leads',
+      'estimates',
+      'projects',
+      'media',
+      'content',
+      'team',
+      'messages',
+      'notifications',
+      'profile',
+    ];
+    const sanitizedCounts = countKeys.reduce((result, key) => {
+      const value = Number(counts[key]);
+      result[key] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+      return result;
+    }, {});
+    navigationCountsRef.current[workspaceKind] = sanitizedCounts;
+
+    setSession((currentSession) => {
+      if (currentSession.workspaceKind && currentSession.workspaceKind !== workspaceKind) {
+        return currentSession;
+      }
+
+      return {
+        ...currentSession,
+        navigationCounts: sanitizedCounts,
+      };
+    });
+  }, []);
+
   const sessionValue = useMemo(
     () => ({
       ...session,
       markAuthenticated,
       markUnauthenticated,
+      updateNavigationCounts,
       updateWorkspacePath,
     }),
-    [markAuthenticated, markUnauthenticated, session, updateWorkspacePath],
+    [markAuthenticated, markUnauthenticated, session, updateNavigationCounts, updateWorkspacePath],
   );
 
   const sharedWebViewValue = useMemo(
     () => ({
+      beginAuthTransition,
+      cancelAuthTransition,
       navigate: navigateSharedWebView,
       consumeLogoutRequest,
+      finishAuthTransition,
       hideLaunchSplash,
       launchSplashVisible,
       requestLogout: requestSharedWebViewLogout,
@@ -1208,7 +1865,10 @@ export default function App() {
       webViewRef: sharedWebViewRef,
     }),
     [
+      beginAuthTransition,
+      cancelAuthTransition,
       consumeLogoutRequest,
+      finishAuthTransition,
       hideLaunchSplash,
       launchSplashVisible,
       navigateSharedWebView,
@@ -1231,6 +1891,15 @@ export default function App() {
                 <Image source={SPLASH_LOGO} style={styles.splashTransitionLogo} />
               </Animated.View>
             ) : null}
+            {authTransitionVisible ? (
+              <Animated.View
+                pointerEvents="auto"
+                style={[styles.authTransition, { opacity: authTransitionOpacity }]}
+              >
+                <ActivityIndicator color={colors.blue} size="large" />
+                <Text style={styles.loadingText}>Opening workspace...</Text>
+              </Animated.View>
+            ) : null}
           </View>
         </SharedWebViewContext.Provider>
       </SessionContext.Provider>
@@ -1249,6 +1918,7 @@ const styles = StyleSheet.create({
   authGate: {
     backgroundColor: colors.white,
     flex: 1,
+    overflow: 'hidden',
   },
   mobileRoot: {
     flex: 1,
@@ -1334,6 +2004,31 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginLeft: -8,
+  },
+  drawerItemLabelRow: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'space-between',
+  },
+  drawerItemLabelText: {
+    flex: 1,
+  },
+  nativeNavCount: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(214, 163, 42, 0.2)',
+    borderRadius: 20,
+    justifyContent: 'center',
+    minWidth: 24,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  nativeNavCountText: {
+    color: '#F7E8BB',
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   employeeDrawerSectionLabel: {
     color: '#AFC4E2',
@@ -1629,6 +2324,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 12,
   },
+  refreshOverlay: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.96)',
+    borderColor: colors.border,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    left: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    position: 'absolute',
+    right: 16,
+    top: 12,
+    zIndex: 3,
+  },
+  refreshText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 9,
+  },
   retryButton: {
     backgroundColor: colors.blue,
     borderRadius: 10,
@@ -1650,6 +2366,17 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     top: 0,
+  },
+  authTransition: {
+    alignItems: 'center',
+    backgroundColor: colors.white,
+    bottom: 0,
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 20,
   },
   splashTransitionLogo: {
     height: 220,
@@ -1679,6 +2406,9 @@ const styles = StyleSheet.create({
   },
   webView: {
     backgroundColor: colors.canvas,
+    flex: 1,
+  },
+  webViewFrame: {
     flex: 1,
   },
 });

@@ -24,6 +24,7 @@
             {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
             <button class="button button-primary full-width" type="submit">Sign in &rarr;</button>
         </form>
+        <a class="auth-recovery-link" href="{% url 'operations:password-reset' %}">Forgot your password?</a>
         <a class="text-link" href="{% url 'operations:home' %}">&larr; Return to public site</a>
     </div>
 </main>

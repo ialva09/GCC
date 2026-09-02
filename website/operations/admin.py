@@ -3,17 +3,24 @@ from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.auth.models import Group
 from django.contrib import admin
 from django.contrib.admin.helpers import ActionForm
+from django.urls import reverse
+from django.utils.html import format_html
 
 from unfold.admin import ModelAdmin
 
 from .admin_site import GrandCoastAdminSite
+from .forms import user_choice_label
 from .models import (
     Activity,
+    CalendarDayOverride,
     Client,
     ClientInvite,
     ClientMessage,
     EmployeeInvite,
     EmployeeProfile,
+    EmployeeNotification,
+    EmployeeScheduleOverride,
+    EmployeeWeeklySchedule,
     Estimate,
     EstimateLineItem,
     Lead,
@@ -24,6 +31,8 @@ from .models import (
     Project,
     ProjectDocument,
     ProjectUpdate,
+    MobilePushDevice,
+    PushDelivery,
     ScheduleEvent,
     Service,
     SiteSettings,
@@ -46,6 +55,24 @@ class GrandCoastActionForm(ActionForm):
 
 class GrandCoastModelAdmin(ModelAdmin):
     action_form = GrandCoastActionForm
+
+    @staticmethod
+    def _label_user_field(db_field, formfield):
+        if (
+            formfield is not None
+            and db_field.remote_field
+            and db_field.remote_field.model == get_user_model()
+        ):
+            formfield.label_from_instance = user_choice_label
+        return formfield
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        return self._label_user_field(db_field, formfield)
+
+    def formfield_for_manytomany(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_manytomany(db_field, request, **kwargs)
+        return self._label_user_field(db_field, formfield)
 
 
 @admin.register(Client, site=grand_coast_admin_site)
@@ -104,6 +131,32 @@ class LeadAdmin(GrandCoastModelAdmin):
         "assigned_to__first_name",
         "assigned_to__last_name",
     )
+    inlines = []
+
+
+class LeadAttachmentInline(admin.TabularInline):
+    model = LeadAttachment
+    extra = 0
+    can_delete = False
+    fields = ("original_name", "protected_file", "created_at")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    @admin.display(description="File")
+    def protected_file(self, obj):
+        if not obj or not obj.pk or not obj.file:
+            return "No file"
+        filename = obj.original_name or obj.file.name.rsplit("/", 1)[-1]
+        return format_html(
+            '<a href="{}">Download {}</a>',
+            reverse("operations:lead-attachment-file", kwargs={"pk": obj.pk}),
+            filename,
+        )
+
+
+LeadAdmin.inlines = [LeadAttachmentInline]
 
 
 @admin.register(Estimate, site=grand_coast_admin_site)
@@ -213,10 +266,40 @@ class SiteSettingsAdmin(GrandCoastModelAdmin):
     list_display = ("__str__", "updated_at")
 
 
-grand_coast_admin_site.register(LeadAttachment, GrandCoastModelAdmin)
+@admin.register(LeadAttachment, site=grand_coast_admin_site)
+class LeadAttachmentAdmin(GrandCoastModelAdmin):
+    list_display = ("lead", "original_name", "lead_message", "protected_file", "created_at")
+    list_select_related = ("lead",)
+    search_fields = ("original_name", "lead__name", "lead__email", "lead__note")
+    fields = ("lead", "original_name", "lead_message", "protected_file", "created_at")
+    readonly_fields = fields
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(description="Contact message")
+    def lead_message(self, obj):
+        return obj.lead.note or "No message provided."
+
+    @admin.display(description="File")
+    def protected_file(self, obj):
+        if not obj or not obj.pk or not obj.file:
+            return "No file"
+        filename = obj.original_name or obj.file.name.rsplit("/", 1)[-1]
+        return format_html(
+            '<a href="{}">Download {}</a>',
+            reverse("operations:lead-attachment-file", kwargs={"pk": obj.pk}),
+            filename,
+        )
 grand_coast_admin_site.register(ClientMessage, GrandCoastModelAdmin)
 grand_coast_admin_site.register(ScheduleEvent, GrandCoastModelAdmin)
 grand_coast_admin_site.register(TimeEntry, GrandCoastModelAdmin)
+grand_coast_admin_site.register(CalendarDayOverride, GrandCoastModelAdmin)
+grand_coast_admin_site.register(EmployeeWeeklySchedule, GrandCoastModelAdmin)
+grand_coast_admin_site.register(EmployeeScheduleOverride, GrandCoastModelAdmin)
+grand_coast_admin_site.register(MobilePushDevice, GrandCoastModelAdmin)
+grand_coast_admin_site.register(EmployeeNotification, GrandCoastModelAdmin)
+grand_coast_admin_site.register(PushDelivery, GrandCoastModelAdmin)
 
 # Keep the lower-level Django user/group records available in the same private
 # Unfold site. Security settings for administrators are deliberately managed

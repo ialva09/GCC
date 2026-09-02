@@ -1,0 +1,16 @@
+{% if selected_lead.contact_attachments %}
+<section class="lead-attachments" aria-labelledby="lead-attachments-title">
+    <div class="lead-attachments-heading">
+        <span id="lead-attachments-title" class="detail-label">Uploaded files</span>
+        <span class="lead-attachments-count">{{ selected_lead.contact_attachments|length }}</span>
+    </div>
+    <div class="lead-attachment-list">
+        {% for attachment in selected_lead.contact_attachments %}
+        <a class="lead-attachment" href="{{ attachment.download_url }}">
+            <span class="lead-attachment-icon" aria-hidden="true">↳</span>
+            <span class="lead-attachment-copy"><strong>{{ attachment.original_name|default:"Uploaded file" }}</strong><small>Download securely · {{ attachment.created_at|date:"M j, Y g:i A" }}</small></span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}

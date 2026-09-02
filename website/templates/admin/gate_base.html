@@ -4,6 +4,7 @@
 
 {% block extrastyle %}
     {{ block.super }}
+    <link rel="stylesheet" href="{% static 'operations/css/unfold.css' %}">
     {% if form %}{{ form.media }}{% endif %}
 {% endblock %}
 

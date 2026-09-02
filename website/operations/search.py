@@ -70,6 +70,9 @@ def _search_leads(term: str) -> list[SearchResult]:
     leads = (
         Lead.objects.select_related('client')
         .filter(
+            deleted_at__isnull=True,
+        )
+        .filter(
             _contains(
                 term,
                 'name',
@@ -102,6 +105,9 @@ def _search_leads(term: str) -> list[SearchResult]:
 def _search_tasks(term: str) -> list[SearchResult]:
     tasks = (
         Task.objects.select_related('lead', 'lead__client', 'project', 'project__client', 'assigned_to')
+        .filter(
+            Q(lead__isnull=True) | Q(lead__deleted_at__isnull=True),
+        )
         .filter(
             _contains(
                 term,
@@ -153,6 +159,9 @@ def _search_employees(term: str) -> list[SearchResult]:
 def _search_lead_attachments(term: str) -> list[SearchResult]:
     attachments = (
         LeadAttachment.objects.select_related('lead')
+        .filter(
+            lead__deleted_at__isnull=True,
+        )
         .filter(
             _contains(
                 term,

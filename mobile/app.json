@@ -7,13 +7,23 @@
     "userInterfaceStyle": "light",
     "scheme": "grandcoast",
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.grandcoastconstruction.app"
+    },
+    "android": {
+      "package": "com.grandcoastconstruction.app"
     },
     "web": {
       "bundler": "metro"
     },
     "plugins": [
       "expo-font",
+      [
+        "expo-notifications",
+        {
+          "defaultChannel": "schedule-updates"
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -23,6 +33,9 @@
           "resizeMode": "contain"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "expoProjectId": "REPLACE_WITH_EXPO_PROJECT_ID"
+    }
   }
 }

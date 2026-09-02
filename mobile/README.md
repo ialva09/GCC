@@ -12,6 +12,7 @@ This is an Expo-managed React Native app. It keeps the existing Django website i
 - client bottom tabs for Projects, Contact, and Workspace
 - employee account actions for privacy, terms, logout, and account deletion
 - Android back-button support inside the WebView
+- employee schedule push notifications with an in-app notification inbox
 
 ## Run locally
 
@@ -35,6 +36,16 @@ Start Django separately from C:\dev\GCC\website:
 ~~~
 
 For a physical phone, the computer and phone must be on the same network and Windows Firewall must allow port 8000. Use HTTPS for production instead of a local HTTP URL.
+
+## Push notification setup
+
+Push registration is enabled for authenticated employee sessions. Set these values in `mobile/.env.mobile` before building:
+
+~~~dotenv
+EXPO_PUBLIC_EXPO_PROJECT_ID=your-expo-project-id
+~~~
+
+The project ID is intentionally a placeholder until the app is connected to your Expo account. Native remote push requires a development or production build with native credentials; Expo Go is not a valid remote-push test target for SDK 57. Configure Apple push credentials and the Firebase Cloud Messaging credentials for Android in the Expo/EAS project, then build with EAS or the native build workflow. The Android channel is `schedule-updates` and uses the device default sound. The Django server also needs `EXPO_PUSH_ENABLED=true` and, when used, `EXPO_ACCESS_TOKEN` in `website/.env`; run `python manage.py dispatch_push_notifications` from a scheduled worker to retry transient failures.
 
 The logo-only native splash is configured in app.json and is applied to development and release builds. Expo Go uses its own project loading screen, so it may briefly show the project name instead of the configured logo.
 

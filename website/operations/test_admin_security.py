@@ -135,7 +135,7 @@ class PrivateAdminSecurityTests(TestCase):
         self.assertNotContains(response, "gccad")
 
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
-    def test_recovery_email_is_generic_locked_and_one_time(self):
+    def test_recovery_email_locks_after_five_unknown_emails_and_is_one_time(self):
         self.profile.pin_enabled = True
         self.profile.pin_hash = make_password("111111")
         self.profile.save(update_fields=["pin_enabled", "pin_hash", "updated_at"])
@@ -145,13 +145,14 @@ class PrivateAdminSecurityTests(TestCase):
             confirmed=True,
         )
 
-        for attempt in range(2):
+        for attempt in range(4):
             response = self.browser.post(
                 reverse("admin:recovery"),
                 {"email": f"wrong-{attempt}@example.com"},
             )
             self.assertEqual(response.status_code, 200)
-            self.assertContains(response, "Request received.")
+            self.assertContains(response, "That email does not match an active administrator account.")
+            self.assertContains(response, f"You have {4 - attempt} attempt")
 
         locked = self.browser.post(
             reverse("admin:recovery"),
@@ -196,6 +197,109 @@ class PrivateAdminSecurityTests(TestCase):
             410,
         )
         device.delete()
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_recovery_email_accepts_correct_email_before_lockout(self):
+        for attempt in range(4):
+            response = self.browser.post(
+                reverse("admin:recovery"),
+                {"email": f"wrong-before-match-{attempt}@example.com"},
+            )
+            self.assertEqual(response.status_code, 200)
+
+        sent = self.browser.post(
+            reverse("admin:recovery"),
+            {"email": self.admin_user.email},
+        )
+        self.assertEqual(sent.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIsNone(self.browser.session.get("gccad_recovery_attempts"))
+        self.assertIsNone(self.browser.session.get("gccad_recovery_locked_until"))
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        CLOUDFLARE_TURNSTILE_SITE_KEY="",
+        CLOUDFLARE_TURNSTILE_SECRET_KEY="",
+    )
+    def test_admin_password_recovery_resets_password_without_changing_security_factors(self):
+        page = self.browser.get(reverse("admin:index"), follow=True)
+        self.assertContains(page, "Forgot your admin password?")
+        reset_page = self.browser.get(reverse("admin:password-reset"))
+        self.assertContains(reset_page, "/static/operations/css/unfold.css")
+        self.assertContains(reset_page, "gcc-login-form-wrap")
+
+        response = self.browser.post(
+            reverse("admin:password-reset"),
+            {"email": self.admin_user.email},
+        )
+        self.assertRedirects(response, reverse("admin:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 1)
+        reset_url = next(
+            line for line in mail.outbox[0].body.splitlines()
+            if "/gccad/password-reset/confirm/" in line
+        )
+        confirm = self.browser.get(reset_url, follow=True)
+        self.assertContains(confirm, "Choose a new password.")
+        confirm_url = reset_url.replace(reset_url.rstrip("/").rsplit("/", 1)[-1], "set-password")
+        reset = self.browser.post(
+            confirm_url,
+            {
+                "new_password1": "admin-new-password-123",
+                "new_password2": "admin-new-password-123",
+            },
+        )
+        self.assertRedirects(reset, reverse("admin:password-reset-complete"))
+        self.admin_user.refresh_from_db()
+        self.assertTrue(self.admin_user.check_password("admin-new-password-123"))
+        self.profile.refresh_from_db()
+        self.assertFalse(self.profile.pin_enabled)
+        self.assertEqual(self.browser.get(reset_url).status_code, 200)
+        self.assertContains(self.browser.get(reset_url), "That link has expired.")
+
+        mail.outbox.clear()
+        public_request = self.browser.post(
+            reverse("operations:password-reset"),
+            {"email": self.admin_user.email},
+        )
+        self.assertRedirects(public_request, reverse("operations:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_admin_password_recovery_locks_after_five_unknown_emails(self):
+        reset_url = reverse("admin:password-reset")
+
+        for attempt in range(4):
+            response = self.browser.post(
+                reset_url,
+                {"email": f"unknown-admin-{attempt}@example.com"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "That email does not match an active administrator account.")
+            remaining = 4 - attempt
+            self.assertContains(response, f"You have {remaining} attempt")
+        self.assertEqual(len(mail.outbox), 0)
+
+        locked = self.browser.post(
+            reset_url,
+            {"email": "unknown-admin-final@example.com"},
+        )
+        self.assertEqual(locked.status_code, 429)
+        self.assertContains(locked, "Too many password reset attempts.", status_code=429)
+        self.assertEqual(self.browser.get(reset_url).status_code, 429)
+
+    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+    def test_admin_password_recovery_accepts_correct_email_before_lockout(self):
+        reset_url = reverse("admin:password-reset")
+        for attempt in range(4):
+            response = self.browser.post(
+                reset_url,
+                {"email": f"unknown-admin-before-match-{attempt}@example.com"},
+            )
+            self.assertEqual(response.status_code, 200)
+
+        response = self.browser.post(reset_url, {"email": self.admin_user.email})
+        self.assertRedirects(response, reverse("admin:password-reset-done"))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIsNone(self.browser.session.get("password_reset_attempts"))
 
     def test_totp_is_required_for_each_new_admin_session(self):
         device = TOTPDevice.objects.create(
