@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from functools import update_wrapper
 from urllib.parse import urlencode
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login, logout
 from django.contrib import messages
 from django.contrib.auth import REDIRECT_FIELD_NAME
 from django.contrib.auth.hashers import make_password
+from django.core.paginator import Paginator
 from django.contrib.auth.views import (
     LoginView,
     PasswordResetCompleteView,
@@ -15,9 +17,12 @@ from django.contrib.auth.views import (
     PasswordResetDoneView,
     PasswordResetView,
 )
+from django.db import transaction
+from django.db.models import Q
 from django.http import HttpResponseForbidden, HttpResponseRedirect
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import path, reverse, reverse_lazy
+from django.utils import timezone
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django_otp.plugins.otp_totp.models import TOTPDevice
@@ -25,21 +30,28 @@ from unfold.sites import UnfoldAdminSite
 
 from .forms import (
     AdminGateIdentifierForm,
+    AdminIPBlockForm,
     AdminOtpForm,
     AdminPasswordResetForm,
     AdminPinForm,
     AdminPinSettingsForm,
     AdminRecoveryRequestForm,
     AdminRecoveryResetForm,
+    AdminSecurityEventFilterForm,
     AdminTwoFactorStartForm,
+    AdminUserBlockForm,
     GrandCoastAdminAuthenticationForm,
 )
+from .models import AdminAccessBlock, AdminSecurityEvent
+from .services import record_activity
 from .security import (
     ADMIN_RECOVERY_ATTEMPT_LIMIT,
     ADMIN_GATE_PENDING_PIN,
     ADMIN_GATE_NEXT,
     ADMIN_OTP_ENROLLMENT_DEVICE,
     admin_gate_locked,
+    admin_ip_block,
+    admin_user_block,
     admin_security_profile,
     begin_otp_challenge,
     begin_totp_enrollment,
@@ -50,6 +62,7 @@ from .security import (
     consume_admin_recovery_token,
     confirmed_totp_device,
     create_admin_recovery_token,
+    client_ip,
     find_admin_recovery_token,
     gate_is_valid,
     gate_next,
@@ -64,6 +77,7 @@ from .security import (
     register_gate_failure,
     register_otp_failure,
     register_recovery_failure,
+    record_admin_security_event,
     recovery_is_locked,
     remove_totp_devices,
     reset_admin_security,
@@ -79,12 +93,79 @@ from .security import (
 class GrandCoastAdminLoginView(LoginView):
     admin_site = None
 
+    def dispatch(self, request, *args, **kwargs):
+        if not is_active_admin(request.user) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    attempted_identifier=request.POST.get("username", ""),
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_invalid(self, form):
+        if (
+            self.request.method == "POST"
+            and form.errors.get("__all__")
+            and form.cleaned_data.get("username")
+            and form.cleaned_data.get("password")
+        ):
+            attempted_identifier = form.cleaned_data["username"]
+            resolved_admin = resolve_admin_identifier(attempted_identifier)
+            record_admin_security_event(
+                self.request,
+                (
+                    AdminSecurityEvent.EventType.PASSWORD_FAILURE
+                    if resolved_admin is not None
+                    else AdminSecurityEvent.EventType.IDENTIFIER_FAILURE
+                ),
+                attempted_identifier=attempted_identifier,
+                user=resolved_admin,
+                detail=(
+                    "The administrator password could not be verified."
+                    if resolved_admin is not None
+                    else "The identifier did not match an active administrator."
+                ),
+            )
+        return super().form_invalid(form)
+
     def form_valid(self, form):
         user = form.get_user()
-        if not is_active_admin(user) or not gate_is_valid(self.request, user):
+        if not is_active_admin(user):
+            record_admin_security_event(
+                self.request,
+                AdminSecurityEvent.EventType.PASSWORD_FAILURE,
+                attempted_identifier=form.cleaned_data.get("username", ""),
+                detail="The credentials do not belong to an active administrator.",
+            )
+            form.add_error(None, form.error_messages["invalid_login"])
+            return LoginView.form_invalid(self, form)
+        if not gate_is_valid(self.request, user):
+            record_admin_security_event(
+                self.request,
+                AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                user=user,
+                attempted_identifier=form.cleaned_data.get("username", ""),
+                detail="The administration access gate was not completed.",
+            )
             clear_gate(self.request)
             form.add_error(None, form.error_messages["invalid_login"])
-            return self.form_invalid(form)
+            return LoginView.form_invalid(self, form)
+        if admin_user_block(user) is not None:
+            record_admin_security_event(
+                self.request,
+                AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                user=user,
+                attempted_identifier=form.cleaned_data.get("username", ""),
+                detail="The administrator account is locked from new administration sign-ins.",
+            )
+            form.add_error(None, "This administrator account is currently locked.")
+            return LoginView.form_invalid(self, form)
 
         next_url = gate_next(self.request)
         device = confirmed_totp_device(user)
@@ -94,6 +175,13 @@ class GrandCoastAdminLoginView(LoginView):
 
         login(self.request, user, backend="django.contrib.auth.backends.ModelBackend")
         self.request.session.pop("gccad_otp_verified_user", None)
+        record_admin_security_event(
+            self.request,
+            AdminSecurityEvent.EventType.LOGIN_SUCCESS,
+            outcome=AdminSecurityEvent.Outcome.SUCCESS,
+            user=user,
+            attempted_identifier=form.cleaned_data.get("username", ""),
+        )
         return HttpResponseRedirect(next_url)
 
     def get_success_url(self):
@@ -108,10 +196,59 @@ class GrandCoastAdminPasswordResetView(PasswordResetThrottleMixin, PasswordReset
     subject_template_name = "admin/password_reset_subject.txt"
     success_url = reverse_lazy("admin:password-reset-done")
 
+    def dispatch(self, request, *args, **kwargs):
+        if not is_active_admin(request.user) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    attempted_identifier=request.POST.get("email", ""),
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        users = tuple(form.get_users(form.cleaned_data["email"]))
+        if not users:
+            record_admin_security_event(
+                self.request,
+                AdminSecurityEvent.EventType.PASSWORD_RESET_FAILURE,
+                attempted_identifier=form.cleaned_data.get("email", ""),
+                detail="The email does not match an active administrator.",
+            )
+        return super().form_valid(form)
+
 
 class GrandCoastAdminPasswordResetConfirmView(PasswordResetConfirmView):
     template_name = "admin/password_reset_confirm.html"
     success_url = reverse_lazy("admin:password-reset-complete")
+
+    def dispatch(self, request, *args, **kwargs):
+        if not is_active_admin(request.user) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
+        response = super().dispatch(request, *args, **kwargs)
+        if request.method == "POST" and not getattr(self, "validlink", False):
+            reset_user = getattr(self, "user", None)
+            resolved_admin = reset_user if is_active_admin(reset_user) else None
+            record_admin_security_event(
+                request,
+                AdminSecurityEvent.EventType.PASSWORD_RESET_FAILURE,
+                user=resolved_admin,
+                attempted_identifier=(
+                    resolved_admin.get_username() if resolved_admin is not None else ""
+                ),
+                detail="The administration password-reset link could not be verified.",
+            )
+        return response
 
 
 class GrandCoastAdminSite(UnfoldAdminSite):
@@ -152,6 +289,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
             if not self.has_permission(request):
                 if request.user.is_authenticated:
                     return HttpResponseForbidden("Administration access is restricted.")
+                if admin_ip_block(request) is not None:
+                    return HttpResponseForbidden("Administration access is restricted.")
                 return redirect(self._access_url(request.get_full_path()))
             if not gate_is_valid(request, request.user):
                 return redirect(self._access_url(request.get_full_path()))
@@ -167,7 +306,27 @@ class GrandCoastAdminSite(UnfoldAdminSite):
             inner = csrf_protect(inner)
         return update_wrapper(inner, view)
 
+    def search(self, request, extra_context=None):
+        # Unfold 0.66 only invokes the configured callback and system-model
+        # searchers for extended requests. The navigation search is a normal
+        # request, so promote it here to keep Operations and User results
+        # available from the existing search box.
+        if request.GET.get("s") and "extended" not in request.GET:
+            request.GET = request.GET.copy()
+            request.GET["extended"] = "1"
+        return super().search(request, extra_context=extra_context)
+
     def login(self, request, extra_context=None):
+        if not self.has_permission(request) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    attempted_identifier=request.POST.get("username", ""),
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
         requested_next = request.GET.get(REDIRECT_FIELD_NAME) or request.POST.get(REDIRECT_FIELD_NAME)
         if not gate_is_valid(request):
             return redirect(self._access_url(requested_next or request.get_full_path()))
@@ -233,11 +392,51 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 self.admin_view(self.security_settings),
                 name="security",
             ),
+            path(
+                "security/blocks/ip/",
+                self.admin_view(self.security_block_ip),
+                name="security-block-ip",
+            ),
+            path(
+                "security/blocks/user/",
+                self.admin_view(self.security_block_user),
+                name="security-block-user",
+            ),
+            path(
+                "security/blocks/<uuid:pk>/unblock/",
+                self.admin_view(self.security_block_unblock),
+                name="security-block-unblock",
+            ),
+            path(
+                "security/events/<uuid:pk>/review/",
+                self.admin_view(self.security_event_review),
+                name="security-event-review",
+            ),
+            path(
+                "security/events/<uuid:pk>/delete/",
+                self.admin_view(self.security_event_delete),
+                name="security-event-delete",
+            ),
+            path(
+                "security/events/clear/",
+                self.admin_view(self.security_events_clear),
+                name="security-events-clear",
+            ),
         ]
         return custom_urls + super().get_urls()
 
     def access(self, request):
         if request.user.is_authenticated and not self.has_permission(request):
+            return HttpResponseForbidden("Administration access is restricted.")
+        if not self.has_permission(request) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    attempted_identifier=request.POST.get("identifier", ""),
+                    detail="The source IP is blocked from administration access.",
+                )
             return HttpResponseForbidden("Administration access is restricted.")
 
         next_url = request.GET.get(REDIRECT_FIELD_NAME) or request.POST.get(REDIRECT_FIELD_NAME)
@@ -284,12 +483,41 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
         if pending_user is not None:
             form = AdminPinForm(request.POST or None)
+            if admin_user_block(pending_user) is not None:
+                if request.method == "POST":
+                    record_admin_security_event(
+                        request,
+                        AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                        outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                        user=pending_user,
+                        attempted_identifier=pending_user.username,
+                        detail="The administrator account is locked from new administration sign-ins.",
+                    )
+                form.add_error(None, "This administrator account is currently locked.")
+                return self._render_admin_page(
+                    request,
+                    "admin/access.html",
+                    {
+                        "title": "Administration access",
+                        "site_title": self.site_title,
+                        "form": form,
+                        "pin_step": True,
+                        "next": next_url,
+                    },
+                )
             if request.method == "POST":
                 if form.is_valid() and verify_admin_pin(pending_user, form.cleaned_data["pin"]):
                     set_gate(request, pending_user, next_url)
                     return redirect("admin:login")
                 if form.is_valid():
                     register_gate_failure(request)
+                    record_admin_security_event(
+                        request,
+                        AdminSecurityEvent.EventType.PIN_FAILURE,
+                        user=pending_user,
+                        attempted_identifier=pending_user.username,
+                        detail="The administrator PIN could not be verified.",
+                    )
                     form.add_error(None, "That PIN could not be verified.")
                 if admin_gate_locked(request):
                     form.add_error(None, "Too many attempts. Try again in 15 minutes.")
@@ -309,7 +537,23 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         if request.method == "POST" and form.is_valid():
             admin_user = resolve_admin_identifier(form.cleaned_data["identifier"])
             if admin_user is None:
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+                    attempted_identifier=form.cleaned_data["identifier"],
+                    detail="The identifier did not match an active administrator.",
+                )
                 form.add_error(None, "We could not verify that administration account.")
+            elif admin_user_block(admin_user) is not None:
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    user=admin_user,
+                    attempted_identifier=form.cleaned_data["identifier"],
+                    detail="The administrator account is locked from new administration sign-ins.",
+                )
+                form.add_error(None, "This administrator account is currently locked.")
             elif pin_is_enabled(admin_user):
                 request.session[ADMIN_GATE_PENDING_PIN] = str(admin_user.pk)
                 request.session["gccad_gate_next"] = next_url
@@ -331,6 +575,15 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
 
     def otp(self, request):
+        if not is_active_admin(request.user) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
         user = pending_otp_user(request)
         if user is None or not gate_is_valid(request, user):
             clear_otp_challenge(request)
@@ -339,6 +592,19 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         if device is None:
             clear_otp_challenge(request)
             return redirect("admin:login")
+        if admin_user_block(user) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    user=user,
+                    attempted_identifier=user.username,
+                    detail="The administrator account is locked from new administration sign-ins.",
+                )
+            clear_otp_challenge(request)
+            clear_gate(request)
+            return HttpResponseForbidden("Administration access is restricted.")
 
         form = AdminOtpForm(request.POST or None)
         if request.method == "POST" and form.is_valid():
@@ -347,8 +613,22 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 login(request, user, backend="django.contrib.auth.backends.ModelBackend")
                 mark_otp_verified(request, user, device)
                 clear_otp_challenge(request)
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.LOGIN_SUCCESS,
+                    outcome=AdminSecurityEvent.Outcome.SUCCESS,
+                    user=user,
+                    attempted_identifier=user.username,
+                )
                 return redirect(next_url)
             locked = register_otp_failure(request)
+            record_admin_security_event(
+                request,
+                AdminSecurityEvent.EventType.OTP_FAILURE,
+                user=user,
+                attempted_identifier=user.username,
+                detail="The authenticator code could not be verified.",
+            )
             form.add_error(None, "That authenticator code could not be verified.")
             if locked:
                 clear_otp_challenge(request)
@@ -368,6 +648,16 @@ class GrandCoastAdminSite(UnfoldAdminSite):
 
     def recovery(self, request):
         if request.user.is_authenticated and not self.has_permission(request):
+            return HttpResponseForbidden("Administration access is restricted.")
+        if not self.has_permission(request) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    attempted_identifier=request.POST.get("email", ""),
+                    detail="The source IP is blocked from administration access.",
+                )
             return HttpResponseForbidden("Administration access is restricted.")
         form = AdminRecoveryRequestForm(request.POST or None)
         if recovery_is_locked(request):
@@ -395,6 +685,12 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 create_admin_recovery_token(request, admin_user)
             else:
                 attempts = register_recovery_failure(request)
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.RECOVERY_FAILURE,
+                    attempted_identifier=form.cleaned_data.get("email", ""),
+                    detail="The email does not match an active administrator.",
+                )
                 if recovery_is_locked(request):
                     return self._render_admin_page(
                         request,
@@ -453,8 +749,23 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
 
     def recovery_confirm(self, request, token):
+        if not is_active_admin(request.user) and admin_ip_block(request) is not None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    detail="The source IP is blocked from administration access.",
+                )
+            return HttpResponseForbidden("Administration access is restricted.")
         recovery_token = find_admin_recovery_token(token)
         if recovery_token is None:
+            if request.method == "POST":
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.RECOVERY_FAILURE,
+                    detail="The administration recovery token could not be verified.",
+                )
             return self._render_admin_page(
                 request,
                 "admin/recovery_invalid.html",
@@ -465,6 +776,11 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         if request.method == "POST" and form.is_valid():
             recovery_token = consume_admin_recovery_token(token)
             if recovery_token is None:
+                record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.RECOVERY_FAILURE,
+                    detail="The administration recovery token could not be consumed.",
+                )
                 return self._render_admin_page(
                     request,
                     "admin/recovery_invalid.html",
@@ -488,6 +804,237 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 "form": form,
             },
         )
+
+    @staticmethod
+    def _security_form_errors(form):
+        return "; ".join(
+            str(error)
+            for errors in form.errors.values()
+            for error in errors
+        )
+
+    def security_block_ip(self, request):
+        if request.method != "POST":
+            return redirect("admin:security")
+        form = AdminIPBlockForm(request.POST)
+        if not form.is_valid():
+            messages.error(request, self._security_form_errors(form))
+            return redirect("admin:security")
+
+        ip_address = form.cleaned_data["ip_address"]
+        reason = form.cleaned_data["reason"].strip()
+        current_client_ip = client_ip(request)
+        if current_client_ip and ip_address == current_client_ip:
+            messages.error(
+                request,
+                "For safety, you cannot block the IP address used by this administrator session.",
+            )
+            return redirect("admin:security")
+        with transaction.atomic():
+            existing = (
+                AdminAccessBlock.objects.select_for_update()
+                .filter(
+                    scope=AdminAccessBlock.Scope.IP,
+                    ip_address=ip_address,
+                    is_active=True,
+                )
+                .first()
+            )
+            if existing is not None:
+                messages.info(request, f"{ip_address} is already blocked from administration access.")
+            else:
+                block = AdminAccessBlock(
+                    scope=AdminAccessBlock.Scope.IP,
+                    ip_address=ip_address,
+                    reason=reason,
+                    created_by=request.user,
+                )
+                block.full_clean()
+                block.save()
+                record_activity(
+                    "Admin IP block created",
+                    f"{ip_address}{' · ' + reason if reason else ''}",
+                    actor=request.user,
+                )
+                messages.success(request, f"{ip_address} is now blocked from administration access.")
+        return redirect("admin:security")
+
+    def security_block_user(self, request):
+        if request.method != "POST":
+            return redirect("admin:security")
+        form = AdminUserBlockForm(request.POST, current_user=request.user)
+        if not form.is_valid():
+            messages.error(request, self._security_form_errors(form))
+            return redirect("admin:security")
+
+        user = form.cleaned_data["user"]
+        reason = form.cleaned_data["reason"].strip()
+        with transaction.atomic():
+            existing = (
+                AdminAccessBlock.objects.select_for_update()
+                .filter(
+                    scope=AdminAccessBlock.Scope.USER,
+                    user=user,
+                    is_active=True,
+                )
+                .first()
+            )
+            if existing is not None:
+                messages.info(request, f"{user.get_username()} is already locked from administration sign-in.")
+            else:
+                block = AdminAccessBlock(
+                    scope=AdminAccessBlock.Scope.USER,
+                    user=user,
+                    reason=reason,
+                    created_by=request.user,
+                )
+                block.full_clean()
+                block.save()
+                record_activity(
+                    "Admin login lock created",
+                    f"{user.get_username()}{' · ' + reason if reason else ''}",
+                    actor=request.user,
+                )
+                messages.success(request, f"{user.get_username()} is locked from new administration sign-ins.")
+        return redirect("admin:security")
+
+    def security_block_unblock(self, request, pk):
+        if request.method != "POST":
+            return redirect("admin:security")
+        with transaction.atomic():
+            block = get_object_or_404(
+                AdminAccessBlock.objects.select_for_update(),
+                pk=pk,
+            )
+            if block.is_active:
+                block.is_active = False
+                block.revoked_by = request.user
+                block.revoked_at = timezone.now()
+                block.save(update_fields=["is_active", "revoked_by", "revoked_at"])
+                record_activity(
+                    "Admin access block removed",
+                    str(block),
+                    actor=request.user,
+                )
+                messages.success(request, f"{block} is no longer blocked.")
+            else:
+                messages.info(request, f"{block} is already unblocked.")
+        return redirect("admin:security")
+
+    @staticmethod
+    def _filtered_security_events(params):
+        security_filter_form = AdminSecurityEventFilterForm(params or None)
+        security_events_queryset = AdminSecurityEvent.objects.all()
+        if security_filter_form.is_valid():
+            cleaned = security_filter_form.cleaned_data
+            query = cleaned.get("q")
+            if query:
+                security_events_queryset = security_events_queryset.filter(
+                    Q(ip_address__icontains=query)
+                    | Q(attempted_identifier__icontains=query)
+                    | Q(user__username__icontains=query)
+                    | Q(user__email__icontains=query)
+                    | Q(user_agent__icontains=query)
+                    | Q(path__icontains=query)
+                    | Q(detail__icontains=query)
+                )
+            if cleaned.get("event_type"):
+                security_events_queryset = security_events_queryset.filter(
+                    event_type=cleaned["event_type"]
+                )
+            if cleaned.get("outcome"):
+                security_events_queryset = security_events_queryset.filter(
+                    outcome=cleaned["outcome"]
+                )
+            if cleaned.get("review") == "unreviewed":
+                security_events_queryset = security_events_queryset.filter(
+                    reviewed_at__isnull=True
+                )
+            elif cleaned.get("review") == "reviewed":
+                security_events_queryset = security_events_queryset.filter(
+                    reviewed_at__isnull=False
+                )
+            if cleaned.get("date_from"):
+                security_events_queryset = security_events_queryset.filter(
+                    created_at__date__gte=cleaned["date_from"]
+                )
+            if cleaned.get("date_to"):
+                security_events_queryset = security_events_queryset.filter(
+                    created_at__date__lte=cleaned["date_to"]
+                )
+        return security_filter_form, security_events_queryset
+
+    @staticmethod
+    def _security_events_return_url(request):
+        security_url = reverse("admin:security")
+        return_to = request.POST.get("return_to", "")
+        return return_to if return_to.startswith(security_url) else security_url
+
+    def security_event_delete(self, request, pk):
+        if request.method != "POST":
+            return redirect("admin:security")
+        with transaction.atomic():
+            event = get_object_or_404(
+                AdminSecurityEvent.objects.select_for_update(),
+                pk=pk,
+            )
+            event_detail = f"{event.get_event_type_display()}"
+            if event.ip_address:
+                event_detail += f"; source IP {event.ip_address}"
+            event.delete()
+            record_activity(
+                "Admin security event deleted",
+                event_detail,
+                actor=request.user,
+            )
+        messages.success(request, "Security event deleted.")
+        return redirect(self._security_events_return_url(request))
+
+    def security_events_clear(self, request):
+        if request.method != "POST":
+            return redirect("admin:security")
+        security_filter_form, security_events_queryset = self._filtered_security_events(
+            request.POST
+        )
+        if not security_filter_form.is_valid():
+            messages.error(request, "The security event filters could not be applied.")
+            return redirect(self._security_events_return_url(request))
+
+        with transaction.atomic():
+            deleted_count, _ = security_events_queryset.delete()
+            if deleted_count:
+                record_activity(
+                    "Admin security events cleared",
+                    f"{deleted_count} event(s) matching the current filters",
+                    actor=request.user,
+                )
+        if deleted_count:
+            messages.success(request, f"Cleared {deleted_count} security event(s).")
+        else:
+            messages.info(request, "No security events matched the current filters.")
+        return redirect(self._security_events_return_url(request))
+
+    def security_event_review(self, request, pk):
+        if request.method != "POST":
+            return redirect("admin:security")
+        with transaction.atomic():
+            event = get_object_or_404(
+                AdminSecurityEvent.objects.select_for_update(),
+                pk=pk,
+            )
+            if event.reviewed_at is None:
+                event.reviewed_at = timezone.now()
+                event.reviewed_by = request.user
+                event.save(update_fields=["reviewed_at", "reviewed_by"])
+                record_activity(
+                    "Admin security event reviewed",
+                    str(event),
+                    actor=request.user,
+                )
+                messages.success(request, "Security event marked as reviewed.")
+            else:
+                messages.info(request, "Security event was already reviewed.")
+        return redirect("admin:security")
 
     def security_settings(self, request):
         profile = admin_security_profile(request.user)
@@ -552,6 +1099,55 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 request.session.modified = True
                 return redirect("admin:security")
 
+        security_filter_form, security_events_queryset = self._filtered_security_events(
+            request.GET
+        )
+        security_events_queryset = security_events_queryset.select_related(
+            "user", "reviewed_by"
+        )
+
+        security_event_page = Paginator(security_events_queryset, 30).get_page(
+            request.GET.get("page", 1)
+        )
+        recent_since = timezone.now() - timedelta(hours=24)
+        recent_failures = AdminSecurityEvent.objects.filter(
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            created_at__gte=recent_since,
+        )
+        security_metrics = {
+            "recent_failures": recent_failures.count(),
+            "recent_ips": recent_failures.exclude(ip_address__isnull=True)
+            .values("ip_address")
+            .distinct()
+            .count(),
+            "unreviewed": AdminSecurityEvent.objects.filter(
+                reviewed_at__isnull=True
+            ).count(),
+            "email_failures": AdminSecurityEvent.objects.filter(
+                outcome=AdminSecurityEvent.Outcome.FAILURE,
+                email_status__in=[
+                    AdminSecurityEvent.EmailStatus.FAILED,
+                    AdminSecurityEvent.EmailStatus.NO_RECIPIENT,
+                ],
+            ).count(),
+        }
+        active_access_blocks = (
+            AdminAccessBlock.objects.filter(is_active=True)
+            .select_related("user", "created_by")
+        )
+        active_ip_addresses = set(
+            active_access_blocks
+            .filter(scope=AdminAccessBlock.Scope.IP)
+            .values_list("ip_address", flat=True)
+        )
+        active_user_block_ids = set(
+            active_access_blocks
+            .filter(scope=AdminAccessBlock.Scope.USER)
+            .values_list("user_id", flat=True)
+        )
+        ip_block_form = AdminIPBlockForm()
+        user_block_form = AdminUserBlockForm(current_user=request.user)
+
         context = {
             **self.each_context(request),
             "title": "Security settings",
@@ -562,6 +1158,24 @@ class GrandCoastAdminSite(UnfoldAdminSite):
             "pending_qr": totp_qr_data_uri(pending_device) if pending_device else "",
             "pin_form": pin_form,
             "two_factor_form": two_factor_form,
+            "security_filter_form": security_filter_form,
+            "security_event_page": security_event_page,
+            "security_events": security_event_page.object_list,
+            "security_metrics": security_metrics,
+            "active_access_blocks": active_access_blocks,
+            "active_ip_addresses": active_ip_addresses,
+            "active_user_block_ids": active_user_block_ids,
+            "current_client_ip": client_ip(request),
+            "ip_block_form": ip_block_form,
+            "user_block_form": user_block_form,
+            "security_email_alerts_enabled": getattr(
+                settings,
+                "ADMIN_SECURITY_EMAIL_ALERTS_ENABLED",
+                True,
+            ),
+            "security_email_sender_configured": bool(
+                getattr(settings, "DEFAULT_FROM_EMAIL", "")
+            ),
         }
         request.current_app = self.name
         return self._render_admin_page(request, "admin/security.html", context)

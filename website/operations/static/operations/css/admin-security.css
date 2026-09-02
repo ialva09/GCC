@@ -1,0 +1,1047 @@
+/* Security activity is page-specific and loaded after Unfold. */
+
+.gcc-security-page .gcc-security-monitoring {
+    padding: 34px 0 64px;
+    margin-top: 32px;
+    border-top: 1px solid var(--gcc-line);
+}
+
+.gcc-security-page .gcc-security-monitoring-heading,
+.gcc-security-page .gcc-security-panel-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.gcc-security-page .gcc-security-monitoring-heading h2,
+.gcc-security-page .gcc-security-panel-heading h3 {
+    margin: 8px 0 9px;
+    color: var(--gcc-navy-2);
+    font-family: 'Merriweather', Georgia, 'Times New Roman', serif;
+    font-weight: 900;
+    letter-spacing: -.04em;
+}
+
+.gcc-security-page .gcc-security-monitoring-heading h2 {
+    font-size: clamp(2rem, 3.2vw, 2.75rem);
+    line-height: 1.08;
+}
+
+.gcc-security-page .gcc-security-panel-heading h3 {
+    font-size: 1.35rem;
+    line-height: 1.15;
+}
+
+.gcc-security-page .gcc-security-monitoring-heading p {
+    max-width: 720px;
+    margin: 0;
+    color: var(--gcc-muted);
+    font-size: .72rem;
+    line-height: 1.7;
+}
+
+.gcc-security-page .gcc-security-monitoring-heading > .gcc-security-status {
+    position: static;
+    flex: 0 0 auto;
+    margin-top: 5px;
+    white-space: nowrap;
+}
+
+.gcc-security-page .gcc-security-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    margin: 26px 0;
+    overflow: hidden;
+    background: var(--gcc-line-blue);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 4px;
+    box-shadow: 0 8px 24px rgba(30, 48, 81, .04);
+}
+
+.gcc-security-page .gcc-security-metric {
+    display: grid;
+    min-height: 112px;
+    align-content: space-between;
+    gap: 12px;
+    padding: 19px 20px 18px;
+    background: var(--gcc-white);
+}
+
+.gcc-security-page .gcc-security-metric span {
+    color: var(--gcc-muted);
+    font-size: .58rem;
+    font-weight: 900;
+    letter-spacing: .08em;
+    line-height: 1.35;
+    text-transform: uppercase;
+}
+
+.gcc-security-page .gcc-security-metric strong {
+    color: var(--gcc-blue);
+    font-family: 'Merriweather', Georgia, 'Times New Roman', serif;
+    font-size: 2.05rem;
+    font-weight: 900;
+    line-height: 1;
+}
+
+.gcc-security-page .gcc-security-metric.is-alert strong {
+    color: #a56a00;
+}
+
+.gcc-security-page .gcc-security-callout {
+    padding: 13px 15px;
+    margin: 0 0 20px;
+    color: var(--gcc-muted);
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line-blue);
+    border-left: 3px solid var(--gcc-blue);
+    font-size: .66rem;
+    line-height: 1.6;
+}
+
+.gcc-security-page .gcc-security-callout code {
+    padding: 2px 5px;
+    color: var(--gcc-deep);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 3px;
+    font-size: .61rem;
+}
+
+.gcc-security-page .gcc-security-monitoring-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.22fr) minmax(320px, .78fr);
+    gap: 18px;
+    margin-bottom: 18px;
+}
+
+.gcc-security-page .gcc-security-panel {
+    min-width: 0;
+    padding: 22px;
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+    box-shadow: 0 8px 24px rgba(30, 48, 81, .035);
+}
+
+.gcc-security-page .gcc-security-panel-count {
+    display: inline-grid;
+    min-width: 31px;
+    height: 31px;
+    place-items: center;
+    padding: 0 8px;
+    color: var(--gcc-blue);
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 999px;
+    font-size: .67rem;
+    font-weight: 900;
+}
+
+.gcc-security-page .gcc-security-block-forms {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 20px;
+}
+
+.gcc-security-page .gcc-security-block-form {
+    display: grid;
+    align-content: start;
+    gap: 13px;
+    padding: 16px;
+    background: #fbfcfe;
+    border: 1px solid var(--gcc-line);
+    border-top: 2px solid var(--gcc-blue);
+}
+
+.gcc-security-page .gcc-security-block-form h4 {
+    margin: 0 0 2px;
+    color: var(--gcc-navy);
+    font-size: .77rem;
+    font-weight: 900;
+}
+
+.gcc-security-page .gcc-security-current-ip {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    gap: 3px 8px;
+    padding: 10px 11px;
+    margin: 0;
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line-blue);
+    border-left: 3px solid var(--gcc-gold);
+    border-radius: 4px;
+}
+
+.gcc-security-page .gcc-security-current-ip span {
+    grid-column: 1 / -1;
+    color: var(--gcc-blue);
+    font-size: .56rem;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.gcc-security-page .gcc-security-current-ip strong {
+    color: var(--gcc-navy);
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .72rem;
+    letter-spacing: .02em;
+}
+
+.gcc-security-page .gcc-security-current-ip small {
+    grid-column: 1 / -1;
+    color: var(--gcc-muted);
+    font-size: .58rem;
+    line-height: 1.45;
+}
+
+.gcc-security-page .gcc-security-form .gcc-form-field {
+    margin: 0;
+}
+
+.gcc-security-page .gcc-security-form label:not(.gcc-checkbox-label) {
+    color: var(--gcc-navy);
+    font-size: .6rem;
+    font-weight: 900;
+}
+
+.gcc-security-page .gcc-security-form input:not([type='checkbox']),
+.gcc-security-page .gcc-security-form select,
+.gcc-security-page .gcc-security-form textarea {
+    width: 100%;
+    min-height: 40px;
+    padding: 9px 11px;
+    color: var(--gcc-navy);
+    background-color: var(--gcc-white);
+    border: 1px solid var(--gcc-line);
+    border-radius: 4px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .68rem;
+    line-height: 1.35;
+    transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+
+.gcc-security-page .gcc-security-form select {
+    cursor: pointer;
+}
+
+.gcc-security-page .gcc-security-form input:not([type='checkbox']):hover,
+.gcc-security-page .gcc-security-form select:hover,
+.gcc-security-page .gcc-security-form textarea:hover {
+    background-color: #fcfdff;
+    border-color: #b8c7df;
+}
+
+.gcc-security-page .gcc-security-form input:not([type='checkbox']):focus,
+.gcc-security-page .gcc-security-form select:focus,
+.gcc-security-page .gcc-security-form textarea:focus {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 3px rgba(68, 101, 161, .14);
+    outline: 0;
+}
+
+.gcc-security-page .gcc-security-block-form .gcc-admin-button {
+    width: 100%;
+    margin-top: 2px;
+}
+
+.gcc-security-page .gcc-security-block-list {
+    display: grid;
+    gap: 1px;
+    margin-top: 20px;
+    overflow: hidden;
+    background: var(--gcc-line);
+    border: 1px solid var(--gcc-line);
+    border-radius: 4px;
+}
+
+.gcc-security-page .gcc-security-block-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 15px;
+    padding: 14px;
+    background: var(--gcc-white);
+}
+
+.gcc-security-page .gcc-security-block-row > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.gcc-security-page .gcc-security-block-row strong {
+    overflow-wrap: anywhere;
+    color: var(--gcc-navy);
+    font-size: .74rem;
+}
+
+.gcc-security-page .gcc-security-block-row span,
+.gcc-security-page .gcc-security-block-row small,
+.gcc-security-page .gcc-security-empty {
+    color: var(--gcc-muted);
+    font-size: .64rem;
+    line-height: 1.5;
+}
+
+.gcc-security-page .gcc-security-block-row small {
+    color: #7a7a7a;
+}
+
+.gcc-security-page .gcc-security-empty {
+    padding: 15px;
+    margin: 0;
+    background: var(--gcc-white);
+}
+
+.gcc-security-page .gcc-security-events-panel {
+    margin-top: 18px;
+}
+
+.gcc-security-page .gcc-security-filter-form {
+    display: grid;
+    grid-template-columns: minmax(180px, 1.5fr) repeat(4, minmax(120px, 1fr)) auto auto;
+    align-items: end;
+    gap: 10px;
+    padding: 16px;
+    margin: 20px 0;
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 4px;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field {
+    margin: 0;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-admin-button {
+    min-height: 40px;
+    white-space: nowrap;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field {
+    display: grid;
+    min-width: 0;
+    gap: 7px;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > label {
+    color: var(--gcc-navy);
+    font-size: .6rem;
+    font-weight: 900;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > input,
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > select {
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 38px 9px 12px;
+    color: var(--gcc-navy);
+    background-color: var(--gcc-white);
+    border: 1px solid var(--gcc-line);
+    border-radius: 4px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .68rem;
+    line-height: 1.35;
+    transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > input:hover,
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > select:hover {
+    background-color: #fcfdff;
+    border-color: #b8c7df;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > input:focus,
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > select:focus {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 3px rgba(68, 101, 161, .14);
+    outline: 0;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > select {
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--gcc-blue) 50%), linear-gradient(135deg, var(--gcc-blue) 50%, transparent 50%);
+    background-position: calc(100% - 17px) 52%, calc(100% - 12px) 52%;
+    background-repeat: no-repeat;
+    background-size: 5px 5px, 5px 5px;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > select option {
+    color: var(--gcc-navy);
+    background: var(--gcc-white);
+    font-weight: 600;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > input[type='date'] {
+    color-scheme: light;
+    cursor: pointer;
+}
+
+.gcc-security-page .gcc-security-filter-form .gcc-form-field > input[type='date']::-webkit-calendar-picker-indicator {
+    width: 17px;
+    height: 17px;
+    cursor: pointer;
+    opacity: .76;
+    filter: invert(39%) sepia(18%) saturate(1188%) hue-rotate(180deg) brightness(89%) contrast(87%);
+}
+
+.gcc-security-admin-body .gcc-security-filter-form .calendar-picker {
+    position: relative;
+    display: block;
+    min-width: 0;
+}
+
+.gcc-security-admin-body .calendar-picker > .calendar-native-picker-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.gcc-security-admin-body .calendar-picker-trigger {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 42px;
+    gap: 10px;
+    padding: 9px 12px;
+    color: var(--gcc-navy);
+    background: linear-gradient(135deg, #ffffff 0%, #f8faff 100%);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 4px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .68rem;
+    font-weight: 800;
+    letter-spacing: .01em;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .18s ease, box-shadow .18s ease, background .18s ease, transform .18s ease;
+}
+
+.gcc-security-admin-body .calendar-picker-trigger:hover {
+    background: var(--gcc-white);
+    border-color: var(--gcc-gold);
+}
+
+.gcc-security-admin-body .calendar-picker-trigger:focus-visible {
+    border-color: var(--gcc-blue);
+    box-shadow: 0 0 0 3px rgba(68, 101, 161, .14);
+    outline: 0;
+}
+
+.gcc-security-admin-body .calendar-picker-trigger:active {
+    transform: translateY(1px);
+}
+
+.gcc-security-admin-body .calendar-picker-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 23px;
+    height: 23px;
+    color: var(--gcc-blue);
+    background: #edf2fa;
+    border-radius: 3px;
+    font-size: 0;
+    line-height: 1;
+}
+
+.gcc-security-admin-body .calendar-picker-date .calendar-picker-icon::before {
+    width: 11px;
+    height: 10px;
+    border: 1.5px solid currentColor;
+    border-radius: 2px;
+    content: "";
+}
+
+.gcc-security-admin-body .calendar-picker-date .calendar-picker-icon::after {
+    position: absolute;
+    top: 8px;
+    left: 6px;
+    width: 11px;
+    height: 1.5px;
+    background: currentColor;
+    content: "";
+}
+
+.gcc-security-admin-body .calendar-picker-value {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    color: var(--gcc-navy);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gcc-security-admin-body .calendar-picker-value.is-placeholder {
+    color: var(--gcc-muted);
+    font-weight: 600;
+}
+
+.gcc-security-admin-body .calendar-picker-caret {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    margin: -4px 3px 0 0;
+    border-right: 1.5px solid var(--gcc-blue);
+    border-bottom: 1.5px solid var(--gcc-blue);
+    transform: rotate(45deg);
+    transition: transform .18s ease;
+}
+
+.gcc-security-admin-body .calendar-picker.is-open .calendar-picker-caret {
+    margin-top: 4px;
+    transform: rotate(225deg);
+}
+
+.gcc-security-admin-body .calendar-picker-popover {
+    position: fixed;
+    z-index: 1100;
+    width: 360px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    padding: 12px;
+    overflow-y: auto;
+    color: var(--gcc-navy);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+    border-radius: 6px;
+    box-shadow: 0 20px 48px rgba(30, 48, 81, .18), 0 3px 10px rgba(30, 48, 81, .08);
+}
+
+.gcc-security-admin-body .calendar-picker-popover[hidden] {
+    display: none;
+}
+
+.gcc-security-admin-body .calendar-picker-popover.is-open {
+    animation: gcc-security-calendar-picker-in .16s ease-out both;
+}
+
+.gcc-security-admin-body .calendar-picker-date-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 11px 12px;
+    margin-bottom: 12px;
+    color: var(--gcc-white);
+    background: linear-gradient(135deg, var(--gcc-navy) 0%, var(--gcc-deep) 100%);
+    border-radius: 4px;
+}
+
+.gcc-security-admin-body .calendar-picker-title {
+    color: var(--gcc-white);
+    font-family: 'Merriweather', Georgia, 'Times New Roman', serif;
+    font-size: .92rem;
+    letter-spacing: -.01em;
+}
+
+.gcc-security-admin-body .calendar-picker-navigation {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.gcc-security-admin-body .calendar-picker-nav {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 27px;
+    height: 27px;
+    padding: 0;
+    color: var(--gcc-white);
+    background: rgba(255, 255, 255, .1);
+    border: 1px solid rgba(255, 255, 255, .25);
+    border-radius: 3px;
+    font-size: 0;
+    line-height: 1;
+    cursor: pointer;
+    transition: background .18s ease, border-color .18s ease;
+}
+
+.gcc-security-admin-body .calendar-picker-nav::before {
+    width: 7px;
+    height: 7px;
+    border-top: 1.5px solid currentColor;
+    border-left: 1.5px solid currentColor;
+    content: "";
+    transform: rotate(-45deg);
+}
+
+.gcc-security-admin-body .calendar-picker-nav.is-next::before {
+    transform: rotate(135deg);
+}
+
+.gcc-security-admin-body .calendar-picker-nav:hover,
+.gcc-security-admin-body .calendar-picker-nav:focus-visible {
+    background: rgba(255, 255, 255, .2);
+    border-color: rgba(255, 255, 255, .6);
+    outline: 0;
+}
+
+.gcc-security-admin-body .calendar-picker-weekdays,
+.gcc-security-admin-body .calendar-picker-date-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
+}
+
+.gcc-security-admin-body .calendar-picker-weekdays {
+    padding: 0 2px 6px;
+    color: var(--gcc-blue);
+    font-size: .52rem;
+    font-weight: 900;
+    letter-spacing: .06em;
+    text-align: center;
+    text-transform: uppercase;
+}
+
+.gcc-security-admin-body .calendar-picker-day {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 0;
+    color: var(--gcc-navy);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .68rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease;
+}
+
+.gcc-security-admin-body .calendar-picker-day:hover,
+.gcc-security-admin-body .calendar-picker-day:focus-visible {
+    color: var(--gcc-navy);
+    background: #eef3fb;
+    border-color: #cbd8eb;
+    outline: 0;
+}
+
+.gcc-security-admin-body .calendar-picker-day:active {
+    transform: scale(.96);
+}
+
+.gcc-security-admin-body .calendar-picker-day.is-outside {
+    color: #aab2bf;
+    font-weight: 600;
+}
+
+.gcc-security-admin-body .calendar-picker-day.is-today {
+    border-color: var(--gcc-gold);
+}
+
+.gcc-security-admin-body .calendar-picker-day.is-selected {
+    color: var(--gcc-white);
+    background: var(--gcc-gold);
+    border-color: var(--gcc-gold);
+    box-shadow: 0 3px 8px rgba(205, 157, 36, .26);
+}
+
+.gcc-security-admin-body .calendar-picker-day.is-selected:hover,
+.gcc-security-admin-body .calendar-picker-day.is-selected:focus-visible {
+    color: var(--gcc-white);
+    background: #b98712;
+    border-color: #b98712;
+}
+
+.gcc-security-admin-body .calendar-picker-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 11px;
+    margin-top: 11px;
+    border-top: 1px solid var(--gcc-line);
+}
+
+.gcc-security-admin-body .calendar-picker-action {
+    min-height: 32px;
+    padding: 7px 10px;
+    color: var(--gcc-blue);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+    font-size: .61rem;
+    font-weight: 900;
+    letter-spacing: .03em;
+    cursor: pointer;
+    transition: color .16s ease, background .16s ease, border-color .16s ease;
+}
+
+.gcc-security-admin-body .calendar-picker-action:hover,
+.gcc-security-admin-body .calendar-picker-action:focus-visible {
+    color: var(--gcc-navy);
+    background: #f4f7fb;
+    border-color: var(--gcc-line-blue);
+    outline: 0;
+}
+
+.gcc-security-admin-body .calendar-picker-action.is-primary {
+    color: var(--gcc-white);
+    background: var(--gcc-blue);
+    border-color: var(--gcc-blue);
+    box-shadow: 0 4px 9px rgba(49, 81, 140, .18);
+}
+
+.gcc-security-admin-body .calendar-picker-action.is-primary:hover,
+.gcc-security-admin-body .calendar-picker-action.is-primary:focus-visible {
+    color: var(--gcc-white);
+    background: var(--gcc-navy);
+    border-color: var(--gcc-navy);
+}
+
+@keyframes gcc-security-calendar-picker-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px) scale(.985);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.gcc-security-page .gcc-security-panel-heading-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    min-width: 0;
+}
+
+.gcc-security-page .gcc-security-clear-form {
+    margin: 0;
+}
+
+.gcc-security-page .gcc-admin-button-danger {
+    color: var(--gcc-white);
+    background: #a34843;
+    border-color: #a34843;
+}
+
+.gcc-security-page .gcc-admin-button-danger:hover,
+.gcc-security-page .gcc-admin-button-danger:focus-visible {
+    color: var(--gcc-white);
+    background: #873b37;
+    border-color: #873b37;
+}
+
+.gcc-security-page .gcc-security-filter-form > button.gcc-admin-button,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button {
+    color: var(--gcc-white);
+    background: var(--gcc-blue);
+    border-color: var(--gcc-blue);
+}
+
+.gcc-security-page .gcc-security-filter-form > button.gcc-admin-button:hover,
+.gcc-security-page .gcc-security-filter-form > button.gcc-admin-button:focus-visible,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button:hover,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button:focus-visible {
+    color: var(--gcc-white);
+    background: var(--gcc-deep);
+    border-color: var(--gcc-deep);
+}
+
+.gcc-security-page .gcc-security-block-form .gcc-admin-button:disabled,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button:disabled {
+    color: #6f7580;
+    background: #e8ebf0;
+    border-color: #d8dce4;
+    box-shadow: none;
+    cursor: not-allowed;
+    opacity: 1;
+}
+
+.gcc-security-page .gcc-security-block-form .gcc-admin-button:disabled:hover,
+.gcc-security-page .gcc-security-block-form .gcc-admin-button:disabled:focus-visible,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button:disabled:hover,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button:disabled:focus-visible {
+    color: #6f7580;
+    background: #e8ebf0;
+    border-color: #d8dce4;
+}
+
+.gcc-security-page .gcc-security-self-ip-warning {
+    padding: 9px 10px;
+    margin: -3px 0 0;
+    color: #873b37;
+    background: #fff7f6;
+    border: 1px solid #e5c2bf;
+    border-radius: 4px;
+    font-size: .6rem;
+    line-height: 1.45;
+}
+
+.gcc-security-page .gcc-security-event-list {
+    display: grid;
+    gap: 1px;
+    overflow: hidden;
+    background: var(--gcc-line);
+    border: 1px solid var(--gcc-line);
+    border-radius: 4px;
+}
+
+.gcc-security-page .gcc-security-event {
+    display: flex;
+    justify-content: space-between;
+    gap: 22px;
+    padding: 17px;
+    background: var(--gcc-white);
+    border-left: 3px solid #b96969;
+}
+
+.gcc-security-page .gcc-security-event.is-reviewed {
+    border-left-color: #8da0bb;
+}
+
+.gcc-security-page .gcc-security-event-main {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.gcc-security-page .gcc-security-event-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.gcc-security-page .gcc-security-event-heading strong {
+    color: var(--gcc-navy);
+    font-size: .75rem;
+}
+
+.gcc-security-page .gcc-security-event-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 7px;
+    color: var(--gcc-muted);
+    background: var(--gcc-soft);
+    border: 1px solid var(--gcc-line-blue);
+    font-size: .55rem;
+    font-weight: 900;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.gcc-security-page .gcc-security-event-badge.is-failure {
+    color: #9c3d3d;
+    background: #fff5f5;
+    border-color: #edcaca;
+}
+
+.gcc-security-page .gcc-security-event-badge.is-blocked {
+    color: #846314;
+    background: var(--gcc-gold-soft);
+    border-color: #e5ce91;
+}
+
+.gcc-security-page .gcc-security-event-badge.is-success {
+    color: #39714e;
+    background: #f0faf3;
+    border-color: #c6e5ce;
+}
+
+.gcc-security-page .gcc-security-event-badge.is-unreviewed {
+    color: var(--gcc-blue);
+    background: #eef3fb;
+}
+
+.gcc-security-page .gcc-security-event-details {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(100px, 1fr));
+    gap: 10px 18px;
+    margin-top: 12px;
+}
+
+.gcc-security-page .gcc-security-event-details span {
+    display: grid;
+    gap: 3px;
+    overflow-wrap: anywhere;
+    color: var(--gcc-muted);
+    font-size: .62rem;
+}
+
+.gcc-security-page .gcc-security-event-details b {
+    color: var(--gcc-navy);
+    font-size: .54rem;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+}
+
+.gcc-security-page .gcc-security-event-main p {
+    margin: 12px 0 0;
+    color: var(--gcc-muted);
+    font-size: .64rem;
+    line-height: 1.5;
+}
+
+.gcc-security-page .gcc-security-event-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+}
+
+.gcc-security-page .gcc-security-event-actions form,
+.gcc-security-page .gcc-security-pagination form {
+    margin: 0;
+}
+
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button,
+.gcc-security-page .gcc-security-pagination .gcc-admin-button {
+    padding: 6px 8px;
+    font-size: .6rem;
+}
+
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button-danger {
+    color: var(--gcc-white);
+    background: #a34843;
+    border-color: #a34843;
+}
+
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button-danger:hover,
+.gcc-security-page .gcc-security-event-actions .gcc-admin-button-danger:focus-visible {
+    color: var(--gcc-white);
+    background: #873b37;
+    border-color: #873b37;
+}
+
+.gcc-security-page .gcc-security-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 18px;
+    color: var(--gcc-muted);
+    font-size: .64rem;
+}
+
+.gcc-security-page .gcc-security-pagination > div {
+    display: flex;
+    gap: 8px;
+}
+
+@media (max-width: 1100px) {
+    .gcc-security-page .gcc-security-monitoring-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .gcc-security-page .gcc-security-filter-form {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .gcc-security-page .gcc-security-filter-form .gcc-form-field:first-child {
+        grid-column: 1 / -1;
+    }
+
+    .gcc-security-page .gcc-security-filter-form .gcc-admin-button {
+        width: 100%;
+    }
+}
+
+@media (max-width: 900px) {
+    .gcc-security-page .gcc-security-metrics,
+    .gcc-security-page .gcc-security-block-forms {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .gcc-security-page .gcc-security-event-details {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .gcc-security-page .gcc-security-monitoring {
+        padding-top: 27px;
+        padding-bottom: 38px;
+        margin-top: 26px;
+    }
+
+    .gcc-security-page .gcc-security-monitoring-heading,
+    .gcc-security-page .gcc-security-panel-heading,
+    .gcc-security-page .gcc-security-event,
+    .gcc-security-page .gcc-security-pagination {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .gcc-security-page .gcc-security-monitoring-heading > .gcc-security-status {
+        margin-top: 0;
+    }
+
+    .gcc-security-page .gcc-security-panel-heading-tools {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .gcc-security-page .gcc-security-clear-form {
+        flex: 1 1 auto;
+    }
+
+    .gcc-security-page .gcc-security-clear-form .gcc-admin-button {
+        width: 100%;
+    }
+
+    .gcc-security-page .gcc-security-metrics,
+    .gcc-security-page .gcc-security-block-forms,
+    .gcc-security-page .gcc-security-filter-form,
+    .gcc-security-page .gcc-security-event-details {
+        grid-template-columns: 1fr;
+    }
+
+    .gcc-security-page .gcc-security-filter-form .gcc-form-field:first-child {
+        grid-column: auto;
+    }
+
+    .gcc-security-page .gcc-security-filter-form .gcc-admin-button {
+        width: 100%;
+    }
+
+    .gcc-security-page .gcc-security-event-actions {
+        width: 100%;
+        align-items: stretch;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+
+    .gcc-security-page .gcc-security-event-actions form {
+        flex: 1 1 140px;
+    }
+
+    .gcc-security-page .gcc-security-event-actions .gcc-admin-button {
+        width: 100%;
+    }
+
+    .gcc-security-page .gcc-security-pagination > div {
+        width: 100%;
+        justify-content: space-between;
+    }
+}

@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import ipaddress
+import logging
 import secrets
 from datetime import timedelta
 
@@ -11,6 +13,8 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.contrib.sessions.models import Session
 from django.core.mail import send_mail
 from django.db import transaction
@@ -20,7 +24,16 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django_otp import login as otp_login
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from .models import AdminRecoveryToken, AdminSecurityProfile
+from .models import (
+    AdminAccessBlock,
+    AdminRecoveryToken,
+    AdminSecurityEvent,
+    AdminSecurityProfile,
+    CALENDAR_TIME_ZONE,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 ADMIN_GATE_USER_ID = "gccad_gate_user_id"
@@ -47,6 +60,319 @@ ADMIN_OTP_ATTEMPT_LIMIT = 5
 ADMIN_RECOVERY_ATTEMPT_LIMIT = 5
 PASSWORD_RESET_ATTEMPT_LIMIT = 5
 PASSWORD_RESET_LOCKOUT = timedelta(minutes=15)
+
+
+def _normalize_ip_address(value):
+    try:
+        address = ipaddress.ip_address((value or "").strip())
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return str(address)
+    except ValueError:
+        return None
+
+
+def _trusted_proxy_ips():
+    configured = getattr(settings, "ADMIN_TRUSTED_PROXY_IPS", ())
+    if isinstance(configured, str):
+        configured = configured.split(",")
+    return {
+        normalized
+        for normalized in (_normalize_ip_address(value) for value in configured)
+        if normalized
+    }
+
+
+def _forwarded_ip_value(value):
+    value = (value or "").strip().strip('"')
+    if not value or value.lower() == "unknown" or value.startswith("_"):
+        return None
+    if value.startswith("["):
+        closing = value.find("]")
+        if closing > 0:
+            value = value[1:closing]
+    elif value.count(":") == 1:
+        host, port = value.rsplit(":", 1)
+        if port.isdigit():
+            value = host
+    return _normalize_ip_address(value)
+
+
+def _forwarded_client_ips(request):
+    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if x_forwarded_for:
+        return [
+            ip
+            for ip in (_forwarded_ip_value(value) for value in x_forwarded_for.split(","))
+            if ip
+        ]
+
+    forwarded = request.META.get("HTTP_FORWARDED", "")
+    values = []
+    for forwarded_entry in forwarded.split(","):
+        for parameter in forwarded_entry.split(";"):
+            key, separator, value = parameter.partition("=")
+            if separator and key.strip().lower() == "for":
+                ip = _forwarded_ip_value(value)
+                if ip:
+                    values.append(ip)
+                break
+    return values
+
+
+def client_ip(request):
+    """Return the normalized client address without trusting spoofable headers."""
+    remote_ip = _normalize_ip_address(request.META.get("REMOTE_ADDR"))
+    if not remote_ip or remote_ip not in _trusted_proxy_ips():
+        return remote_ip
+
+    forwarded_ips = _forwarded_client_ips(request)
+    if not forwarded_ips:
+        return remote_ip
+
+    for candidate in [remote_ip, *reversed(forwarded_ips)]:
+        if candidate not in _trusted_proxy_ips():
+            return candidate
+    return forwarded_ips[0]
+
+
+def admin_ip_block(request):
+    address = client_ip(request)
+    if not address:
+        return None
+    return (
+        AdminAccessBlock.objects.filter(
+            scope=AdminAccessBlock.Scope.IP,
+            ip_address=address,
+            is_active=True,
+        )
+        .select_related("created_by")
+        .first()
+    )
+
+
+def admin_user_block(user):
+    if not is_active_admin(user):
+        return None
+    return (
+        AdminAccessBlock.objects.filter(
+            scope=AdminAccessBlock.Scope.USER,
+            user=user,
+            is_active=True,
+        )
+        .select_related("created_by")
+        .first()
+    )
+
+
+def admin_access_block(request, user=None):
+    return admin_ip_block(request) or admin_user_block(user)
+
+
+def _security_identifier(value):
+    return " ".join(str(value or "").split())[:254]
+
+
+def _admin_email_recipients():
+    recipients = []
+    seen = set()
+    users = get_user_model().objects.filter(
+        is_active=True,
+        is_staff=True,
+        is_superuser=True,
+    ).exclude(email="")
+    for email in users.values_list("email", flat=True):
+        email = (email or "").strip()
+        if not email:
+            continue
+        try:
+            validate_email(email)
+        except ValidationError:
+            continue
+        key = email.casefold()
+        if key not in seen:
+            seen.add(key)
+            recipients.append(email)
+    return recipients
+
+
+def _security_event_local_time(event):
+    local_time = timezone.localtime(event.created_at, CALENDAR_TIME_ZONE)
+    hour = local_time.strftime("%I").lstrip("0") or "0"
+    return (
+        f"{local_time.strftime('%B')} {local_time.day}, {local_time.year} "
+        f"at {hour}:{local_time.strftime('%M:%S %p %Z')}"
+    )
+
+
+def _security_event_email_body(event):
+    lines = [
+        "A Grand Coast administration security event was recorded.",
+        "",
+        f"Event: {event.get_event_type_display()}",
+        f"Outcome: {event.get_outcome_display()}",
+        f"Time: {_security_event_local_time(event)}",
+        f"IP address: {event.ip_address or 'Unavailable'}",
+        f"Route: {event.path or 'Unavailable'}",
+    ]
+    if event.attempted_identifier:
+        lines.append(f"Attempted identifier: {event.attempted_identifier}")
+    if event.user_id:
+        lines.append(f"Resolved administrator: {event.user.get_username()}")
+    if event.user_agent:
+        lines.append(f"User agent: {event.user_agent}")
+    if event.detail:
+        lines.append(f"Details: {event.detail}")
+    lines.extend(
+        [
+            "",
+            "Review the event in the private administration security dashboard:",
+            "/gccad/security/",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def dispatch_admin_security_email(event_id):
+    if not getattr(settings, "ADMIN_SECURITY_EMAIL_ALERTS_ENABLED", True):
+        AdminSecurityEvent.objects.filter(pk=event_id).update(
+            email_status=AdminSecurityEvent.EmailStatus.DISABLED,
+            email_error="Email alerts are disabled by configuration.",
+        )
+        return False
+
+    now = timezone.now()
+    with transaction.atomic():
+        event = (
+            AdminSecurityEvent.objects.select_for_update()
+            .select_related("user")
+            .filter(pk=event_id, outcome=AdminSecurityEvent.Outcome.FAILURE)
+            .first()
+        )
+        if event is None:
+            return False
+        if event.email_status in {
+            AdminSecurityEvent.EmailStatus.SENT,
+            AdminSecurityEvent.EmailStatus.DISABLED,
+        }:
+            return event.email_status == AdminSecurityEvent.EmailStatus.SENT
+        if (
+            event.email_status == AdminSecurityEvent.EmailStatus.PENDING
+            and event.email_last_attempt_at
+            and now - event.email_last_attempt_at < timedelta(minutes=5)
+        ):
+            return False
+        event.email_status = AdminSecurityEvent.EmailStatus.PENDING
+        event.email_attempt_count += 1
+        event.email_last_attempt_at = now
+        event.email_error = ""
+        event.save(
+            update_fields=[
+                "email_status",
+                "email_attempt_count",
+                "email_last_attempt_at",
+                "email_error",
+            ]
+        )
+
+    recipients = _admin_email_recipients()
+    if not recipients:
+        AdminSecurityEvent.objects.filter(pk=event_id).update(
+            email_status=AdminSecurityEvent.EmailStatus.NO_RECIPIENT,
+            email_error="No active administrator has a valid email address.",
+        )
+        return False
+
+    from_email = (getattr(settings, "DEFAULT_FROM_EMAIL", "") or "").strip()
+    if not from_email:
+        error = "DEFAULT_FROM_EMAIL is not configured."
+        AdminSecurityEvent.objects.filter(pk=event_id).update(
+            email_status=AdminSecurityEvent.EmailStatus.FAILED,
+            email_error=error,
+        )
+        logger.error(error)
+        return False
+
+    try:
+        sent_count = send_mail(
+            f"Grand Coast admin security alert: {event.get_event_type_display()}",
+            _security_event_email_body(event),
+            from_email,
+            recipients,
+            fail_silently=False,
+        )
+        if not sent_count:
+            raise RuntimeError("The configured email backend accepted no recipients.")
+    except Exception as exc:
+        error = str(exc)[:2000] or exc.__class__.__name__
+        AdminSecurityEvent.objects.filter(pk=event_id).update(
+            email_status=AdminSecurityEvent.EmailStatus.FAILED,
+            email_error=error,
+        )
+        logger.exception("Unable to send admin security alert for event %s.", event_id)
+        return False
+
+    AdminSecurityEvent.objects.filter(pk=event_id).update(
+        email_status=AdminSecurityEvent.EmailStatus.SENT,
+        email_sent_at=timezone.now(),
+        email_error="",
+    )
+    return True
+
+
+def retry_pending_admin_security_emails(limit=100):
+    event_ids = list(
+        AdminSecurityEvent.objects.filter(
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            email_status__in=[
+                AdminSecurityEvent.EmailStatus.PENDING,
+                AdminSecurityEvent.EmailStatus.FAILED,
+                AdminSecurityEvent.EmailStatus.NO_RECIPIENT,
+            ],
+        )
+        .order_by("created_at")
+        .values_list("pk", flat=True)[: max(1, limit)]
+    )
+    for event_id in event_ids:
+        dispatch_admin_security_email(event_id)
+    return len(event_ids)
+
+
+def record_admin_security_event(
+    request,
+    event_type,
+    *,
+    outcome=AdminSecurityEvent.Outcome.FAILURE,
+    user=None,
+    attempted_identifier="",
+    detail="",
+):
+    should_email = outcome == AdminSecurityEvent.Outcome.FAILURE
+    if should_email:
+        email_status = (
+            AdminSecurityEvent.EmailStatus.PENDING
+            if getattr(settings, "ADMIN_SECURITY_EMAIL_ALERTS_ENABLED", True)
+            else AdminSecurityEvent.EmailStatus.DISABLED
+        )
+    else:
+        email_status = AdminSecurityEvent.EmailStatus.NOT_REQUIRED
+
+    event = AdminSecurityEvent.objects.create(
+        event_type=event_type,
+        outcome=outcome,
+        attempted_identifier=_security_identifier(attempted_identifier),
+        user=user if is_active_admin(user) else None,
+        ip_address=client_ip(request),
+        user_agent=(request.META.get("HTTP_USER_AGENT", "") or "")[:500],
+        path=(request.path or "")[:255],
+        detail=" ".join(str(detail or "").split())[:255],
+        email_status=email_status,
+    )
+    if email_status == AdminSecurityEvent.EmailStatus.PENDING:
+        transaction.on_commit(
+            lambda event_id=event.pk: dispatch_admin_security_email(event_id)
+        )
+    return event
 
 
 def is_active_admin(user):

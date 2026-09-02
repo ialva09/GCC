@@ -3,19 +3,27 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import check_password, make_password
 from django.core import management
 from django.core import mail
-from django.test import Client as DjangoClient
+from django.test import Client as DjangoClient, RequestFactory
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from django_otp.oath import totp
 from django_otp.plugins.otp_totp.models import TOTPDevice
 
-from .models import AdminRecoveryToken, AdminSecurityProfile
+from .models import (
+    AdminAccessBlock,
+    AdminRecoveryToken,
+    AdminSecurityEvent,
+    AdminSecurityProfile,
+    Activity,
+)
+from .security import client_ip, record_admin_security_event, retry_pending_admin_security_emails
 
 
 class PrivateAdminSecurityTests(TestCase):
@@ -462,3 +470,499 @@ class PrivateAdminSecurityTests(TestCase):
         self.assertContains(public, "/manifest.webmanifest")
         self.assertContains(public, "pwa-register.js")
         self.assertEqual(self.browser.get("/offline/").status_code, 200)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_invalid_admin_identifier_creates_event_and_email(self):
+        get_user_model().objects.create(
+            username="duplicate-email-admin",
+            email=self.admin_user.email.upper(),
+            is_active=True,
+            is_staff=True,
+            is_superuser=True,
+        )
+        get_user_model().objects.create(
+            username="inactive-email-admin",
+            email="inactive@gcc.example.com",
+            is_active=False,
+            is_staff=True,
+            is_superuser=True,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.browser.post(
+                reverse("admin:access"),
+                {"identifier": "intruder@example.com"},
+                REMOTE_ADDR="198.51.100.40",
+                HTTP_USER_AGENT="Security test browser",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        event = AdminSecurityEvent.objects.order_by("-created_at").first()
+        self.assertEqual(event.event_type, AdminSecurityEvent.EventType.IDENTIFIER_FAILURE)
+        self.assertEqual(event.outcome, AdminSecurityEvent.Outcome.FAILURE)
+        self.assertEqual(event.attempted_identifier, "intruder@example.com")
+        self.assertEqual(event.ip_address, "198.51.100.40")
+        self.assertEqual(event.path, "/gccad/access/")
+        self.assertIsNone(event.user)
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.admin_user.email])
+        self.assertIn("Invalid admin identifier", mail.outbox[0].body)
+        self.assertIn("198.51.100.40", mail.outbox[0].body)
+        self.assertIn("/gccad/security/", mail.outbox[0].body)
+        self.assertNotIn("security-owner-pass", mail.outbox[0].body)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_invalid_admin_password_creates_event_and_email_without_password(self):
+        self.browser.post(
+            reverse("admin:access"),
+            {"identifier": self.admin_user.username},
+        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.browser.post(
+                reverse("admin:login"),
+                {
+                    "username": self.admin_user.username,
+                    "password": "wrong-admin-password",
+                },
+                REMOTE_ADDR="198.51.100.41",
+                HTTP_USER_AGENT="Password attack test",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        event = AdminSecurityEvent.objects.order_by("-created_at").first()
+        self.assertEqual(event.event_type, AdminSecurityEvent.EventType.PASSWORD_FAILURE)
+        self.assertEqual(event.user, self.admin_user)
+        self.assertEqual(event.path, "/gccad/login/")
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("wrong-admin-password", mail.outbox[0].body)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_invalid_pin_creates_event_and_email(self):
+        self.profile.pin_enabled = True
+        self.profile.pin_hash = make_password("111111")
+        self.profile.save(update_fields=["pin_enabled", "pin_hash", "updated_at"])
+        self.browser.post(
+            reverse("admin:access"),
+            {"identifier": self.admin_user.username},
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.browser.post(
+                reverse("admin:access"),
+                {"pin": "000000"},
+                REMOTE_ADDR="198.51.100.42",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        event = AdminSecurityEvent.objects.order_by("-created_at").first()
+        self.assertEqual(event.event_type, AdminSecurityEvent.EventType.PIN_FAILURE)
+        self.assertEqual(event.user, self.admin_user)
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("000000", mail.outbox[0].body)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_invalid_otp_creates_event_and_email(self):
+        device = TOTPDevice.objects.create(
+            user=self.admin_user,
+            name="Email alert test device",
+            confirmed=True,
+        )
+        self.browser.post(
+            reverse("admin:access"),
+            {"identifier": self.admin_user.username},
+        )
+        self.browser.post(
+            reverse("admin:login"),
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+            },
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.browser.post(
+                reverse("admin:otp"),
+                {"token": "000000"},
+                REMOTE_ADDR="198.51.100.43",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        event = AdminSecurityEvent.objects.order_by("-created_at").first()
+        self.assertEqual(event.event_type, AdminSecurityEvent.EventType.OTP_FAILURE)
+        self.assertEqual(event.user, self.admin_user)
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("000000", mail.outbox[0].body)
+        device.delete()
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_failed_recovery_and_password_reset_verification_are_emailed(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            recovery = self.browser.post(
+                reverse("admin:recovery"),
+                {"email": "unknown-recovery@example.com"},
+                REMOTE_ADDR="198.51.100.44",
+            )
+            password_reset = self.browser.post(
+                reverse("admin:password-reset"),
+                {"email": "unknown-password-reset@example.com"},
+                REMOTE_ADDR="198.51.100.45",
+            )
+
+        self.assertEqual(recovery.status_code, 200)
+        self.assertEqual(password_reset.status_code, 200)
+        events = list(
+            AdminSecurityEvent.objects.order_by("created_at").values_list(
+                "event_type", "email_status", "attempted_identifier"
+            )
+        )
+        self.assertEqual(
+            events,
+            [
+                (
+                    AdminSecurityEvent.EventType.RECOVERY_FAILURE,
+                    AdminSecurityEvent.EmailStatus.SENT,
+                    "unknown-recovery@example.com",
+                ),
+                (
+                    AdminSecurityEvent.EventType.PASSWORD_RESET_FAILURE,
+                    AdminSecurityEvent.EmailStatus.SENT,
+                    "unknown-password-reset@example.com",
+                ),
+            ],
+        )
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn("unknown-recovery@example.com", mail.outbox[0].body)
+        self.assertIn("unknown-password-reset@example.com", mail.outbox[1].body)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_successful_admin_sign_in_is_recorded_without_email(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self.enter_password_login()
+
+        event = AdminSecurityEvent.objects.filter(
+            event_type=AdminSecurityEvent.EventType.LOGIN_SUCCESS
+        ).order_by("-created_at").first()
+        self.assertIsNotNone(event)
+        self.assertEqual(event.outcome, AdminSecurityEvent.Outcome.SUCCESS)
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.NOT_REQUIRED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_ip_block_is_admin_only_reversible_and_csrf_protected(self):
+        csrf_client = DjangoClient(enforce_csrf_checks=True)
+        csrf_response = csrf_client.post(
+            reverse("admin:security-block-ip"),
+            {"ip_address": "198.51.100.60"},
+        )
+        self.assertEqual(csrf_response.status_code, 403)
+
+        self.enter_password_login()
+        ip_address = "198.51.100.60"
+        response = self.browser.post(
+            reverse("admin:security-block-ip"),
+            {"ip_address": ip_address, "reason": "Security test"},
+        )
+        self.assertRedirects(response, reverse("admin:security"))
+        block = AdminAccessBlock.objects.get(
+            scope=AdminAccessBlock.Scope.IP,
+            ip_address=ip_address,
+            is_active=True,
+        )
+
+        blocked_client = DjangoClient()
+        blocked_post = blocked_client.post(
+            reverse("admin:access"),
+            {"identifier": self.admin_user.username},
+            REMOTE_ADDR=ip_address,
+        )
+        self.assertEqual(blocked_post.status_code, 403)
+        self.assertEqual(
+            blocked_client.get(reverse("operations:home"), REMOTE_ADDR=ip_address).status_code,
+            200,
+        )
+
+        unblock = self.browser.post(
+            reverse("admin:security-block-unblock", kwargs={"pk": block.pk})
+        )
+        self.assertRedirects(unblock, reverse("admin:security"))
+        block.refresh_from_db()
+        self.assertFalse(block.is_active)
+        self.assertEqual(
+            blocked_client.get(reverse("admin:access"), REMOTE_ADDR=ip_address).status_code,
+            302,
+        )
+
+    def test_ip_block_cannot_target_current_connection(self):
+        self.enter_password_login()
+        current_ip = "198.51.100.61"
+        AdminSecurityEvent.objects.create(
+            event_type=AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            attempted_identifier="blocked-test",
+            ip_address=current_ip,
+            path="/gccad/access/",
+        )
+
+        page = self.browser.get(
+            reverse("admin:security"),
+            REMOTE_ADDR=current_ip,
+        )
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Current connection IP")
+        self.assertContains(page, current_ip)
+        self.assertContains(page, f'data-current-ip="{current_ip}"')
+        self.assertContains(page, "disabled aria-disabled=\"true\"")
+
+        response = self.browser.post(
+            reverse("admin:security-block-ip"),
+            {"ip_address": current_ip, "reason": "Accidental self-block test"},
+            REMOTE_ADDR=current_ip,
+        )
+        self.assertRedirects(response, reverse("admin:security"))
+        self.assertFalse(
+            AdminAccessBlock.objects.filter(
+                scope=AdminAccessBlock.Scope.IP,
+                ip_address=current_ip,
+                is_active=True,
+            ).exists()
+        )
+
+    def test_admin_user_lock_is_reversible_and_cannot_self_lock(self):
+        other_admin = get_user_model().objects.create_superuser(
+            username="second-security-owner",
+            email="second-security-owner@gcc.example.com",
+            password="second-security-pass",
+        )
+        self.enter_password_login()
+        response = self.browser.post(
+            reverse("admin:security-block-user"),
+            {"user": str(other_admin.pk), "reason": "Security test"},
+        )
+        self.assertRedirects(response, reverse("admin:security"))
+        lock = AdminAccessBlock.objects.get(
+            scope=AdminAccessBlock.Scope.USER,
+            user=other_admin,
+            is_active=True,
+        )
+
+        self_lock = self.browser.post(
+            reverse("admin:security-block-user"),
+            {"user": str(self.admin_user.pk), "reason": "Should be rejected"},
+        )
+        self.assertRedirects(self_lock, reverse("admin:security"))
+        self.assertFalse(
+            AdminAccessBlock.objects.filter(
+                scope=AdminAccessBlock.Scope.USER,
+                user=self.admin_user,
+                is_active=True,
+            ).exists()
+        )
+
+        locked_client = DjangoClient()
+        locked = locked_client.post(
+            reverse("admin:access"),
+            {"identifier": other_admin.username},
+        )
+        self.assertEqual(locked.status_code, 200)
+        self.assertContains(locked, "currently locked")
+        direct_login = locked_client.post(
+            reverse("admin:login"),
+            {"username": other_admin.username, "password": "second-security-pass"},
+        )
+        self.assertEqual(direct_login.status_code, 302)
+        self.assertTrue(direct_login["Location"].startswith(reverse("admin:access")))
+        self.assertIsNone(locked_client.session.get("_auth_user_id"))
+
+        unblock = self.browser.post(
+            reverse("admin:security-block-unblock", kwargs={"pk": lock.pk})
+        )
+        self.assertRedirects(unblock, reverse("admin:security"))
+        self.assertRedirects(
+            locked_client.post(
+                reverse("admin:access"),
+                {"identifier": other_admin.username},
+            ),
+            reverse("admin:login"),
+        )
+
+    def test_security_event_delete_is_owner_only_and_audited(self):
+        event = AdminSecurityEvent.objects.create(
+            event_type=AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            attempted_identifier="delete-me",
+            ip_address="198.51.100.90",
+        )
+        csrf_client = DjangoClient(enforce_csrf_checks=True)
+        self.assertEqual(
+            csrf_client.post(
+                reverse("admin:security-event-delete", kwargs={"pk": event.pk}),
+                {"return_to": reverse("admin:security")},
+            ).status_code,
+            403,
+        )
+
+        self.enter_password_login()
+        response = self.browser.get(reverse("admin:security"))
+        self.assertContains(response, "Clear matching events")
+        self.assertContains(response, "Delete")
+
+        response = self.browser.post(
+            reverse("admin:security-event-delete", kwargs={"pk": event.pk}),
+            {"return_to": reverse("admin:security")},
+        )
+        self.assertRedirects(response, reverse("admin:security"))
+        self.assertFalse(AdminSecurityEvent.objects.filter(pk=event.pk).exists())
+        self.assertTrue(
+            Activity.objects.filter(message="Admin security event deleted").exists()
+        )
+
+    def test_security_events_clear_removes_only_matching_rows_and_is_audited(self):
+        matching = AdminSecurityEvent.objects.create(
+            event_type=AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            attempted_identifier="clear-me",
+            ip_address="198.51.100.91",
+        )
+        retained = AdminSecurityEvent.objects.create(
+            event_type=AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+            outcome=AdminSecurityEvent.Outcome.FAILURE,
+            attempted_identifier="keep-me",
+            ip_address="198.51.100.92",
+        )
+        self.enter_password_login()
+        return_to = f'{reverse("admin:security")}?q=clear-me'
+        response = self.browser.post(
+            reverse("admin:security-events-clear"),
+            {
+                "q": "clear-me",
+                "return_to": return_to,
+            },
+        )
+        self.assertRedirects(response, return_to)
+        self.assertFalse(AdminSecurityEvent.objects.filter(pk=matching.pk).exists())
+        self.assertTrue(AdminSecurityEvent.objects.filter(pk=retained.pk).exists())
+        self.assertTrue(
+            Activity.objects.filter(message="Admin security events cleared").exists()
+        )
+
+    def test_only_active_superusers_can_view_security_dashboard(self):
+        employee = get_user_model().objects.create_user(
+            username="security-employee",
+            password="security-employee-pass",
+            is_active=True,
+            is_staff=True,
+            is_superuser=False,
+        )
+        employee_client = DjangoClient()
+        employee_client.force_login(employee)
+        self.assertEqual(employee_client.get(reverse("admin:security")).status_code, 403)
+
+    def test_forwarded_headers_require_trusted_proxy_configuration(self):
+        factory = RequestFactory()
+        spoofed = factory.get(
+            "/gccad/access/",
+            REMOTE_ADDR="198.51.100.70",
+            HTTP_X_FORWARDED_FOR="203.0.113.70",
+        )
+        with self.settings(ADMIN_TRUSTED_PROXY_IPS=()):
+            self.assertEqual(client_ip(spoofed), "198.51.100.70")
+
+        trusted = factory.get(
+            "/gccad/access/",
+            REMOTE_ADDR="198.51.100.71",
+            HTTP_X_FORWARDED_FOR="198.51.100.72, 198.51.100.71",
+        )
+        with self.settings(ADMIN_TRUSTED_PROXY_IPS=("198.51.100.71",)):
+            self.assertEqual(client_ip(trusted), "198.51.100.72")
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_failed_security_email_is_recorded_and_retryable(self):
+        request = RequestFactory().post(
+            "/gccad/login/",
+            REMOTE_ADDR="198.51.100.80",
+            HTTP_USER_AGENT="Delivery failure test",
+        )
+        with patch("operations.security.send_mail", side_effect=RuntimeError("SMTP unavailable")):
+            with self.captureOnCommitCallbacks(execute=True):
+                event = record_admin_security_event(
+                    request,
+                    AdminSecurityEvent.EventType.PASSWORD_FAILURE,
+                    attempted_identifier="security-owner",
+                    detail="The password could not be verified.",
+                )
+        event.refresh_from_db()
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.FAILED)
+        self.assertEqual(event.email_attempt_count, 1)
+        self.assertIn("SMTP unavailable", event.email_error)
+
+        with patch("operations.security.send_mail", return_value=1):
+            self.assertEqual(retry_pending_admin_security_emails(), 1)
+        event.refresh_from_db()
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(event.email_attempt_count, 2)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+        ADMIN_SECURITY_EMAIL_ALERTS_ENABLED=False,
+    )
+    def test_security_email_switch_preserves_event_without_delivery(self):
+        request = RequestFactory().post("/gccad/access/", REMOTE_ADDR="198.51.100.81")
+        with self.captureOnCommitCallbacks(execute=True):
+            event = record_admin_security_event(
+                request,
+                AdminSecurityEvent.EventType.IDENTIFIER_FAILURE,
+                attempted_identifier="disabled-alert-test",
+            )
+        event.refresh_from_db()
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.DISABLED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(
+        EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+        DEFAULT_FROM_EMAIL="security@gcc.example.com",
+    )
+    def test_invalid_admin_password_reset_link_creates_event_and_email(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.browser.post(
+                reverse(
+                    "admin:password-reset-confirm",
+                    kwargs={"uidb64": "invalid", "token": "invalid"},
+                ),
+                {
+                    "new_password1": "not-a-real-password",
+                    "new_password2": "not-a-real-password",
+                },
+                REMOTE_ADDR="198.51.100.82",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        event = AdminSecurityEvent.objects.order_by("-created_at").first()
+        self.assertEqual(event.event_type, AdminSecurityEvent.EventType.PASSWORD_RESET_FAILURE)
+        self.assertEqual(event.email_status, AdminSecurityEvent.EmailStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertNotIn("not-a-real-password", mail.outbox[0].body)

@@ -4,6 +4,18 @@
 
 {% block title %}Security settings | {{ site_title }}{% endblock %}
 
+{% block bodyclass %}{{ block.super }} gcc-security-admin-body{% endblock %}
+
+{% block extrastyle %}
+    {{ block.super }}
+    <link rel="stylesheet" href="{% static 'operations/css/admin-security.css' %}?v=20260902-security">
+{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <script defer src="{% static 'operations/js/operations.js' %}?v=20260902-security-picker"></script>
+{% endblock %}
+
 {% block content %}
     <section class="gcc-security-page" aria-labelledby="gcc-security-title">
         <div class="gcc-security-heading">
@@ -115,5 +127,223 @@
                 {% endif %}
             </article>
         </div>
+
+        <section class="gcc-security-monitoring" aria-labelledby="gcc-security-monitoring-title">
+            <div class="gcc-security-monitoring-heading">
+                <div>
+                    <span class="gcc-admin-kicker">Security activity</span>
+                    <h2 id="gcc-security-monitoring-title">Administration access watch</h2>
+                    <p>Review failed sign-in activity and manually protect the administration workspace. These controls do not block employee, client, or public access.</p>
+                </div>
+                <span class="gcc-security-status{% if security_email_alerts_enabled and security_email_sender_configured %} is-on{% endif %}">
+                    {% if security_email_alerts_enabled and security_email_sender_configured %}Email alerts active{% elif not security_email_alerts_enabled %}Email alerts disabled{% else %}Email setup needed{% endif %}
+                </span>
+            </div>
+
+            <div class="gcc-security-metrics">
+                <div class="gcc-security-metric">
+                    <span>Failed attempts · 24 hours</span>
+                    <strong>{{ security_metrics.recent_failures }}</strong>
+                </div>
+                <div class="gcc-security-metric">
+                    <span>Source IPs · 24 hours</span>
+                    <strong>{{ security_metrics.recent_ips }}</strong>
+                </div>
+                <div class="gcc-security-metric">
+                    <span>Unreviewed events</span>
+                    <strong>{{ security_metrics.unreviewed }}</strong>
+                </div>
+                <div class="gcc-security-metric{% if security_metrics.email_failures %} is-alert{% endif %}">
+                    <span>Email delivery issues</span>
+                    <strong>{{ security_metrics.email_failures }}</strong>
+                </div>
+            </div>
+
+            {% if not security_email_alerts_enabled %}
+                <div class="gcc-security-callout">Email alerts are disabled by <code>ADMIN_SECURITY_EMAIL_ALERTS_ENABLED</code>. Events continue to be recorded in this dashboard.</div>
+            {% elif not security_email_sender_configured %}
+                <div class="gcc-security-callout">Set <code>DEFAULT_FROM_EMAIL</code> and the existing SMTP settings to deliver alerts. Events continue to be recorded until email is configured.</div>
+            {% endif %}
+
+            <div class="gcc-security-monitoring-grid">
+                <article class="gcc-security-panel">
+                    <div class="gcc-security-panel-heading">
+                        <div>
+                            <span class="gcc-admin-kicker">Manual protection</span>
+                            <h3>Block an administration target</h3>
+                        </div>
+                    </div>
+                    <div class="gcc-security-block-forms">
+                        <form class="gcc-security-form gcc-security-block-form" method="post" action="{% url 'admin:security-block-ip' %}" data-admin-ip-block-form data-current-ip="{{ current_client_ip|default:'' }}">
+                            {% csrf_token %}
+                            <h4>Block an IP address</h4>
+                            <p class="gcc-security-current-ip">
+                                <span>Current connection IP</span>
+                                <strong>{{ current_client_ip|default:"Unavailable" }}</strong>
+                                <small>This address cannot be blocked from the current administrator session.</small>
+                            </p>
+                            {% for field in ip_block_form %}
+                                <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                                    {{ field.label_tag }}
+                                    {{ field }}
+                                    {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                                </div>
+                            {% endfor %}
+                            <button class="gcc-admin-button gcc-admin-button-primary" type="submit">Block IP</button>
+                            <p class="gcc-security-self-ip-warning" data-admin-ip-warning hidden>For safety, this IP matches the current connection and cannot be blocked.</p>
+                        </form>
+                        <form class="gcc-security-form gcc-security-block-form" method="post" action="{% url 'admin:security-block-user' %}">
+                            {% csrf_token %}
+                            <h4>Lock an administrator</h4>
+                            {% for field in user_block_form %}
+                                <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                                    {{ field.label_tag }}
+                                    {{ field }}
+                                    {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                                </div>
+                            {% endfor %}
+                            <button class="gcc-admin-button gcc-admin-button-primary" type="submit">Lock admin sign-in</button>
+                        </form>
+                    </div>
+                </article>
+
+                <article class="gcc-security-panel">
+                    <div class="gcc-security-panel-heading">
+                        <div>
+                            <span class="gcc-admin-kicker">Active protection</span>
+                            <h3>Current blocks</h3>
+                        </div>
+                        <span class="gcc-security-panel-count">{{ active_access_blocks|length }}</span>
+                    </div>
+                    <div class="gcc-security-block-list">
+                        {% for block in active_access_blocks %}
+                            <div class="gcc-security-block-row">
+                                <div>
+                                    <strong>{% if block.ip_address %}{{ block.ip_address }}{% else %}{{ block.user.get_username }}{% endif %}</strong>
+                                    <span>{{ block.get_scope_display }}{% if block.reason %} · {{ block.reason }}{% endif %}</span>
+                                    <small>Created {{ block.created_at|date:"M j, Y g:i A" }}{% if block.created_by %} by {{ block.created_by.get_username }}{% endif %}</small>
+                                </div>
+                                <form method="post" action="{% url 'admin:security-block-unblock' pk=block.pk %}">
+                                    {% csrf_token %}
+                                    <button class="gcc-admin-button gcc-admin-button-quiet" type="submit">Unblock</button>
+                                </form>
+                            </div>
+                        {% empty %}
+                            <p class="gcc-security-empty">No administration IPs or accounts are blocked.</p>
+                        {% endfor %}
+                    </div>
+                </article>
+            </div>
+
+            <article class="gcc-security-panel gcc-security-events-panel">
+                <div class="gcc-security-panel-heading">
+                    <div>
+                        <span class="gcc-admin-kicker">Audit trail</span>
+                        <h3>Recent security events</h3>
+                    </div>
+                    <div class="gcc-security-panel-heading-tools">
+                        {% if security_event_page.paginator.count %}
+                            <form class="gcc-security-clear-form" method="post" action="{% url 'admin:security-events-clear' %}" onsubmit="return window.confirm('Delete all security events matching the current filters? This cannot be undone.');">
+                                {% csrf_token %}
+                                <input type="hidden" name="q" value="{{ request.GET.q|default:'' }}">
+                                <input type="hidden" name="event_type" value="{{ request.GET.event_type|default:'' }}">
+                                <input type="hidden" name="outcome" value="{{ request.GET.outcome|default:'' }}">
+                                <input type="hidden" name="review" value="{{ request.GET.review|default:'' }}">
+                                <input type="hidden" name="date_from" value="{{ request.GET.date_from|default:'' }}">
+                                <input type="hidden" name="date_to" value="{{ request.GET.date_to|default:'' }}">
+                                <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                                <button class="gcc-admin-button gcc-admin-button-danger" type="submit">Clear matching events</button>
+                            </form>
+                        {% endif %}
+                        <span class="gcc-security-panel-count">{{ security_event_page.paginator.count }}</span>
+                    </div>
+                </div>
+                <form class="gcc-security-filter-form" method="get" action="{% url 'admin:security' %}" data-calendar-picker-form>
+                    {% for field in security_filter_form %}
+                        <div class="gcc-form-field{% if field.errors %} has-errors{% endif %}">
+                            {{ field.label_tag }}
+                            {{ field }}
+                            {% for error in field.errors %}<span class="gcc-field-error">{{ error }}</span>{% endfor %}
+                        </div>
+                    {% endfor %}
+                    <button class="gcc-admin-button gcc-admin-button-outline" type="submit">Filter events</button>
+                    <a class="gcc-admin-button gcc-admin-button-quiet" href="{% url 'admin:security' %}">Clear</a>
+                </form>
+
+                <div class="gcc-security-event-list">
+                    {% for event in security_events %}
+                        <div class="gcc-security-event{% if event.reviewed_at %} is-reviewed{% endif %}">
+                            <div class="gcc-security-event-main">
+                                <div class="gcc-security-event-heading">
+                                    <strong>{{ event.get_event_type_display }}</strong>
+                                    <span class="gcc-security-event-badge is-{{ event.outcome }}">{{ event.get_outcome_display }}</span>
+                                    {% if not event.reviewed_at %}<span class="gcc-security-event-badge is-unreviewed">Unreviewed</span>{% endif %}
+                                </div>
+                                <div class="gcc-security-event-details">
+                                    <span><b>Time</b>{{ event.created_at|date:"M j, Y g:i:s A" }}</span>
+                                    <span><b>IP</b>{{ event.ip_address|default:"Unavailable" }}</span>
+                                    <span><b>Account</b>{% if event.user %}{{ event.user.get_username }}{% else %}{{ event.attempted_identifier|default:"Unknown" }}{% endif %}</span>
+                                    <span><b>Email</b>{{ event.get_email_status_display }}</span>
+                                </div>
+                                {% if event.detail %}<p>{{ event.detail }}</p>{% endif %}
+                            </div>
+                            <div class="gcc-security-event-actions">
+                                {% if event.ip_address and event.ip_address not in active_ip_addresses %}
+                                    <form method="post" action="{% url 'admin:security-block-ip' %}" data-admin-ip-block-form data-current-ip="{{ current_client_ip|default:'' }}">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="ip_address" value="{{ event.ip_address }}">
+                                        <input type="hidden" name="reason" value="Blocked from security event">
+                                        <button class="gcc-admin-button gcc-admin-button-quiet" type="submit"{% if event.ip_address == current_client_ip %} disabled aria-disabled="true" title="The current connection IP cannot be blocked from this session."{% endif %}>Block IP</button>
+                                    </form>
+                                {% endif %}
+                                {% if event.user and event.user.pk != request.user.pk and event.user.pk not in active_user_block_ids %}
+                                    <form method="post" action="{% url 'admin:security-block-user' %}">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="user" value="{{ event.user.pk }}">
+                                        <input type="hidden" name="reason" value="Locked from security event">
+                                        <button class="gcc-admin-button gcc-admin-button-quiet" type="submit">Lock admin</button>
+                                    </form>
+                                {% endif %}
+                                {% if not event.reviewed_at %}
+                                    <form method="post" action="{% url 'admin:security-event-review' pk=event.pk %}">
+                                        {% csrf_token %}
+                                        <button class="gcc-admin-button gcc-admin-button-quiet" type="submit">Mark reviewed</button>
+                                    </form>
+                                {% endif %}
+                                <form method="post" action="{% url 'admin:security-event-delete' pk=event.pk %}" onsubmit="return window.confirm('Delete this security event? This cannot be undone.');">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="return_to" value="{{ request.get_full_path }}">
+                                    <button class="gcc-admin-button gcc-admin-button-danger" type="submit">Delete</button>
+                                </form>
+                            </div>
+                        </div>
+                    {% empty %}
+                        <p class="gcc-security-empty">No security events match these filters.</p>
+                    {% endfor %}
+                </div>
+
+                {% if security_event_page.paginator.num_pages > 1 %}
+                    <div class="gcc-security-pagination">
+                        <span>Page {{ security_event_page.number }} of {{ security_event_page.paginator.num_pages }}</span>
+                        <div>
+                            {% if security_event_page.has_previous %}
+                                <form method="get" action="{% url 'admin:security' %}">
+                                    {% for key, value in request.GET.items %}{% if key != "page" %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endif %}{% endfor %}
+                                    <input type="hidden" name="page" value="{{ security_event_page.previous_page_number }}">
+                                    <button class="gcc-admin-button gcc-admin-button-quiet" type="submit">Previous</button>
+                                </form>
+                            {% endif %}
+                            {% if security_event_page.has_next %}
+                                <form method="get" action="{% url 'admin:security' %}">
+                                    {% for key, value in request.GET.items %}{% if key != "page" %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endif %}{% endfor %}
+                                    <input type="hidden" name="page" value="{{ security_event_page.next_page_number }}">
+                                    <button class="gcc-admin-button gcc-admin-button-quiet" type="submit">Next</button>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                {% endif %}
+            </article>
+        </section>
     </section>
 {% endblock %}

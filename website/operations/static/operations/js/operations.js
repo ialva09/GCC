@@ -529,10 +529,56 @@
     }
 
     function initCalendarPickers(form) {
-        initCalendarDatePicker(form.querySelector('input[type="date"]'));
+        each('input[type="date"]', function (input) {
+            initCalendarDatePicker(input);
+        }, form);
         each('input[type="time"]', function (input) {
             initCalendarTimePicker(input);
         }, form);
+    }
+
+    function initStandaloneCalendarPickers() {
+        each("[data-calendar-picker-form]", function (form) {
+            initCalendarPickers(form);
+        });
+    }
+
+    function initAdminIpBlockForms() {
+        each("[data-admin-ip-block-form]", function (form) {
+            if (form.dataset.adminIpBlockInitialized) {
+                return;
+            }
+            form.dataset.adminIpBlockInitialized = "true";
+            var input = form.querySelector("[name='ip_address']");
+            var button = form.querySelector("button[type='submit']");
+            var warning = form.querySelector("[data-admin-ip-warning]");
+            var currentIp = (form.dataset.currentIp || "").trim().toLowerCase();
+            if (!input || !button) {
+                return;
+            }
+
+            function sync() {
+                var matchesCurrentIp = Boolean(currentIp) &&
+                    input.value.trim().toLowerCase() === currentIp;
+                button.disabled = matchesCurrentIp;
+                button.setAttribute("aria-disabled", String(matchesCurrentIp));
+                if (matchesCurrentIp) {
+                    button.setAttribute(
+                        "title",
+                        "The current connection IP cannot be blocked from this session."
+                    );
+                } else {
+                    button.removeAttribute("title");
+                }
+                if (warning) {
+                    warning.hidden = !matchesCurrentIp;
+                }
+            }
+
+            input.addEventListener("input", sync);
+            input.addEventListener("change", sync);
+            sync();
+        });
     }
 
     function initEmployeeScheduleForms() {
@@ -944,6 +990,8 @@
         initFileInputs();
         initCalendarDayForms();
         initEmployeeScheduleForms();
+        initStandaloneCalendarPickers();
+        initAdminIpBlockForms();
         initWorkerSelectors();
         initNotificationActions();
         initEstimateEditors();

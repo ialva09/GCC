@@ -206,6 +206,15 @@ ADMIN_URL_PREFIX = '/gccad/'
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
 OTP_TOTP_ISSUER = 'Grand Coast Construction'
 OTP_ADMIN_HIDE_SENSITIVE_DATA = True
+ADMIN_TRUSTED_PROXY_IPS = tuple(
+    value.strip()
+    for value in os.getenv('ADMIN_TRUSTED_PROXY_IPS', '').split(',')
+    if value.strip()
+)
+ADMIN_SECURITY_EMAIL_ALERTS_ENABLED = os.getenv(
+    'ADMIN_SECURITY_EMAIL_ALERTS_ENABLED',
+    'true',
+).lower() in {'1', 'true', 'yes'}
 
 # Push delivery is intentionally opt-in. Inbox notifications are still stored
 # when this is disabled, and the retry command becomes active once production

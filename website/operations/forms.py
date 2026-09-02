@@ -19,6 +19,7 @@ from .models import (
     CONTACT_MAX_FILES,
     CONTACT_MAX_TOTAL_SIZE,
     CONTACT_UPLOAD_ACCEPT,
+    AdminSecurityEvent,
     EmployeeInvite,
     EmployeeProfile,
     EmployeeScheduleOverride,
@@ -868,3 +869,105 @@ class AdminTwoFactorStartForm(forms.Form):
     """Simple action form used for starting or disabling authenticator setup."""
 
     pass
+
+
+class AdminIPBlockForm(forms.Form):
+    ip_address = forms.GenericIPAddressField(
+        label="IP address",
+        protocol="both",
+        unpack_ipv4=True,
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "inputmode": "decimal",
+                "placeholder": "198.51.100.24",
+            }
+        ),
+    )
+    reason = forms.CharField(
+        label="Reason",
+        max_length=220,
+        required=False,
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "placeholder": "Repeated admin sign-in failures",
+            }
+        ),
+    )
+
+
+class AdminUserBlockForm(forms.Form):
+    user = forms.ModelChoiceField(
+        label="Administrator",
+        queryset=get_user_model().objects.none(),
+        empty_label="Choose an administrator",
+    )
+    reason = forms.CharField(
+        label="Reason",
+        max_length=220,
+        required=False,
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "placeholder": "Protect this administrator account",
+            }
+        ),
+    )
+
+    def __init__(self, *args, current_user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        queryset = get_user_model().objects.filter(
+            is_active=True,
+            is_staff=True,
+            is_superuser=True,
+        )
+        if current_user is not None:
+            queryset = queryset.exclude(pk=current_user.pk)
+        self.fields["user"].queryset = queryset.order_by("username")
+        self.fields["user"].label_from_instance = user_choice_label
+
+
+class AdminSecurityEventFilterForm(forms.Form):
+    q = forms.CharField(
+        label="Search",
+        max_length=254,
+        required=False,
+        widget=forms.TextInput(
+            attrs={
+                "autocomplete": "off",
+                "placeholder": "IP, username, email, or user agent",
+            }
+        ),
+    )
+    event_type = forms.ChoiceField(
+        label="Event",
+        required=False,
+        choices=[("", "All events"), *AdminSecurityEvent.EventType.choices],
+    )
+    outcome = forms.ChoiceField(
+        label="Outcome",
+        required=False,
+        choices=[("", "All outcomes"), *AdminSecurityEvent.Outcome.choices],
+    )
+    review = forms.ChoiceField(
+        label="Review",
+        required=False,
+        choices=[
+            ("", "All review states"),
+            ("unreviewed", "Unreviewed"),
+            ("reviewed", "Reviewed"),
+        ],
+    )
+    date_from = forms.DateField(
+        label="From",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )
+    date_to = forms.DateField(
+        label="To",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(attrs={"type": "date"}),
+    )

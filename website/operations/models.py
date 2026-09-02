@@ -1245,6 +1245,155 @@ class ProjectDocument(models.Model):
         return self.title
 
 
+class AdminSecurityEvent(models.Model):
+    class EventType(models.TextChoices):
+        IDENTIFIER_FAILURE = "identifier_failure", "Invalid admin identifier"
+        PASSWORD_FAILURE = "password_failure", "Invalid admin password"
+        PIN_FAILURE = "pin_failure", "Invalid admin PIN"
+        OTP_FAILURE = "otp_failure", "Invalid authenticator code"
+        RECOVERY_FAILURE = "recovery_failure", "Failed administration recovery"
+        PASSWORD_RESET_FAILURE = "password_reset_failure", "Failed admin password reset"
+        LOGIN_SUCCESS = "login_success", "Successful admin sign-in"
+        ACCESS_BLOCKED = "access_blocked", "Blocked administration access"
+
+    class Outcome(models.TextChoices):
+        FAILURE = "failure", "Failure"
+        SUCCESS = "success", "Success"
+        BLOCKED = "blocked", "Blocked"
+
+    class EmailStatus(models.TextChoices):
+        NOT_REQUIRED = "not_required", "Not required"
+        PENDING = "pending", "Pending"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+        NO_RECIPIENT = "no_recipient", "No recipient"
+        DISABLED = "disabled", "Disabled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event_type = models.CharField(max_length=32, choices=EventType.choices)
+    outcome = models.CharField(max_length=12, choices=Outcome.choices)
+    attempted_identifier = models.CharField(max_length=254, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="admin_security_events",
+    )
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    path = models.CharField(max_length=255, blank=True)
+    detail = models.CharField(max_length=255, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_admin_security_events",
+    )
+    email_status = models.CharField(
+        max_length=16,
+        choices=EmailStatus.choices,
+        default=EmailStatus.NOT_REQUIRED,
+    )
+    email_attempt_count = models.PositiveIntegerField(default=0)
+    email_last_attempt_at = models.DateTimeField(null=True, blank=True)
+    email_sent_at = models.DateTimeField(null=True, blank=True)
+    email_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["ip_address", "created_at"], name="admin_sec_event_ip_time"),
+            models.Index(fields=["event_type", "created_at"], name="admin_sec_event_type_time"),
+            models.Index(fields=["outcome", "created_at"], name="admin_sec_event_outcome_time"),
+            models.Index(fields=["reviewed_at", "created_at"], name="admin_sec_event_review_time"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_event_type_display()} - {self.created_at:%Y-%m-%d %H:%M:%S}"
+
+
+class AdminAccessBlock(models.Model):
+    class Scope(models.TextChoices):
+        IP = "ip", "IP address"
+        USER = "user", "Administrator"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scope = models.CharField(max_length=4, choices=Scope.choices)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="admin_access_blocks",
+    )
+    reason = models.CharField(max_length=220, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_admin_access_blocks",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="revoked_admin_access_blocks",
+    )
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ip_address"],
+                condition=models.Q(scope="ip", is_active=True),
+                name="unique_active_admin_ip_block",
+            ),
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=models.Q(scope="user", is_active=True),
+                name="unique_active_admin_user_block",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(scope="ip", ip_address__isnull=False, user__isnull=True)
+                    | models.Q(scope="user", ip_address__isnull=True, user__isnull=False)
+                ),
+                name="admin_block_matches_scope",
+            ),
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.scope == self.Scope.IP:
+            if not self.ip_address:
+                errors["ip_address"] = "IP blocks need an IP address."
+            if self.user_id:
+                errors["user"] = "IP blocks cannot target an administrator."
+        elif self.scope == self.Scope.USER:
+            if not self.user_id:
+                errors["user"] = "Administrator locks need an administrator account."
+            if self.ip_address:
+                errors["ip_address"] = "Administrator locks cannot target an IP address."
+        else:
+            errors["scope"] = "Choose a valid block scope."
+        if errors:
+            raise ValidationError(errors)
+
+    def __str__(self):
+        target = self.ip_address or (self.user.get_username() if self.user_id else "Unknown target")
+        return f"{self.get_scope_display()} - {target}"
+
+
 class AdminSecurityProfile(TimeStampedModel):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,

@@ -12,6 +12,8 @@ from .admin_site import GrandCoastAdminSite
 from .forms import user_choice_label
 from .models import (
     Activity,
+    AdminAccessBlock,
+    AdminSecurityEvent,
     CalendarDayOverride,
     Client,
     ClientInvite,
@@ -247,6 +249,93 @@ class ActivityAdmin(GrandCoastModelAdmin):
     list_display = ("message", "detail", "actor", "created_at")
     search_fields = ("message", "detail")
     readonly_fields = ("created_at",)
+
+
+@admin.register(AdminSecurityEvent, site=grand_coast_admin_site)
+class AdminSecurityEventAdmin(GrandCoastModelAdmin):
+    list_display = (
+        "created_at",
+        "event_type",
+        "outcome",
+        "ip_address",
+        "user",
+        "email_status",
+        "reviewed_at",
+    )
+    list_filter = ("event_type", "outcome", "email_status", "reviewed_at")
+    search_fields = (
+        "ip_address",
+        "attempted_identifier",
+        "user__username",
+        "user__email",
+        "user_agent",
+        "path",
+        "detail",
+    )
+    readonly_fields = (
+        "id",
+        "event_type",
+        "outcome",
+        "attempted_identifier",
+        "user",
+        "ip_address",
+        "user_agent",
+        "path",
+        "detail",
+        "reviewed_at",
+        "reviewed_by",
+        "email_status",
+        "email_attempt_count",
+        "email_last_attempt_at",
+        "email_sent_at",
+        "email_error",
+        "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(AdminAccessBlock, site=grand_coast_admin_site)
+class AdminAccessBlockAdmin(GrandCoastModelAdmin):
+    list_display = (
+        "created_at",
+        "scope",
+        "ip_address",
+        "user",
+        "is_active",
+        "created_by",
+        "revoked_at",
+    )
+    list_filter = ("scope", "is_active")
+    search_fields = ("ip_address", "user__username", "user__email", "reason")
+    readonly_fields = (
+        "id",
+        "scope",
+        "ip_address",
+        "user",
+        "reason",
+        "is_active",
+        "created_by",
+        "created_at",
+        "revoked_by",
+        "revoked_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Service, site=grand_coast_admin_site)
