@@ -27,6 +27,7 @@
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#updates">Updates</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#photos">Photos &amp; videos</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#documents">Estimate &amp; files</a>
+                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#notifications">Notifications{% if client_unread_notifications_count %} ({{ client_unread_notifications_count }}){% endif %}</a>
             </nav>
             <div class="portal-user"><span class="avatar avatar-light">{{ portal_client.name|slice:':1'|upper }}</span><span>{{ portal_client.name }}</span></div>
         {% endif %}
@@ -157,7 +158,7 @@
                                 {% for item in portal_estimate.line_items.all %}<div><span>{{ item.description }}</span><strong>${{ item.line_total|floatformat:2 }}</strong></div>{% endfor %}
                             </div>
                             {% if portal_estimate.status == 'sent' %}
-                                {% if not request.user.is_staff %}<form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form>
+                                {% if not request.user.is_staff %}<div class="estimate-decision-actions"><form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form><form method="post" action="{% url 'operations:portal-decline-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-outline full-width" type="submit">Decline estimate</button></form></div>
                                 {% endif %}
                                 <small class="secure-note">Acceptance is recorded in your project workspace. No payment is collected here.</small>
                             {% elif portal_estimate.status == 'accepted' %}

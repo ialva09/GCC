@@ -9,7 +9,7 @@
             {% for item in portal_estimate.line_items.all %}<div><span>{{ item.description }}</span><strong>${{ item.line_total|floatformat:2 }}</strong></div>{% endfor %}
         </div>
         {% if portal_estimate.status == 'sent' %}
-            {% if not request.user.is_staff %}<form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form>{% endif %}
+            {% if not request.user.is_staff %}<div class="estimate-decision-actions"><form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form><form method="post" action="{% url 'operations:portal-decline-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-outline full-width" type="submit">Decline estimate</button></form></div>{% endif %}
             <small class="secure-note">Acceptance is recorded in your workspace. No payment is collected here.</small>
         {% elif portal_estimate.status == 'accepted' %}
             <div class="portal-accepted-note">Accepted{% if portal_estimate.accepted_at %} on {{ portal_estimate.accepted_at|date:'M d, Y' }}{% endif %}</div>

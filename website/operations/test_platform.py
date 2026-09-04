@@ -302,27 +302,52 @@ class PlatformWorkflowTests(TestCase):
             self.assertIsInstance(counts[key], int)
             self.assertIn(f'data-count-{key}="{counts[key]}"', markup)
 
+    def assert_sidebar_sequence(self, response, tokens):
+        markup = response.content.decode()
+        start = markup.index('<nav class="admin-nav grouped-admin-nav"')
+        sidebar = markup[start:markup.index('</nav>', start)]
+        positions = [sidebar.index(token) for token in tokens]
+        self.assertEqual(positions, sorted(positions))
+
     def test_admin_operations_sidebar_always_renders_category_counts(self):
         self.login(self.owner)
 
         dashboard_response = self.browser.get(reverse('operations:dashboard'))
         admin_keys = (
-            'overview', 'clients', 'tasks', 'calendar', 'time', 'documents',
-            'leads', 'estimates', 'projects', 'media', 'content', 'team', 'messages',
+            'overview', 'leads', 'clients', 'estimates', 'projects', 'tasks',
+            'calendar', 'time', 'documents', 'media', 'team', 'messages',
+            'notifications', 'content',
         )
-        self.assert_operations_badges(dashboard_response, 'admin', admin_keys, 13)
+        self.assert_operations_badges(dashboard_response, 'admin', admin_keys, 14)
+        self.assert_sidebar_sequence(
+            dashboard_response,
+            (
+                '>Overview<', 'Client &amp; Job Operations', '>Leads<', '>Clients<',
+                '>Estimates<', '>Projects<', '>Tasks<', '>Calendar<', '>Time<',
+                '>Documents<', '>Media<', 'Miscellaneous', '>Team<', '>Messages<',
+                '>Notifications<', '>Content<',
+            ),
+        )
 
         workspace_response = self.browser.get(
             reverse('operations:dashboard-section', kwargs={'section': 'tasks'})
         )
-        self.assert_operations_badges(workspace_response, 'admin', admin_keys, 13)
+        self.assert_operations_badges(workspace_response, 'admin', admin_keys, 14)
+        self.assert_sidebar_sequence(
+            workspace_response,
+            ('>Overview<', '>Leads<', '>Clients<', '>Estimates<', '>Projects<', '>Tasks<', '>Calendar<', '>Time<', '>Documents<', '>Media<', 'Miscellaneous', '>Team<', '>Messages<', '>Notifications<', '>Content<'),
+        )
 
     def test_employee_operations_sidebar_always_renders_visible_category_counts(self):
         self.login(self.field)
 
         response = self.browser.get(reverse('operations:team'))
-        employee_keys = ('overview', 'projects', 'tasks', 'calendar', 'time', 'media', 'profile')
+        employee_keys = ('overview', 'projects', 'tasks', 'calendar', 'time', 'media', 'notifications', 'profile')
         self.assert_operations_badges(response, 'employee', employee_keys, 7)
+        self.assert_sidebar_sequence(
+            response,
+            ('>Overview<', 'Client &amp; Job Operations', '>Projects<', '>Tasks<', '>Calendar<', '>Time<', '>Media<', 'Miscellaneous', '>Notifications<', '>Profile<'),
+        )
         self.assertEqual(
             response.context['operations_nav_counts']['projects'],
             Project.objects.filter(assigned_staff=self.field)

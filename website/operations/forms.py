@@ -232,6 +232,13 @@ class EstimateForm(forms.ModelForm):
             "notes": forms.Textarea(attrs={"rows": 3}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["status"].choices = [
+            (value, label)
+            for value, label in self.fields["status"].choices
+            if value != Estimate.Status.ACCEPTED
+        ]
     def clean_deposit_amount(self):
         value = self.cleaned_data["deposit_amount"] or Decimal("0.00")
         if value < 0:
@@ -320,6 +327,22 @@ class ProjectForm(forms.ModelForm):
                 )
             if not has_accepted_estimate:
                 self.add_error("lead", "Lead-derived projects require an accepted estimate.")
+        execution_statuses = {
+            Project.Status.SELECTIONS,
+            Project.Status.CONSTRUCTION,
+            Project.Status.FINAL,
+            Project.Status.COMPLETE,
+        }
+        previous_status = self.instance.status if self.instance.pk else None
+        if (
+            cleaned.get("status") in execution_statuses
+            and not cleaned.get("assigned_staff")
+            and previous_status not in execution_statuses
+        ):
+            self.add_error(
+                "assigned_staff",
+                "Assign at least one employee before moving this project into execution.",
+            )
         return cleaned
 
 

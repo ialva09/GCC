@@ -759,6 +759,16 @@ If I forget the administrator password, I choose the password-recovery link on t
 
 If I forget the PIN or lose the authenticator, I choose the separate recovery link on the private access screen and submit the verified administrator email. The form only proceeds for an active superuser email. An unmatched email stays on the form and shows the remaining attempts; after five unmatched submissions, that browser is paused for 15 minutes. A matching request uses the configured email backend to send a one-time recovery link that expires after 30 minutes. Recovery lets me choose a new six-digit PIN, disables authenticator verification, revokes existing administrator sessions, and never signs me in automatically. Locally, email uses the console backend; production SMTP values come from environment variables.
 
+The Security settings page also provides the active Owner superuser with an administration access watch. It records invalid administrator identifiers, passwords, PINs, authenticator codes, recovery verification failures, blocked attempts, and successful administrator sign-ins with the source IP, route, user agent, account when known, review state, and email-delivery state. It never records a password, PIN, authenticator code, session value, or recovery token. From that page I can search and review events, manually block an IP address for administration routes, lock an administrator's next sign-in, mark events reviewed, and reversibly unblock a target. Existing signed-in administrator sessions remain available so an accidental IP block can be removed. A signed-in administrator cannot lock their own account.
+
+Failed administration authentication and security-verification events can send alerts to every active staff superuser with a non-empty, valid email address. Delivery is queued after the event is committed, so an SMTP failure never changes the login response. Configure `DEFAULT_FROM_EMAIL` and the existing Django email settings to enable delivery. The emergency `ADMIN_SECURITY_EMAIL_ALERTS_ENABLED=false` switch preserves event records while suppressing alert delivery. Because the alert policy intentionally emails every failed attempt, a brute-force attack can create substantial email volume; use a monitored security mailbox and review the dashboard as the primary audit trail. Failed or unavailable deliveries can be retried with:
+
+~~~powershell
+.\venv\Scripts\python.exe manage.py dispatch_admin_security_emails --limit 100
+~~~
+
+The administration security controls use `REMOTE_ADDR` by default. I leave `ADMIN_TRUSTED_PROXY_IPS` empty unless a known reverse proxy is terminating requests. Only explicitly listed proxy IPs are allowed to provide `X-Forwarded-For` or `Forwarded` client information; spoofed forwarding headers from other sources are ignored. For a trusted proxy deployment, I provide a comma-separated list of the proxy addresses, for example `203.0.113.10,2001:db8::10`. Blocks apply only to administration access and do not block employee, client, public, or other account routes.
+
 The website is also installable as a Progressive Web App. Public pages register /service-worker.js and reference /manifest.webmanifest. Public static assets can be cached for faster repeat visits, while public navigation uses the network first and falls back to /offline/. The service worker never caches POST requests, credentials, CSRF tokens, administrator pages, Team pages, client portal pages, account pages, private documents, or private media. Private routes require a live connection.
 
 I can install the PWA from the browser’s install prompt or address-bar install control. The application name is Grand Coast Construction, it opens at /, and it uses the existing Grand Coast logo and navy, blue, gold, and white color system.
@@ -800,6 +810,24 @@ $env:ALLOWED_HOSTS = "grandcoastconstruction.com,www.grandcoastconstruction.com"
 ~~~
 
 I do not use the development secret key or DEBUG=true in production.
+
+For production security-alert delivery, I also set the existing Django SMTP settings and the alert controls:
+
+~~~powershell
+$env:DEFAULT_FROM_EMAIL = 'security@grandcoastconstruction.com'
+$env:EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+$env:EMAIL_HOST = 'smtp.example.com'
+$env:EMAIL_PORT = '587'
+$env:EMAIL_HOST_USER = '<smtp-user>'
+$env:EMAIL_HOST_PASSWORD = '<smtp-password>'
+$env:EMAIL_USE_TLS = 'true'
+$env:EMAIL_USE_SSL = 'false'
+$env:ADMIN_SECURITY_EMAIL_ALERTS_ENABLED = 'true'
+# Only when a known reverse proxy is in front of Django:
+$env:ADMIN_TRUSTED_PROXY_IPS = '203.0.113.10'
+~~~
+
+`DEFAULT_FROM_EMAIL` and `EMAIL_HOST`/`EMAIL_PORT`/`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD` must be configured for delivery. I keep SMTP credentials out of source control. I set `ADMIN_TRUSTED_PROXY_IPS` only to actual proxy addresses, never to a broad network range.
 
 ## 23. I run the automated checks
 
@@ -941,6 +969,10 @@ I verify that:
 - Client-only files require authentication and project ownership.
 - Invite links are hashed, expire, and cannot be reused.
 - Forms use CSRF protection.
+- Administration security events are visible only to active staff superusers, and security block/review actions are CSRF-protected and audit-logged.
+- Failed administration authentication attempts capture no credential secrets and alert the configured administrator email recipients when enabled.
+- Administration IP blocks and administrator-login locks are reversible and do not affect employee, client, or public routes.
+- Forwarded client-IP headers are ignored unless the connecting proxy address is listed in `ADMIN_TRUSTED_PROXY_IPS`.
 - Estimate totals are recalculated server-side.
 - Accepted estimates cannot be edited in place.
 - No business data is stored in localStorage.

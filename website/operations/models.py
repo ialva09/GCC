@@ -445,6 +445,13 @@ class Project(TimeStampedModel):
         return round(sum(1 for milestone in milestones if milestone.is_complete) / len(milestones) * 100)
 
 
+    @property
+    def needs_staff_assignment(self):
+        return (
+            self.status != self.Status.COMPLETE
+            and not self.assigned_staff.exists()
+        )
+
 class Milestone(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="milestones")
@@ -928,6 +935,41 @@ class EmployeeNotification(TimeStampedModel):
     kind = models.CharField(max_length=40)
     title = models.CharField(max_length=180)
     body = models.TextField()
+    lead = models.ForeignKey(
+        Lead,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="employee_notifications",
+    )
+    estimate = models.ForeignKey(
+        Estimate,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="employee_notifications",
+    )
+    project = models.ForeignKey(
+        Project,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="employee_notifications",
+    )
+    task = models.ForeignKey(
+        Task,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="employee_notifications",
+    )
+    message = models.ForeignKey(
+        ClientMessage,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="employee_notifications",
+    )
     destination_url = models.CharField(max_length=500, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     read_at = models.DateTimeField(null=True, blank=True)
@@ -943,6 +985,75 @@ class EmployeeNotification(TimeStampedModel):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['employee', 'read_at', 'created_at']),
+        ]
+
+    @property
+    def is_read(self):
+        return self.read_at is not None
+
+
+class ClientNotification(TimeStampedModel):
+    """A durable client-facing alert with the same contract as employee alerts."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    kind = models.CharField(max_length=40)
+    title = models.CharField(max_length=180)
+    body = models.TextField()
+    lead = models.ForeignKey(
+        Lead,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="client_notifications",
+    )
+    estimate = models.ForeignKey(
+        Estimate,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="client_notifications",
+    )
+    project = models.ForeignKey(
+        Project,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="client_notifications",
+    )
+    task = models.ForeignKey(
+        Task,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="client_notifications",
+    )
+    message = models.ForeignKey(
+        ClientMessage,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="client_notifications",
+    )
+    destination_url = models.CharField(max_length=500, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_client_notifications",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["client", "read_at", "created_at"], name="ops_clientnotif_read_idx"),
         ]
 
     @property

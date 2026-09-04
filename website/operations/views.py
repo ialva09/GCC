@@ -74,6 +74,7 @@ from .models import (
     AdminSecurityProfile,
     CalendarDayOverride,
     Client,
+    ClientNotification,
     ClientMessage,
     Estimate,
     EstimateLineItem,
@@ -114,11 +115,11 @@ from .services import (
     get_or_create_client_for_lead,
     record_activity,
 )
-from .notifications import queue_employee_notifications
+from .notifications import queue_client_notifications, queue_employee_notifications
 
 
 PUBLIC_PAGES = {"home", "services", "projects", "process", "contact"}
-DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "tasks", "calendar", "time", "media", "documents", "team", "content"}
+DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "tasks", "calendar", "time", "media", "documents", "team", "notifications", "content"}
 TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile", "notifications"}
 EMPLOYEE_GROUPS = {"Manager", "Office", "Field"}
 LEADERSHIP_GROUPS = {"Owner", "Manager"}
@@ -341,11 +342,7 @@ def _operations_navigation_counts(user, *, team_mode=False):
     active_projects_count = projects_qs.exclude(status=Project.Status.COMPLETE).count()
     visible_documents_count = ProjectDocument.objects.filter(project__in=projects_qs).count()
     visible_media_count = MediaAsset.objects.filter(project__in=projects_qs).count()
-    unread_notifications_count = (
-        EmployeeNotification.objects.filter(employee=user, read_at__isnull=True).count()
-        if team_mode
-        else 0
-    )
+    unread_notifications_count = EmployeeNotification.objects.filter(employee=user, read_at__isnull=True).count()
 
     if is_admin_workspace:
         unread_messages_count = ClientMessage.objects.filter(
@@ -368,7 +365,7 @@ def _operations_navigation_counts(user, *, team_mode=False):
             user__is_staff=True,
         ).count()
         clients_count = Client.objects.count()
-        overview_count = open_tasks_count + upcoming_events_count + unread_messages_count
+        overview_count = open_tasks_count + upcoming_events_count + unread_messages_count + unread_notifications_count
     else:
         unread_messages_count = 0
         open_leads_count = 0
@@ -693,7 +690,7 @@ def _dashboard_context(request, section, form_overrides=None):
 
     projects = list(
         Project.objects.select_related("estimate", "lead", "client")
-        .prefetch_related("milestones", "updates", "media_assets", "documents")
+        .prefetch_related("milestones", "updates", "media_assets", "documents", "assigned_staff")
         .all()
     )
     selected_project = None
@@ -848,7 +845,7 @@ def dashboard(request, section="overview"):
         section = "overview"
     if section == "content" and not _can_manage_content(request.user):
         raise PermissionDenied
-    if section in {"clients", "tasks", "calendar", "time", "documents", "team"}:
+    if section in {"clients", "tasks", "calendar", "time", "documents", "team", "notifications"}:
         return render(request, "operations/workspace.html", _workspace_context(request, section))
     return render(request, "operations/dashboard.html", _dashboard_context(request, section))
 
@@ -1146,6 +1143,13 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     selected_time_entry = next((entry for entry in time_entries if str(entry.pk) == selected_time_entry_id), None) if selected_time_entry_id else None
     staff_users = list(_staff_users()) if _can_access_dashboard(request.user) else [request.user]
     employee_profiles = list(EmployeeProfile.objects.select_related("user").filter(user__in=staff_users))
+    pending_employee_invites = []
+    if not team_mode and _can_manage_team(request.user):
+        pending_employee_invites = list(EmployeeInvite.objects.filter(
+            purpose=EmployeeInvite.Purpose.ONBOARDING,
+            accepted_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).select_related("group")[:20])
     if team_mode:
         task_form = TeamTaskUpdateForm(
             instance=selected_task if request.GET.get("edit") == "task" else None,
@@ -1204,6 +1208,17 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     selected_messages = []
     if selected_client:
         selected_messages = list(ClientMessage.objects.filter(client=selected_client).select_related("project", "sent_by")[:25])
+    selected_project_messages = []
+    if team_mode and selected_project:
+        selected_project_messages = list(ClientMessage.objects.filter(project=selected_project).select_related("client", "sent_by")[:25])
+    selected_client_portal_pending = bool(
+        selected_client
+        and not selected_client.user_id
+        and selected_client.invites.filter(
+            accepted_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).exists()
+    )
     unread_messages_count = ClientMessage.objects.filter(is_read=False, sent_by__is_staff=False).count()
     if team_mode:
         unread_messages_count = 0
@@ -1237,6 +1252,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "task_due": task_due,
         "clients": clients,
         "selected_client": selected_client,
+        "selected_client_portal_pending": selected_client_portal_pending,
         "documents": documents,
         "media_assets": media_assets,
         "media_visibility": media_visibility,
@@ -1265,6 +1281,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "active_time_entry": active_time_entry,
         "selected_time_entry": selected_time_entry,
         "employee_profiles": employee_profiles,
+        "pending_employee_invites": pending_employee_invites,
         "staff_users": staff_users,
         "invite_form": invite_form,
         "profile_form": profile_form,
@@ -1279,6 +1296,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "time_edit_form": time_edit_form,
         "project_update_form": project_update_form,
         "selected_messages": selected_messages,
+        "selected_project_messages": selected_project_messages,
         "staff_message_form": form_overrides.get("staff_message_form", StaffMessageForm()),
         "unread_messages_count": unread_messages_count,
         "upcoming_events": upcoming_events,
@@ -1478,6 +1496,13 @@ def task_create(request):
         task.save()
         form.save_m2m()
         record_activity("Task created", task.title, actor=request.user, lead=task.lead, project=task.project)
+        _notify_task_participants(
+            task,
+            kind="task-assignment",
+            title="New task assigned",
+            body=f"{task.title} was added to your work queue.",
+            created_by=request.user,
+        )
         messages.success(request, f"{task.title} was added to Tasks.")
         return _workspace_redirect(request, "tasks", task=task.pk)
     messages.error(request, "Please correct the task details and try again.")
@@ -1505,6 +1530,9 @@ def task_update(request, pk):
             staff_queryset=_staff_users(),
             project_queryset=_visible_projects_for_user(request.user),
         )
+    previous_assignee_id = task.assigned_to_id
+    previous_status = task.status
+    previous_watcher_ids = set(task.watchers.values_list("pk", flat=True))
     if form.is_valid():
         task = form.save(commit=False)
         task.completed_at = timezone.now() if task.status == Task.Status.COMPLETE else None
@@ -1512,6 +1540,18 @@ def task_update(request, pk):
         if not team_mode:
             form.save_m2m()
         record_activity("Task updated", task.title, actor=request.user, lead=task.lead, project=task.project)
+        task = Task.objects.select_related("lead", "project").prefetch_related("watchers").get(pk=task.pk)
+        assignment_changed = (
+            previous_assignee_id != task.assigned_to_id
+            or previous_watcher_ids != set(task.watchers.values_list("pk", flat=True))
+        )
+        _notify_task_participants(
+            task,
+            kind="task-assignment" if assignment_changed else "task-update",
+            title="Task assignment updated" if assignment_changed else "Task updated",
+            body=f"{task.title} is now assigned or updated in your work queue.",
+            created_by=request.user,
+        )
         messages.success(request, "Task changes saved.")
         return _workspace_redirect(request, "tasks", task=task.pk)
     messages.error(request, "Please correct the task details and try again.")
@@ -1527,6 +1567,7 @@ def task_set_status(request, pk):
             raise PermissionDenied
     elif not _can_manage_tasks(request.user):
         raise PermissionDenied
+    previous_status = task.status
     status = request.POST.get("status")
     if status not in dict(Task.Status.choices):
         messages.error(request, "That task status is not valid.")
@@ -1535,9 +1576,204 @@ def task_set_status(request, pk):
         task.completed_at = timezone.now() if status == Task.Status.COMPLETE else None
         task.save(update_fields=["status", "completed_at", "updated_at"])
         record_activity("Task status updated", f"{task.title} · {task.get_status_display()}", actor=request.user, lead=task.lead, project=task.project)
+        _notify_task_participants(
+            task,
+            kind="task-status",
+            title="Task status changed",
+            body=f"{task.title} moved to {task.get_status_display()}.",
+            created_by=request.user,
+        )
         messages.success(request, "Task status updated.")
     return _workspace_redirect(request, "tasks", task=task.pk)
 
+
+def _owner_notification_recipients():
+    return list(_staff_users().filter(is_superuser=True))
+
+
+def _project_staff_recipients(project):
+    return list(
+        project.assigned_staff.filter(
+            is_staff=True,
+            is_active=True,
+        ).filter(
+            Q(employee_profile__isnull=True) | Q(employee_profile__is_active=True)
+        ).distinct()
+    )
+
+
+def _project_notification_url(project, *, team=False):
+    route = "operations:team-section" if team else "operations:dashboard-section"
+    return (
+        reverse(route, kwargs={"section": "projects"})
+        + "?"
+        + urlencode({"project": project.pk})
+    )
+
+
+def _portal_notification_url(client, *, project=None, estimate=None):
+    query = {"client": client.pk}
+    if project is not None:
+        query["project"] = project.pk
+    if estimate is not None:
+        query["estimate"] = estimate.pk
+    return f"{reverse('operations:portal')}?{urlencode(query)}"
+
+
+def _notify_project_staff(
+    project,
+    *,
+    kind,
+    title,
+    body,
+    created_by=None,
+    metadata=None,
+    lead=None,
+    estimate=None,
+    task=None,
+    message=None,
+    notify_owners=False,
+    additional_recipients=None,
+):
+    recipients = _project_staff_recipients(project)
+    if additional_recipients:
+        recipients += list(additional_recipients)
+    if notify_owners:
+        recipients += _owner_notification_recipients()
+    return queue_employee_notifications(
+        recipients,
+        kind=kind,
+        title=title,
+        body=body,
+        destination_url=_project_notification_url(project, team=True),
+        metadata=metadata,
+        created_by=created_by,
+        exclude_users=[created_by] if created_by else None,
+        lead=lead,
+        estimate=estimate,
+        project=project,
+        task=task,
+        message=message,
+    )
+
+
+def _notify_project_client(
+    project,
+    *,
+    kind,
+    title,
+    body,
+    created_by=None,
+    metadata=None,
+    estimate=None,
+    task=None,
+    message=None,
+):
+    if not project or not project.client_id:
+        return []
+    return queue_client_notifications(
+        [project.client],
+        kind=kind,
+        title=title,
+        body=body,
+        destination_url=_portal_notification_url(
+            project.client,
+            project=project,
+            estimate=estimate,
+        ),
+        metadata=metadata,
+        created_by=created_by,
+        project=project,
+        estimate=estimate,
+        task=task,
+        message=message,
+    )
+
+
+def _task_notification_recipients(task, *, notify_owners=True):
+    recipients = []
+    if task.assigned_to_id:
+        recipients.append(task.assigned_to)
+    recipients += list(task.watchers.all())
+    if task.project_id:
+        recipients += _project_staff_recipients(task.project)
+    if task.lead_id and task.lead.assigned_to_id:
+        recipients.append(task.lead.assigned_to)
+    if notify_owners:
+        recipients += _owner_notification_recipients()
+    return recipients
+
+
+def _notify_task_participants(
+    task,
+    *,
+    kind,
+    title,
+    body,
+    created_by=None,
+    notify_owners=True,
+):
+    return queue_employee_notifications(
+        _task_notification_recipients(task, notify_owners=notify_owners),
+        kind=kind,
+        title=title,
+        body=body,
+        destination_url=(
+            _project_notification_url(task.project, team=True)
+            if task.project_id
+            else reverse("operations:team-section", kwargs={"section": "tasks"})
+        ),
+        metadata={"task_id": str(task.pk)},
+        created_by=created_by,
+        exclude_users=[created_by] if created_by else None,
+        lead=task.lead,
+        project=task.project,
+        task=task,
+    )
+
+
+def _notify_lead_assignment(lead, *, created_by=None):
+    recipients = _owner_notification_recipients()
+    if lead.assigned_to_id:
+        recipients.append(lead.assigned_to)
+    return queue_employee_notifications(
+        recipients,
+        kind="lead-assignment",
+        title="A lead was assigned to you",
+        body=f"{lead.name} needs follow-up in the lead pipeline.",
+        destination_url=reverse("operations:team-section", kwargs={"section": "tasks"}),
+        metadata={"lead_id": str(lead.pk)},
+        created_by=created_by,
+        exclude_users=[created_by] if created_by else None,
+        lead=lead,
+    )
+
+def _notify_client_message_recipients(client, project, message, *, actor):
+    body = f"{client.name} sent a new message."
+    if project is not None:
+        return _notify_project_staff(
+            project,
+            kind="client-message",
+            title="New client message",
+            body=body,
+            created_by=actor,
+            message=message,
+            notify_owners=True,
+        )
+    return queue_employee_notifications(
+        _owner_notification_recipients(),
+        kind="client-message",
+        title="New client message",
+        body=body,
+        destination_url=(
+            reverse("operations:dashboard-section", kwargs={"section": "clients"})
+            + "?"
+            + urlencode({"client": client.pk, "messages": 1})
+        ),
+        metadata={"client_id": str(client.pk)},
+        created_by=actor,
+        message=message,
+    )
 
 def _calendar_notification_url(day):
     return (
@@ -1632,6 +1868,7 @@ def calendar_day_update(request):
                     destination_url=_calendar_notification_url(override_date),
                     metadata={'date': override_date.isoformat(), 'status': 'normal'},
                     created_by=request.user,
+                    exclude_users=[request.user],
                 )
         if changed:
             messages.success(request, f'{override_date.isoformat()} returned to a normal day.')
@@ -1695,6 +1932,7 @@ def calendar_day_update(request):
                         'status': override.status,
                     },
                     created_by=request.user,
+                    exclude_users=[request.user],
                 )
 
     if form.errors:
@@ -1742,6 +1980,9 @@ def schedule_create(request):
                     destination_url=_calendar_notification_url(event_day),
                     metadata={'event_id': str(event.pk), 'date': event_day.isoformat()},
                     created_by=request.user,
+                    exclude_users=[request.user],
+                    project=event.project,
+                    task=event.task,
                 )
         messages.success(request, f"{event.title} was added to the calendar.")
         return _workspace_redirect(request, "calendar", event=event.pk)
@@ -1810,6 +2051,9 @@ def schedule_update(request, pk):
                         destination_url=_calendar_notification_url(event_day),
                         metadata={'event_id': str(event.pk), 'date': event_day.isoformat()},
                         created_by=request.user,
+                        exclude_users=[request.user],
+                        project=event.project,
+                        task=event.task,
                     )
         messages.success(request, "Calendar event updated." if changed else "No calendar event changes were needed.")
         return _workspace_redirect(request, "calendar", event=event.pk)
@@ -1843,6 +2087,9 @@ def schedule_delete(request, pk):
                 destination_url=_calendar_notification_url(event_day),
                 metadata={'date': event_day.isoformat()},
                 created_by=request.user,
+                exclude_users=[request.user],
+                project=event.project,
+                task=event.task,
             )
     messages.success(request, f"{event_title} was removed from the calendar.")
     return _workspace_redirect(request, "calendar")
@@ -1926,6 +2173,7 @@ def weekly_schedule_update(request):
                     'week': week_anchor.isoformat(),
                 },
                 created_by=request.user,
+                exclude_users=[request.user],
             )
 
     messages.success(
@@ -2018,6 +2266,7 @@ def employee_day_schedule_update(request):
                     'status': status,
                 },
                 created_by=request.user,
+                exclude_users=[request.user],
             )
 
     messages.success(
@@ -2086,6 +2335,26 @@ def notification_device_deactivate(request):
         updated_at=timezone.now(),
     )
     return JsonResponse({'ok': True, 'deactivated': updated})
+
+
+@require_POST
+@staff_required
+def dashboard_notification_mark_read(request, pk):
+    notification = get_object_or_404(EmployeeNotification, pk=pk, employee=request.user)
+    if notification.read_at is None:
+        notification.read_at = timezone.now()
+        notification.save(update_fields=["read_at", "updated_at"])
+    return _workspace_redirect(request, "notifications")
+
+
+@require_POST
+@staff_required
+def dashboard_notifications_mark_all_read(request):
+    EmployeeNotification.objects.filter(
+        employee=request.user,
+        read_at__isnull=True,
+    ).update(read_at=timezone.now(), updated_at=timezone.now())
+    return _workspace_redirect(request, "notifications")
 
 
 @require_GET
@@ -2193,6 +2462,21 @@ def document_upload(request):
         document.uploaded_by = request.user
         document.save()
         record_activity("Project document uploaded", f"{document.project.title} · {document.title}", actor=request.user, project=document.project)
+        _notify_project_staff(
+            document.project,
+            kind="document-uploaded",
+            title="A project document was added",
+            body=f"{document.title} was added to {document.project.title}.",
+            created_by=request.user,
+        )
+        if document.visibility == ProjectDocument.Visibility.CLIENT:
+            _notify_project_client(
+                document.project,
+                kind="document-published",
+                title="A new project document is available",
+                body=f"{document.title} is ready in your client portal.",
+                created_by=request.user,
+                )
         messages.success(request, "Project document uploaded.")
         return _workspace_redirect(request, "documents", project=document.project_id)
     messages.error(request, "Please choose a valid document and project.")
@@ -2234,12 +2518,22 @@ def document_file(request, pk):
 
 
 @require_POST
-@staff_required
+@team_required
 def staff_message_reply(request, client_pk):
-    if not _can_manage_messages(request.user):
+    team_mode = request.path.startswith("/team/")
+    if not team_mode and not _can_manage_messages(request.user):
         raise PermissionDenied
     client = get_object_or_404(Client, pk=client_pk)
-    project = get_object_or_404(Project, pk=request.POST["project"], client=client) if request.POST.get("project") else None
+    project = (
+        get_object_or_404(Project, pk=request.POST.get("project"), client=client)
+        if request.POST.get("project")
+        else None
+    )
+    if team_mode and (
+        project is None
+        or not project.assigned_staff.filter(pk=request.user.pk).exists()
+    ):
+        raise PermissionDenied
     form = StaffMessageForm(request.POST)
     if form.is_valid():
         client_message = form.save(commit=False)
@@ -2249,15 +2543,30 @@ def staff_message_reply(request, client_pk):
         client_message.is_read = False
         client_message.save()
         record_activity("Staff message sent", client.name, actor=request.user, project=project)
+        queue_client_notifications(
+            [client],
+            kind="employee-reply",
+            title="Grand Coast replied to your message",
+            body="A member of the Grand Coast team replied in your client portal.",
+            destination_url=_portal_notification_url(client, project=project),
+            metadata={"client_id": str(client.pk)},
+            created_by=request.user,
+            project=project,
+            message=client_message,
+        )
         messages.success(request, "Your reply was added to the conversation.")
     else:
         messages.error(request, "Please write a message before replying.")
-        return _render_workspace_form_error(request, "clients", {"staff_message_form": form}, selections={"client": client.pk})
+        return _render_workspace_form_error(
+            request,
+            "projects" if team_mode else "clients",
+            {"staff_message_form": form},
+            selections={"project" if team_mode else "client": project.pk if team_mode and project else client.pk},
+        )
+    if team_mode:
+        return _workspace_redirect(request, "projects", project=project.pk)
     return _workspace_redirect(request, "clients", client=client.pk)
 
-
-@require_POST
-@staff_required
 def staff_mark_message_read(request, pk):
     if not _can_manage_messages(request.user):
         raise PermissionDenied
@@ -2444,11 +2753,14 @@ def lead_assign(request, pk):
     if not _can_manage_tasks(request.user):
         raise PermissionDenied
     lead = _active_lead_or_404(pk)
+    previous_assignee_id = lead.assigned_to_id
     form = LeadAssignmentForm(request.POST, instance=lead, staff_queryset=_staff_users())
     if form.is_valid():
         lead = form.save()
         assignee = lead.assigned_to.get_full_name() if lead.assigned_to else "Unassigned"
         record_activity("Lead assignment updated", f"{lead.name} · {assignee}", actor=request.user, lead=lead)
+        if previous_assignee_id != lead.assigned_to_id:
+            _notify_lead_assignment(lead, created_by=request.user)
         messages.success(request, "Lead assignment updated.")
     else:
         messages.error(request, "That employee cannot be assigned to this lead.")
@@ -2502,6 +2814,13 @@ def lead_create_followup(request, pk):
         task.created_by = request.user
         task.save()
         record_activity("Task added", f"{lead.name} · {task.title}", actor=request.user, lead=lead)
+        _notify_task_participants(
+            task,
+            kind="task-assignment",
+            title="Lead follow-up assigned",
+            body=f"{task.title} needs follow-up for {lead.name}.",
+            created_by=request.user,
+        )
         messages.success(request, "Task saved.")
     else:
         messages.error(request, "Please correct the task details and try again.")
@@ -2594,6 +2913,41 @@ def _apply_estimate_status(estimate, previous_status, actor):
         )
 
 
+def _notify_estimate_status_change(estimate, previous_status, *, actor):
+    if previous_status == estimate.status or not estimate.client_id:
+        return []
+    if estimate.status == Estimate.Status.SENT:
+        return queue_client_notifications(
+            [estimate.client],
+            kind="estimate-sent",
+            title=f"Estimate #{estimate.number} is ready to review",
+            body=f"{estimate.title} is ready in your client portal.",
+            destination_url=_portal_notification_url(
+                estimate.client,
+                estimate=estimate,
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=actor,
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+    if estimate.status == Estimate.Status.DECLINED:
+        return queue_client_notifications(
+            [estimate.client],
+            kind="estimate-declined",
+            title=f"Estimate #{estimate.number} was declined",
+            body="The estimate needs a follow-up conversation before work can begin.",
+            destination_url=_portal_notification_url(
+                estimate.client,
+                estimate=estimate,
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=actor,
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+    return []
+
 @require_POST
 @staff_required
 def estimate_update(request, pk):
@@ -2622,6 +2976,7 @@ def estimate_update(request, pk):
                     estimate=estimate,
                 )
             messages.success(request, "Estimate changes saved.")
+            _notify_estimate_status_change(estimate, previous_status, actor=request.user)
             return _dashboard_redirect("estimates", estimate=estimate.pk)
     messages.error(request, "Please correct the estimate fields and line items.")
     return _render_dashboard_form_error(
@@ -2687,6 +3042,7 @@ def estimate_send(request, pk):
             estimate.status = Estimate.Status.SENT
             estimate.save(update_fields=["status", "updated_at"])
         _apply_estimate_status(estimate, previous_status, request.user)
+    _notify_estimate_status_change(estimate, previous_status, actor=request.user)
     messages.success(request, f"Estimate #{estimate.number} is ready in the client portal.")
     return _dashboard_redirect("estimates", estimate=estimate.pk)
 
@@ -2708,8 +3064,30 @@ def project_create(request):
         # ModelForm.save(commit=False) postpones the many-to-many write. The
         # assigned team is part of project creation, so persist it now.
         form.save_m2m()
+        if not project.assigned_staff.exists():
+            project.next_step = "Assign project staff"
+            project.save(update_fields=["next_step", "updated_at"])
         _create_default_milestones(project)
         record_activity("Project created", f"{project.title} · just now", actor=request.user, project=project)
+        _notify_project_staff(
+            project,
+            kind="project-assignment",
+            title="A project was assigned to you",
+            body=f"{project.title} is ready for project work.",
+            created_by=request.user,
+            notify_owners=True,
+        )
+        _notify_project_client(
+            project,
+            kind="project-created",
+            title="Your project workspace is ready",
+            body=(
+                f"{project.title} has been created. "
+                "The Grand Coast team will share the next step here."
+            ),
+            created_by=request.user,
+            estimate=project.estimate,
+        )
         messages.success(request, f"{project.title} was created.")
         return _dashboard_redirect("projects", project=project.pk)
     messages.error(request, "Please correct the project details and try again.")
@@ -2746,7 +3124,7 @@ def estimate_create_project(request, pk):
         location=estimate.lead.location if estimate.lead else "",
         project_type="renovation",
         status=Project.Status.PLANNING,
-        next_step="Schedule project kickoff",
+        next_step="Assign project staff",
         summary=estimate.notes,
         created_by=request.user,
         fallback_image="operations/images/progress-kitchen.png",
@@ -2756,6 +3134,25 @@ def estimate_create_project(request, pk):
         estimate.lead.status = Lead.Status.WON
         estimate.lead.save(update_fields=["status", "updated_at"])
     record_activity("Project created from accepted estimate", project.title, actor=request.user, estimate=estimate, project=project)
+    _notify_project_staff(
+        project,
+        kind="project-assignment",
+        title="A project was assigned to you",
+        body=f"{project.title} is ready for project work.",
+        created_by=request.user,
+        notify_owners=True,
+    )
+    _notify_project_client(
+        project,
+        kind="project-created",
+        title="Your project workspace is ready",
+        body=(
+            f"{project.title} has been created. "
+            "The Grand Coast team will share the next step here."
+        ),
+        created_by=request.user,
+        estimate=estimate,
+    )
     messages.success(request, f"{project.title} is now in Projects.")
     return _dashboard_redirect("projects", project=project.pk)
 
@@ -2764,6 +3161,8 @@ def estimate_create_project(request, pk):
 @staff_required
 def project_update(request, pk):
     project = get_object_or_404(Project, pk=pk)
+    previous_status = project.status
+    previous_staff_ids = set(project.assigned_staff.values_list("pk", flat=True))
     form_data = request.POST.copy()
     for field_name in ("location", "project_type", "start_date", "target_date"):
         if field_name not in form_data:
@@ -2783,6 +3182,64 @@ def project_update(request, pk):
     if form.is_valid():
         project = form.save()
         record_activity("Project details updated", f"{project.title} · just now", actor=request.user, project=project)
+        current_staff_ids = set(project.assigned_staff.values_list("pk", flat=True))
+        staff_changed = previous_staff_ids != current_staff_ids
+        status_changed = previous_status != project.status
+        execution_statuses = {
+            Project.Status.SELECTIONS,
+            Project.Status.CONSTRUCTION,
+            Project.Status.FINAL,
+        }
+        additional_staff = get_user_model().objects.filter(pk__in=previous_staff_ids | current_staff_ids)
+        if staff_changed:
+            _notify_project_staff(
+                project,
+                kind="project-assignment",
+                title="Project staff assignment changed",
+                body=f"{project.title} now has an updated staff assignment.",
+                created_by=request.user,
+                notify_owners=True,
+                additional_recipients=additional_staff,
+            )
+        if status_changed and project.status == Project.Status.COMPLETE:
+            _notify_project_staff(
+                project,
+                kind="project-complete",
+                title="Project completed",
+                body=f"{project.title} has been marked complete.",
+                created_by=request.user,
+                notify_owners=True,
+                additional_recipients=additional_staff,
+            )
+            _notify_project_client(
+                project,
+                kind="project-complete",
+                title="Your project is complete",
+                body=f"{project.title} has reached completion.",
+                created_by=request.user,
+            )
+        elif status_changed:
+            _notify_project_staff(
+                project,
+                kind="project-status",
+                title=(
+                    "Project moved into execution"
+                    if project.status in execution_statuses
+                    else "Project status changed"
+                ),
+                body=f"{project.title} is now in {project.get_status_display().lower()}.",
+                created_by=request.user,
+                notify_owners=True,
+                additional_recipients=additional_staff,
+            )
+            if project.status in execution_statuses:
+                _notify_project_client(
+                    project,
+                    kind="project-execution",
+                    title="Your project is moving forward",
+                    body=f"{project.title} is now in {project.get_status_display().lower()}.",
+                    created_by=request.user,
+                )
         messages.success(request, "Project details saved.")
     else:
         messages.error(request, "Please correct the project fields and try again.")
@@ -2838,6 +3295,15 @@ def project_add_update(request, pk):
             actor=request.user,
             project=project,
         )
+        if update.visibility == ProjectUpdate.Visibility.CLIENT:
+            _notify_project_client(
+                project,
+                kind="update-published",
+                title="A new project update is available",
+                body=f"{update.title} was published in your client portal.",
+                created_by=request.user,
+                metadata={"update_id": str(update.pk)},
+            )
         messages.success(request, "Project update published to the selected audience.")
     else:
         messages.error(request, "Please add a title and update message.")
@@ -2890,6 +3356,15 @@ def media_upload(request):
             )
             created.append(asset)
         record_activity("Project media uploaded", f"{len(created)} file(s) · {project.title}", actor=request.user, project=project)
+        if not team_mode and visibility in {MediaAsset.Visibility.PUBLIC, MediaAsset.Visibility.CLIENT} and project.client_id:
+            _notify_project_client(
+                project,
+                kind="media-published",
+                title="New project media is available",
+                body=f"{len(created)} new photo or video file(s) were shared in your client portal.",
+                created_by=request.user,
+                metadata={"media_count": len(created)},
+            )
         messages.success(request, f"{len(created)} media file(s) added to {project.title}.")
         return _workspace_redirect(request, "media", media_project=project.pk)
     messages.error(request, "Please choose a project and valid media files.")
@@ -2908,6 +3383,8 @@ def media_edit(request, pk):
     if not team_mode and not _can_access_dashboard(request.user):
         raise PermissionDenied
     asset = get_object_or_404(MediaAsset, pk=pk)
+    previous_visibility = asset.visibility
+    previous_project_id = asset.project_id
     project_queryset = _visible_projects_for_user(request.user)
     if team_mode and (
         not asset.project_id
@@ -2922,6 +3399,22 @@ def media_edit(request, pk):
         else:
             asset = form.save()
         record_activity("Media details updated", f"{asset.title} · {asset.get_visibility_display()}", actor=request.user, project=asset.project)
+        client_visible = {MediaAsset.Visibility.PUBLIC, MediaAsset.Visibility.CLIENT}
+        if (
+            not team_mode
+            and previous_visibility not in client_visible
+            and asset.visibility in client_visible
+            and asset.project_id
+            and asset.project.client_id
+        ):
+            _notify_project_client(
+                asset.project,
+                kind="media-published",
+                title="New project media is available",
+                body=f"{asset.title} was shared in your client portal.",
+                created_by=request.user,
+                metadata={"media_id": str(asset.pk), "previous_project_id": str(previous_project_id or "")},
+            )
         messages.success(request, "Media details saved.")
     else:
         messages.error(request, "Please correct the media details and try again.")
@@ -3044,7 +3537,7 @@ def _portal_client(request):
 def portal(request):
     client = _portal_client(request)
     if client is None:
-        return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": [], "portal_estimates": [], "portal_messages": []})
+        return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": [], "portal_estimates": [], "portal_messages": [], "client_notifications": [], "client_unread_notifications_count": 0})
     projects = list(
         Project.objects.filter(client=client)
         .select_related("estimate")
@@ -3096,6 +3589,8 @@ def portal(request):
     # This keeps general questions and pre-project estimate discussions visible
     # to the same client without duplicating messages in the portal.
     portal_messages = list(client.messages.select_related("project", "sent_by")[:30])
+    client_notifications = list(client.notifications.all()[:30])
+    client_unread_notifications_count = client.notifications.filter(read_at__isnull=True).count()
     if not request.user.is_staff:
         ClientMessage.objects.filter(client=client, sent_by__is_staff=True, is_read=False).update(is_read=True)
     return render(request, "operations/portal.html", {
@@ -3109,6 +3604,8 @@ def portal(request):
         "portal_media": media,
         "portal_documents": portal_documents,
         "portal_messages": portal_messages,
+        "client_notifications": client_notifications,
+        "client_unread_notifications_count": client_unread_notifications_count,
         "google_review_url": _site_settings().google_review_url,
         "portal_message_form": ClientMessageForm(),
     })
@@ -3124,19 +3621,72 @@ def _client_can_access_estimate(request, estimate):
 def portal_accept_estimate(request, pk):
     if not _is_active_client(request.user):
         raise PermissionDenied
-    estimate = get_object_or_404(Estimate.objects.select_related("client", "lead"), pk=pk)
+    estimate = get_object_or_404(
+        Estimate.objects.select_related("client", "lead", "lead__assigned_to"),
+        pk=pk,
+    )
     if not _client_can_access_estimate(request, estimate):
         raise PermissionDenied
+    accepted = False
     if estimate.status == Estimate.Status.SENT:
         with transaction.atomic():
-            estimate = Estimate.objects.select_for_update().get(pk=estimate.pk)
+            estimate = Estimate.objects.select_for_update().select_related(
+                "client",
+                "lead",
+                "lead__assigned_to",
+            ).get(pk=estimate.pk)
             if estimate.status == Estimate.Status.SENT:
                 estimate.status = Estimate.Status.ACCEPTED
                 estimate.accepted_at = timezone.now()
                 estimate.accepted_by = request.user
-                estimate.save(update_fields=["status", "accepted_at", "accepted_by", "updated_at"])
-                record_activity("Estimate accepted by client", f"Estimate #{estimate.number}", actor=request.user, estimate=estimate)
-        messages.success(request, "Estimate accepted. Your project team will follow up with next steps.")
+                estimate.save(
+                    update_fields=["status", "accepted_at", "accepted_by", "updated_at"]
+                )
+                record_activity(
+                    "Estimate accepted by client",
+                    f"Estimate #{estimate.number}",
+                    actor=request.user,
+                    estimate=estimate,
+                )
+                accepted = True
+    if accepted:
+        employee_recipients = _owner_notification_recipients()
+        if estimate.lead_id and estimate.lead.assigned_to_id:
+            employee_recipients.append(estimate.lead.assigned_to)
+        queue_employee_notifications(
+            employee_recipients,
+            kind="estimate-accepted",
+            title=f"Estimate #{estimate.number} was accepted",
+            body=f"{estimate.title} is accepted and needs project setup.",
+            destination_url=(
+                reverse("operations:dashboard-section", kwargs={"section": "estimates"})
+                + "?"
+                + urlencode({"estimate": estimate.pk})
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=request.user,
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+        queue_client_notifications(
+            [estimate.client],
+            kind="estimate-accepted",
+            title="Estimate accepted",
+            body=f"{estimate.title} was accepted. The team will prepare your project workspace.",
+            destination_url=_portal_notification_url(
+                estimate.client,
+                estimate=estimate,
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=request.user,
+            exclude_clients=[estimate.client],
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+        messages.success(
+            request,
+            "Estimate accepted. Your project team will follow up with next steps.",
+        )
     else:
         messages.info(request, "This estimate is not currently awaiting acceptance.")
     portal_url = reverse("operations:portal")
@@ -3145,6 +3695,74 @@ def portal_accept_estimate(request, pk):
 
 @require_POST
 @login_required
+def portal_decline_estimate(request, pk):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    estimate = get_object_or_404(
+        Estimate.objects.select_related("client", "lead", "lead__assigned_to"),
+        pk=pk,
+    )
+    if not _client_can_access_estimate(request, estimate):
+        raise PermissionDenied
+    declined = False
+    if estimate.status == Estimate.Status.SENT:
+        with transaction.atomic():
+            estimate = Estimate.objects.select_for_update().select_related(
+                "client",
+                "lead",
+                "lead__assigned_to",
+            ).get(pk=estimate.pk)
+            if estimate.status == Estimate.Status.SENT:
+                estimate.status = Estimate.Status.DECLINED
+                estimate.declined_at = timezone.now()
+                estimate.save(update_fields=["status", "declined_at", "updated_at"])
+                record_activity(
+                    "Estimate declined by client",
+                    f"Estimate #{estimate.number}",
+                    actor=request.user,
+                    estimate=estimate,
+                )
+                declined = True
+    if declined:
+        employee_recipients = _owner_notification_recipients()
+        if estimate.lead_id and estimate.lead.assigned_to_id:
+            employee_recipients.append(estimate.lead.assigned_to)
+        queue_employee_notifications(
+            employee_recipients,
+            kind="estimate-declined",
+            title=f"Estimate #{estimate.number} was declined",
+            body=f"{estimate.title} needs a follow-up conversation.",
+            destination_url=(
+                reverse("operations:dashboard-section", kwargs={"section": "estimates"})
+                + "?"
+                + urlencode({"estimate": estimate.pk})
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=request.user,
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+        queue_client_notifications(
+            [estimate.client],
+            kind="estimate-declined",
+            title="Estimate declined",
+            body=f"{estimate.title} was marked declined. Contact the team if you want to discuss a revision.",
+            destination_url=_portal_notification_url(
+                estimate.client,
+                estimate=estimate,
+            ),
+            metadata={"estimate_id": str(estimate.pk)},
+            created_by=request.user,
+            exclude_clients=[estimate.client],
+            estimate=estimate,
+            lead=estimate.lead,
+        )
+        messages.success(request, "Estimate declined. The Grand Coast team has been notified.")
+    else:
+        messages.info(request, "This estimate is not currently awaiting acceptance.")
+    portal_url = reverse("operations:portal")
+    return redirect(f"{portal_url}?estimate={estimate.pk}")
+
 def portal_send_message(request):
     if not _is_active_client(request.user):
         raise PermissionDenied
@@ -3162,6 +3780,7 @@ def portal_send_message(request):
         client_message.sent_by = request.user
         client_message.save()
         record_activity("New client message", client.name, actor=request.user, project=project)
+        _notify_client_message_recipients(client, project, client_message, actor=request.user)
         messages.success(request, "Your message was added to the project conversation.")
     else:
         messages.error(request, "Please add a message before sending.")
@@ -3173,6 +3792,33 @@ def portal_send_message(request):
         query["estimate"] = request.POST["estimate"]
     return redirect(f"{portal_url}?{urlencode(query)}" if query else portal_url)
 
+
+@require_POST
+@login_required
+def client_notification_mark_read(request, pk):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    notification = get_object_or_404(
+        ClientNotification,
+        pk=pk,
+        client__user=request.user,
+    )
+    if notification.read_at is None:
+        notification.read_at = timezone.now()
+        notification.save(update_fields=["read_at", "updated_at"])
+    return redirect(f"{reverse('operations:portal')}#notifications")
+
+
+@require_POST
+@login_required
+def client_notifications_mark_all_read(request):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    ClientNotification.objects.filter(
+        client__user=request.user,
+        read_at__isnull=True,
+    ).update(read_at=timezone.now(), updated_at=timezone.now())
+    return redirect(f"{reverse('operations:portal')}#notifications")
 
 def client_invite(request, token):
     invite = find_invite(token)

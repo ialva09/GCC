@@ -126,30 +126,31 @@ const clientDrawerPages = [
 ];
 
 const employeeDrawerPages = [
-  { label: 'Overview', icon: 'home-outline', path: EMPLOYEE_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview' },
-  { label: 'Projects', icon: 'folder-outline', path: EMPLOYEE_PROJECTS_PATH, tab: 'Workspace', countKey: 'projects' },
-  { label: 'Tasks', icon: 'checkmark-outline', path: '/team/tasks/', tab: 'Workspace', countKey: 'tasks' },
-  { label: 'Calendar', icon: 'calendar-outline', path: '/team/calendar/', tab: 'Workspace', countKey: 'calendar' },
-  { label: 'Time', icon: 'time-outline', path: '/team/time/', tab: 'Workspace', countKey: 'time' },
-  { label: 'Media', icon: 'images-outline', path: '/team/media/', tab: 'Workspace', countKey: 'media' },
-  { label: 'Notifications', icon: 'notifications-outline', path: EMPLOYEE_NOTIFICATIONS_PATH, tab: 'Workspace', countKey: 'notifications' },
-  { label: 'Profile', icon: 'person-circle-outline', path: '/team/profile/', tab: 'Workspace', countKey: 'profile' },
+  { label: 'Overview', icon: 'home-outline', path: EMPLOYEE_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview', group: null },
+  { label: 'Projects', icon: 'folder-outline', path: EMPLOYEE_PROJECTS_PATH, tab: 'Workspace', countKey: 'projects', group: 'Client & Job Operations' },
+  { label: 'Tasks', icon: 'checkmark-outline', path: '/team/tasks/', tab: 'Workspace', countKey: 'tasks', group: 'Client & Job Operations' },
+  { label: 'Calendar', icon: 'calendar-outline', path: '/team/calendar/', tab: 'Workspace', countKey: 'calendar', group: 'Client & Job Operations' },
+  { label: 'Time', icon: 'time-outline', path: '/team/time/', tab: 'Workspace', countKey: 'time', group: 'Client & Job Operations' },
+  { label: 'Media', icon: 'images-outline', path: '/team/media/', tab: 'Workspace', countKey: 'media', group: 'Client & Job Operations' },
+  { label: 'Notifications', icon: 'notifications-outline', path: EMPLOYEE_NOTIFICATIONS_PATH, tab: 'Workspace', countKey: 'notifications', group: 'Miscellaneous' },
+  { label: 'Profile', icon: 'person-circle-outline', path: '/team/profile/', tab: 'Workspace', countKey: 'profile', group: 'Miscellaneous' },
 ];
 
 const adminDrawerPages = [
-  { label: 'Overview', icon: 'home-outline', path: ADMIN_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview' },
-  { label: 'Clients', icon: 'people-outline', path: '/dashboard/clients/', tab: 'Workspace', countKey: 'clients' },
-  { label: 'Tasks', icon: 'checkmark-outline', path: '/dashboard/tasks/', tab: 'Workspace', countKey: 'tasks' },
-  { label: 'Calendar', icon: 'calendar-outline', path: '/dashboard/calendar/', tab: 'Workspace', countKey: 'calendar' },
-  { label: 'Time', icon: 'time-outline', path: '/dashboard/time/', tab: 'Workspace', countKey: 'time' },
-  { label: 'Documents', icon: 'document-text-outline', path: '/dashboard/documents/', tab: 'Workspace', countKey: 'documents' },
-  { label: 'Leads', icon: 'funnel-outline', path: '/dashboard/leads/', tab: 'Workspace', countKey: 'leads' },
-  { label: 'Estimates', icon: 'receipt-outline', path: '/dashboard/estimates/', tab: 'Workspace', countKey: 'estimates' },
-  { label: 'Projects', icon: 'folder-outline', path: '/dashboard/projects/', tab: 'Workspace', countKey: 'projects' },
-  { label: 'Media', icon: 'images-outline', path: '/dashboard/media/', tab: 'Workspace', countKey: 'media' },
-  { label: 'Content', icon: 'sparkles-outline', path: '/dashboard/content/', tab: 'Workspace', countKey: 'content' },
-  { label: 'Team', icon: 'people-circle-outline', path: '/dashboard/team/', tab: 'Workspace', countKey: 'team' },
-  { label: 'Messages', icon: 'chatbubbles-outline', path: '/dashboard/clients/', tab: 'Workspace', countKey: 'messages' },
+  { label: 'Overview', icon: 'home-outline', path: ADMIN_WORKSPACE_PATH, tab: 'Dashboard', countKey: 'overview', group: null },
+  { label: 'Leads', icon: 'funnel-outline', path: '/dashboard/leads/', tab: 'Workspace', countKey: 'leads', group: 'Client & Job Operations' },
+  { label: 'Clients', icon: 'people-outline', path: '/dashboard/clients/', tab: 'Workspace', countKey: 'clients', group: 'Client & Job Operations' },
+  { label: 'Estimates', icon: 'receipt-outline', path: '/dashboard/estimates/', tab: 'Workspace', countKey: 'estimates', group: 'Client & Job Operations' },
+  { label: 'Projects', icon: 'folder-outline', path: '/dashboard/projects/', tab: 'Workspace', countKey: 'projects', group: 'Client & Job Operations' },
+  { label: 'Tasks', icon: 'checkmark-outline', path: '/dashboard/tasks/', tab: 'Workspace', countKey: 'tasks', group: 'Client & Job Operations' },
+  { label: 'Calendar', icon: 'calendar-outline', path: '/dashboard/calendar/', tab: 'Workspace', countKey: 'calendar', group: 'Client & Job Operations' },
+  { label: 'Time', icon: 'time-outline', path: '/dashboard/time/', tab: 'Workspace', countKey: 'time', group: 'Client & Job Operations' },
+  { label: 'Documents', icon: 'document-text-outline', path: '/dashboard/documents/', tab: 'Workspace', countKey: 'documents', group: 'Client & Job Operations' },
+  { label: 'Media', icon: 'images-outline', path: '/dashboard/media/', tab: 'Workspace', countKey: 'media', group: 'Client & Job Operations' },
+  { label: 'Team', icon: 'people-circle-outline', path: '/dashboard/team/', tab: 'Workspace', countKey: 'team', group: 'Miscellaneous' },
+  { label: 'Messages', icon: 'chatbubbles-outline', path: '/dashboard/clients/?messages=1', tab: 'Workspace', countKey: 'messages', group: 'Miscellaneous' },
+  { label: 'Notifications', icon: 'notifications-outline', path: '/dashboard/notifications/', tab: 'Workspace', countKey: 'notifications', group: 'Miscellaneous' },
+  { label: 'Content', icon: 'sparkles-outline', path: '/dashboard/content/', tab: 'Workspace', countKey: 'content', group: 'Miscellaneous' },
 ];
 
 const tabIcons = {
@@ -209,7 +210,7 @@ const MOBILE_CHROME_SCRIPT = [
   '      (document.head || document.documentElement).appendChild(style);',
   '    }',
   '',
-  "    style.textContent = '.site-header, .site-footer, .portal-header, .portal-footer, .admin-topbar, .staging-bar, .portal-staging-bar, .admin-workspace-notice { display: none !important; } .auth-site .auth-card > .text-link { display: none !important; }';",
+  "    style.textContent = '.site-header, .site-footer, .portal-header, .portal-footer, .admin-topbar, .admin-sidebar, .staging-bar, .portal-staging-bar, .admin-workspace-notice { display: none !important; } .admin-main { margin-left: 0 !important; } .auth-site .auth-card > .text-link { display: none !important; }';",
   '  } catch (error) {',
   '    // The page can still render if a WebView engine rejects the style injection.',
   '  }',
@@ -615,17 +616,18 @@ function AppDrawerContent({ navigation, ...props }) {
       {isOperations ? (
         <>
           <View style={styles.employeeDrawerTopRule} />
-          <Text style={[styles.drawerSectionLabel, styles.employeeDrawerSectionLabel]}>
-            {isAdmin ? 'Operations' : 'My Workspace'}
-          </Text>
-          {pages.map((page) => (
-            <NativeDrawerItem
-              isEmployee
-              key={page.path}
-              navigation={navigation}
-              notificationCount={navigationCounts?.[page.countKey] ?? 0}
-              page={page}
-            />
+          {pages.map((page, index) => (
+            <View key={`${page.group || 'overview'}:${page.label}`}>
+              {page.group && (index === 0 || page.group !== pages[index - 1].group) ? (
+                <Text style={styles.employeeDrawerWorkflowGroup}>{page.group}</Text>
+              ) : null}
+              <NativeDrawerItem
+                isEmployee
+                navigation={navigation}
+                notificationCount={navigationCounts?.[page.countKey] ?? 0}
+                page={page}
+              />
+            </View>
           ))}
           <View style={styles.employeeDrawerBottomRule} />
           <NativeDrawerAction
@@ -2035,6 +2037,19 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     marginHorizontal: 14,
     marginTop: 34,
+  },
+  employeeDrawerWorkflowGroup: {
+    borderTopColor: 'rgba(255, 255, 255, 0.28)',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    color: '#AFC4E2',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.1,
+    marginBottom: 7,
+    marginHorizontal: 14,
+    marginTop: 18,
+    paddingTop: 16,
+    textTransform: 'uppercase',
   },
   employeeDrawerTopRule: {
     borderTopColor: 'rgba(255, 255, 255, 0.28)',

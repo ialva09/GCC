@@ -8,7 +8,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import EmployeeNotification, MobilePushDevice, PushDelivery
+from .models import ClientNotification, EmployeeNotification, MobilePushDevice, PushDelivery
 
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
@@ -44,13 +44,23 @@ def queue_employee_notifications(
     destination_url="",
     metadata=None,
     created_by=None,
+    exclude_users=None,
+    lead=None,
+    estimate=None,
+    project=None,
+    task=None,
+    message=None,
 ):
     """Create inbox rows in the current transaction and dispatch after commit."""
     employee_ids = []
     seen = set()
+    excluded_ids = {
+        getattr(employee, "pk", employee)
+        for employee in (exclude_users or [])
+    }
     for employee in employees:
         employee_id = getattr(employee, "pk", employee)
-        if employee_id in seen:
+        if employee_id in seen or employee_id in excluded_ids:
             continue
         seen.add(employee_id)
         employee_ids.append(employee_id)
@@ -67,6 +77,11 @@ def queue_employee_notifications(
             destination_url=destination_url,
             metadata=metadata or {},
             created_by=created_by,
+            lead_id=getattr(lead, "pk", lead),
+            estimate_id=getattr(estimate, "pk", estimate),
+            project_id=getattr(project, "pk", project),
+            task_id=getattr(task, "pk", task),
+            message_id=getattr(message, "pk", message),
         )
         for employee_id in employee_ids
     ]
@@ -76,6 +91,60 @@ def queue_employee_notifications(
         lambda notification_ids=notification_ids: dispatch_notification_ids(notification_ids)
     )
     return notifications
+
+
+def queue_client_notifications(
+    clients,
+    *,
+    kind,
+    title,
+    body,
+    destination_url="",
+    metadata=None,
+    created_by=None,
+    exclude_clients=None,
+    lead=None,
+    estimate=None,
+    project=None,
+    task=None,
+    message=None,
+):
+    """Create durable client alerts after the triggering write succeeds."""
+    client_ids = []
+    seen = set()
+    excluded_ids = {
+        getattr(client, "pk", client)
+        for client in (exclude_clients or [])
+    }
+    for client in clients:
+        client_id = getattr(client, "pk", client)
+        if not client_id or client_id in seen or client_id in excluded_ids:
+            continue
+        seen.add(client_id)
+        client_ids.append(client_id)
+
+    if not client_ids:
+        return []
+
+    return ClientNotification.objects.bulk_create(
+        [
+            ClientNotification(
+                client_id=client_id,
+                kind=kind,
+                title=title,
+                body=body,
+                destination_url=destination_url,
+                metadata=metadata or {},
+                created_by=created_by,
+                lead_id=getattr(lead, "pk", lead),
+                estimate_id=getattr(estimate, "pk", estimate),
+                project_id=getattr(project, "pk", project),
+                task_id=getattr(task, "pk", task),
+                message_id=getattr(message, "pk", message),
+            )
+            for client_id in client_ids
+        ]
+    )
 
 
 def _delivery_payload(notification, device):
