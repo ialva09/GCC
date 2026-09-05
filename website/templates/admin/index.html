@@ -15,81 +15,44 @@
         <div class='gcc-admin-home-heading'>
             <div>
                 <span class='gcc-admin-kicker'>Administration</span>
-                <h1 id='gcc-admin-home-title'>GCC Inc.</h1>
-                <p>Manage the records behind Grand Coast Operations.</p>
+                <h1 id='gcc-admin-home-title'>Grand Coast</h1>
+                <p>Run the company from Operations. Use this area for security, website content, and exceptional record maintenance.</p>
             </div>
-            <a class='gcc-admin-button gcc-admin-button-outline' href='/dashboard/'>
-                Open Operations <span aria-hidden='true'>→</span>
+            <a class='gcc-admin-button gcc-admin-button-primary' href='{% url "operations:dashboard" %}'>
+                Open Operations <span aria-hidden='true'>&rarr;</span>
             </a>
         </div>
 
-        <div class='gcc-admin-stat-row'>
-            <a class='gcc-admin-stat' href='{% url "admin:operations_lead_changelist" %}'>
-                <span class='gcc-admin-stat-label'>Pipeline</span>
-                <strong>Leads &amp; estimates</strong>
-                <small>Keep every conversation moving.</small>
-                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
+        <div class='gcc-admin-launch-grid' aria-label='Administration destinations'>
+            <a class='gcc-admin-launch-card gcc-admin-launch-card-primary' href='{% url "operations:dashboard" %}'>
+                <span class='gcc-admin-stat-label'>Daily work</span>
+                <strong>Operations Command Center</strong>
+                <small>See what needs attention, what is blocked, and what happens next.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>&rarr;</span>
             </a>
-            <a class='gcc-admin-stat' href='{% url "admin:operations_project_changelist" %}'>
-                <span class='gcc-admin-stat-label'>Work in motion</span>
-                <strong>Projects &amp; updates</strong>
-                <small>See the records shaping each build.</small>
-                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
-            </a>
-            <a class='gcc-admin-stat gcc-admin-stat-gold' href='{% url "admin:operations_service_changelist" %}'>
+            <a class='gcc-admin-launch-card' href='{% url "operations:dashboard-section" section="content" %}'>
                 <span class='gcc-admin-stat-label'>Public presence</span>
-                <strong>Website content</strong>
-                <small>Keep the company story current.</small>
-                <span class='gcc-admin-stat-arrow' aria-hidden='true'>→</span>
+                <strong>Website Content</strong>
+                <small>Update the public story and service information.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>&rarr;</span>
             </a>
-        </div>
-
-        <div class='gcc-admin-section-heading'>
-            <div>
-                <span class='gcc-admin-kicker'>Record management</span>
-                <h2>Administration</h2>
-            </div>
-            <a class='gcc-admin-text-link' href='/dashboard/'>Go to workspace <span aria-hidden='true'>→</span></a>
-        </div>
-
-        <div class='gcc-admin-record-panel'>
-            {% if app_list %}
-                <div class='gcc-admin-record-grid'>
-                    {% for app in app_list %}
-                        {% for model in app.models %}
-                            {% if model.admin_url %}
-                                <a class='gcc-admin-record-row' href='{{ model.admin_url }}'>
-                            {% else %}
-                                <div class='gcc-admin-record-row'>
-                            {% endif %}
-                                <span class='gcc-admin-record-copy'>
-                                    <span class='gcc-admin-record-app'>{{ app.name }}</span>
-                                    <strong>{{ model.name }}</strong>
-                                </span>
-                                <span class='gcc-admin-record-actions'>
-                                    {% if model.add_url %}
-                                        <span class='gcc-admin-record-add'>Add</span>
-                                    {% endif %}
-                                    {% if model.admin_url %}
-                                        <span class='gcc-admin-record-open'>Open <span aria-hidden='true'>→</span></span>
-                                    {% endif %}
-                                </span>
-                            {% if model.admin_url %}
-                                </a>
-                            {% else %}
-                                </div>
-                            {% endif %}
-                        {% endfor %}
-                    {% endfor %}
-                </div>
-            {% else %}
-                <p class='gcc-admin-empty'>You do not have permission to view or edit any administration records.</p>
-            {% endif %}
+            <a class='gcc-admin-launch-card' href='{% url "admin:security" %}'>
+                <span class='gcc-admin-stat-label'>Protection</span>
+                <strong>Security &amp; Access</strong>
+                <small>Review administration security, blocks, and access controls.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>&rarr;</span>
+            </a>
+            <a class='gcc-admin-launch-card gcc-admin-launch-card-gold' href='{% url "admin:records" %}'>
+                <span class='gcc-admin-stat-label'>Exceptional maintenance</span>
+                <strong>Advanced Records</strong>
+                <small>Open the complete model catalog when a low-level record needs attention.</small>
+                <span class='gcc-admin-stat-arrow' aria-hidden='true'>&rarr;</span>
+            </a>
         </div>
 
         <div class='gcc-admin-home-footnote'>
             <span class='gcc-admin-gold-rule' aria-hidden='true'></span>
-            <span>Native Django administration · Operations remains the primary staff workspace.</span>
+            <span>Daily construction work belongs in Operations. This private area is for administration only.</span>
         </div>
     </section>
 {% endblock %}

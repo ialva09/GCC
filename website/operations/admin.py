@@ -14,10 +14,19 @@ from .models import (
     Activity,
     AdminAccessBlock,
     AdminSecurityEvent,
+    Agreement,
+    AttentionItem,
+    Blocker,
+    BudgetLine,
     CalendarDayOverride,
+    ChangeOrder,
     Client,
     ClientInvite,
     ClientMessage,
+    Commitment,
+    CostEntry,
+    DailyReport,
+    EmailOutbox,
     EmployeeInvite,
     EmployeeProfile,
     EmployeeNotification,
@@ -27,12 +36,19 @@ from .models import (
     EstimateLineItem,
     Lead,
     LeadAttachment,
+    Inspection,
+    MaterialRequest,
     MediaAsset,
     Milestone,
     ProcessStep,
     Project,
     ProjectDocument,
     ProjectUpdate,
+    PaymentRecord,
+    PaymentSchedule,
+    Permit,
+    PreconstructionItem,
+    AiActionDraft,
     MobilePushDevice,
     PushDelivery,
     ScheduleEvent,
@@ -40,6 +56,12 @@ from .models import (
     SiteSettings,
     Task,
     TimeEntry,
+    Selection,
+    SiteVisit,
+    Subcontractor,
+    SubcontractorAssignment,
+    WarrantyItem,
+    WorkflowEvent,
 )
 
 
@@ -380,6 +402,119 @@ class LeadAttachmentAdmin(GrandCoastModelAdmin):
             reverse("operations:lead-attachment-file", kwargs={"pk": obj.pk}),
             filename,
         )
+class ChangeOrderAdmin(GrandCoastModelAdmin):
+    list_display = ("project", "number", "title", "status", "price_impact", "approved_at")
+    list_filter = ("status",)
+    search_fields = ("title", "description", "project__title")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.status == ChangeOrder.Status.APPROVED:
+            return tuple(field.name for field in obj._meta.fields) + ("supporting_documents",)
+        return ("id", "number", "approved_at", "approved_by", "approval_ip", "approved_snapshot", "locked_at")
+
+    def save_related(self, request, form, formsets, change):
+        if form.instance.status == ChangeOrder.Status.APPROVED:
+            return
+        super().save_related(request, form, formsets, change)
+
+    def has_delete_permission(self, request, obj=None):
+        return bool(obj is None or obj.status != ChangeOrder.Status.APPROVED)
+
+
+class PaymentRecordAdmin(GrandCoastModelAdmin):
+    list_display = ("project", "amount", "received_on", "method", "created_by", "voided_at")
+    list_filter = ("method", "voided_at")
+    search_fields = ("project__title", "reference", "notes")
+    readonly_fields = tuple(field.name for field in PaymentRecord._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class WorkflowEventAdmin(GrandCoastModelAdmin):
+    list_display = ("created_at", "event_type", "source", "actor", "project", "related_model")
+    list_filter = ("event_type", "source")
+    search_fields = ("event_type", "related_model", "related_id", "project__title")
+    readonly_fields = tuple(field.name for field in WorkflowEvent._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class CostEntryAdmin(GrandCoastModelAdmin):
+    list_display = ("project", "description", "amount", "incurred_on", "is_void", "created_by")
+    list_filter = ("is_void", "source")
+    search_fields = ("project__title", "description", "vendor")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return tuple(field.name for field in CostEntry._meta.fields)
+        return ("id", "created_at", "updated_at")
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class CommitmentAdmin(GrandCoastModelAdmin):
+    list_display = ("project", "description", "amount", "status", "due_date")
+    list_filter = ("status",)
+    search_fields = ("project__title", "description", "subcontractor__company")
+
+    def get_readonly_fields(self, request, obj=None):
+        if not obj:
+            return ("id", "created_at", "updated_at")
+        return (
+            "id",
+            "project",
+            "subcontractor",
+            "budget_line",
+            "description",
+            "amount",
+            "due_date",
+            "created_by",
+            "created_at",
+            "updated_at",
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+grand_coast_admin_site.register(Agreement, GrandCoastModelAdmin)
+grand_coast_admin_site.register(AttentionItem, GrandCoastModelAdmin)
+grand_coast_admin_site.register(Blocker, GrandCoastModelAdmin)
+grand_coast_admin_site.register(BudgetLine, GrandCoastModelAdmin)
+grand_coast_admin_site.register(ChangeOrder, ChangeOrderAdmin)
+grand_coast_admin_site.register(Commitment, CommitmentAdmin)
+grand_coast_admin_site.register(CostEntry, CostEntryAdmin)
+grand_coast_admin_site.register(DailyReport, GrandCoastModelAdmin)
+grand_coast_admin_site.register(EmailOutbox, GrandCoastModelAdmin)
+grand_coast_admin_site.register(Inspection, GrandCoastModelAdmin)
+grand_coast_admin_site.register(MaterialRequest, GrandCoastModelAdmin)
+grand_coast_admin_site.register(PaymentRecord, PaymentRecordAdmin)
+grand_coast_admin_site.register(PaymentSchedule, GrandCoastModelAdmin)
+grand_coast_admin_site.register(Permit, GrandCoastModelAdmin)
+grand_coast_admin_site.register(PreconstructionItem, GrandCoastModelAdmin)
+grand_coast_admin_site.register(Selection, GrandCoastModelAdmin)
+grand_coast_admin_site.register(SiteVisit, GrandCoastModelAdmin)
+grand_coast_admin_site.register(Subcontractor, GrandCoastModelAdmin)
+grand_coast_admin_site.register(SubcontractorAssignment, GrandCoastModelAdmin)
+grand_coast_admin_site.register(WarrantyItem, GrandCoastModelAdmin)
+grand_coast_admin_site.register(WorkflowEvent, WorkflowEventAdmin)
+grand_coast_admin_site.register(AiActionDraft, GrandCoastModelAdmin)
+
 grand_coast_admin_site.register(ClientMessage, GrandCoastModelAdmin)
 grand_coast_admin_site.register(ScheduleEvent, GrandCoastModelAdmin)
 grand_coast_admin_site.register(TimeEntry, GrandCoastModelAdmin)

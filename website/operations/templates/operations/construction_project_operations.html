@@ -1,0 +1,149 @@
+{% extends "operations/base.html" %}
+{% load static %}
+
+{% block title %}{{ operations_project.title }} | Grand Coast Construction Inc.{% endblock %}
+{% block body_class %}admin-site{% endblock %}
+
+{% block body %}
+<div class="admin-app construction-app" data-admin-root>
+    <aside class="admin-sidebar" data-admin-sidebar>
+        <div class="admin-brand">
+            <a href="{% url 'operations:home' %}" aria-label="Return to public site">
+                <span class="admin-logo-frame"><img src="{% static 'operations/images/gcc-logo.png' %}" alt="Grand Coast Construction Inc. logo"></span>
+                <span><strong>Grand Coast</strong><small>Construction Inc.</small></span>
+            </a>
+        </div>
+        {% include "operations/sidebar_nav.html" %}
+        <div class="sidebar-footer">
+            <div class="sidebar-user">
+                <span class="avatar">{{ request.user.first_name|slice:':1'|default:request.user.username|slice:':1'|upper }}</span>
+                <span><strong>{{ request.user.get_full_name|default:request.user.username }}</strong><small>Staff workspace</small></span>
+            </div>
+            <a class="sidebar-back" href="{% url 'operations:command-center' %}">Command center</a>
+            <form method="post" action="{% url 'operations:logout' %}">{% csrf_token %}<button class="sidebar-reset" type="submit">Sign out</button></form>
+        </div>
+    </aside>
+
+    <div class="admin-main">
+        <header class="admin-topbar">
+            <button class="admin-menu-toggle" type="button" data-admin-menu-toggle aria-expanded="false" aria-label="Open Operations navigation">Menu</button>
+            <div><span class="admin-breadcrumb">Grand Coast / Projects / Operations</span><h1>{{ operations_project.title }}</h1></div>
+            <div class="admin-top-actions">
+                <a class="topbar-link" href="{% url 'operations:command-center' %}">← Command center</a>
+                <a class="button button-outline button-small" href="{% url 'operations:dashboard-section' section='projects' %}?project={{ operations_project.pk }}">Legacy project view</a>
+            </div>
+        </header>
+        <div class="admin-workspace-notice">
+            <span class="staging-label">PROJECT HEALTH</span>
+            <span>{{ operations_project.client.name|default:'Internal project' }} · {{ operations_project.location|default:'Address not set' }}</span>
+            <span class="staging-spacer"></span>
+            <span class="admin-workspace-user">{{ operations_project.get_operational_phase_display }}</span>
+        </div>
+
+        <main class="admin-content construction-content">
+            <section class="construction-project-hero">
+                <div>
+                    <span class="section-kicker">{{ operations_project.get_status_display }} · {{ operations_project.get_operational_phase_display }}</span>
+                    <h2>{{ operations_project.title }}</h2>
+                    <p>{{ operations_project.summary|default:'Project details, decisions, and next actions in one place.' }}</p>
+                </div>
+                <span class="status-badge {% if operations_project.health_status == 'at_risk' or blockers %}red{% elif operations_project.health_status == 'watch' %}gold{% else %}green{% endif %}">{{ operations_project.get_health_status_display }}</span>
+            </section>
+
+            <section class="construction-question-grid" aria-label="Project questions">
+                <article><span>Where are we?</span><strong>{{ operations_project.get_operational_phase_display }}</strong><small>{{ operations_project.progress_percent }}% milestone progress</small></article>
+                <article><span>What is next?</span><strong>{{ operations_project.next_step|default:'Set the next action' }}</strong><small>Visible to the project team</small></article>
+                <article><span>What is holding us up?</span><strong>{% if blockers %}{{ blockers|length }} open blocker{% if blockers|length != 1 %}s{% endif %}{% else %}Nothing flagged{% endif %}</strong><small>Decisions and corrections stay visible</small></article>
+                <article><span>Who needs to act?</span><strong>{% if operations_project.project_manager %}{{ operations_project.project_manager.get_full_name|default:operations_project.project_manager.username }}{% else %}Assign a manager{% endif %}</strong><small>Project manager</small></article>
+                <article>
+                    <span>When is the next payment?</span>
+                    {% if can_view_project_financials %}
+                        <strong>{% if payment_schedules %}${{ payment_schedules.0.amount|floatformat:0 }}{% else %}Not scheduled{% endif %}</strong>
+                        <small>{% if payment_schedules.0.due_date %}Due {{ payment_schedules.0.due_date }}{% else %}Payment schedule{% endif %}</small>
+                    {% else %}
+                        <strong>Restricted</strong><small>Owner / assigned manager</small>
+                    {% endif %}
+                </article>
+            </section>
+
+            <div class="construction-dashboard-grid construction-dashboard-grid-wide">
+                <section class="construction-panel">
+                    <div class="construction-panel-heading"><div><span class="section-kicker">Preconstruction</span><h3>Ready for construction</h3></div><span class="construction-count">{{ readiness_items|length }}</span></div>
+                    <div class="construction-checklist">
+                        {% for item in readiness_items %}
+                        <div class="construction-check-row {% if item.status == 'complete' %}is-complete{% elif item.status == 'blocked' %}is-blocked{% endif %}">
+                            <span class="construction-check-mark">{% if item.status == 'complete' %}✓{% elif item.status == 'blocked' %}!{% else %}·{% endif %}</span>
+                            <span><strong>{{ item.label }}</strong><small>{{ item.get_category_display }}{% if item.due_date %} · Due {{ item.due_date }}{% endif %}</small></span>
+                            {% if item.status == 'complete' %}<span class="status-badge green">Complete</span>{% elif can_edit_operations %}<form method="post" action="{% url 'operations:readiness-complete' pk=item.pk %}">{% csrf_token %}<input type="hidden" name="idempotency_key" value="readiness-{{ item.pk }}-{{ item.updated_at|date:'U' }}"><button class="button button-quiet button-small" type="submit">Mark complete</button></form>{% else %}<span class="status-badge">{{ item.get_status_display }}</span>{% endif %}
+                        </div>
+                        {% empty %}
+                        <div class="construction-empty"><strong>Readiness has not been initialized.</strong><span>New projects created from accepted estimates receive the checklist automatically.</span></div>
+                        {% endfor %}
+                    </div>
+                </section>
+
+                <section class="construction-panel">
+                    <div class="construction-panel-heading"><div><span class="section-kicker">Risks</span><h3>What is holding us up?</h3></div><span class="construction-count">{{ blockers|length }}</span></div>
+                    <div class="construction-list">
+                        {% for blocker in blockers %}
+                        <div class="construction-list-row"><span class="status-badge {% if blocker.severity == 'critical' or blocker.severity == 'high' %}red{% else %}gold{% endif %}">{{ blocker.get_severity_display }}</span><span><strong>{{ blocker.title }}</strong><small>{{ blocker.description|default:blocker.get_category_display }}{% if blocker.assigned_to %} · {{ blocker.assigned_to.get_full_name|default:blocker.assigned_to.username }}{% endif %}</small></span></div>
+                        {% empty %}
+                        <div class="construction-empty"><strong>No open blockers.</strong><span>When something stops progress, flag it here.</span></div>
+                        {% endfor %}
+                    </div>
+                </section>
+            </div>
+
+            <div class="construction-triple-grid">
+                <section class="construction-panel">
+                    <div class="construction-panel-heading"><div><span class="section-kicker">Client decisions</span><h3>Selections</h3></div><span class="construction-count">{{ selections|length }}</span></div>
+                    <div class="construction-list">
+                        {% for selection in selections %}<div class="construction-list-row"><span class="construction-stage-dot stage-{{ selection.status }}"></span><span><strong>{{ selection.item_name }}</strong><small>{{ selection.category }} · {{ selection.get_status_display }}{% if selection.client_choice %} · {{ selection.client_choice }}{% endif %}</small></span></div>{% empty %}<div class="construction-empty"><span>No selections have been added.</span></div>{% endfor %}
+                    </div>
+                </section>
+                <section class="construction-panel">
+                    <div class="construction-panel-heading"><div><span class="section-kicker">Inspections</span><h3>Permit path</h3></div><span class="construction-count">{{ inspections|length }}</span></div>
+                    <div class="construction-list">
+                        {% for inspection in inspections %}<div class="construction-list-row"><span class="status-badge {% if inspection.status == 'passed' %}green{% elif inspection.status == 'failed' %}red{% else %}gold{% endif %}">{{ inspection.get_status_display }}</span><span><strong>{{ inspection.inspection_type }}</strong><small>{% if inspection.scheduled_at %}{{ inspection.scheduled_at|date:'M d, Y g:i A' }}{% else %}Date not set{% endif %}{% if show_inspection_details and inspection.corrective_action %} · {{ inspection.corrective_action }}{% endif %}</small></span></div>{% empty %}<div class="construction-empty"><span>No inspections are tracked yet.</span></div>{% endfor %}
+                    </div>
+                </section>
+                <section class="construction-panel">
+                    <div class="construction-panel-heading"><div><span class="section-kicker">Contract changes</span><h3>Change orders</h3></div><span class="construction-count">{{ change_orders|length }}</span></div>
+                    <div class="construction-list">
+                        {% for change_order in change_orders %}<div class="construction-list-row"><span class="status-badge {% if change_order.status == 'approved' %}green{% elif change_order.status == 'sent' %}gold{% elif change_order.status == 'declined' %}red{% endif %}">CO-{{ change_order.number }}</span><span><strong>{{ change_order.title }}</strong><small>{{ change_order.get_status_display }}{% if can_view_project_financials %} · {% if change_order.price_impact >= 0 %}+{% endif %}${{ change_order.price_impact|floatformat:2 }}{% endif %}</small></span></div>{% empty %}<div class="construction-empty"><span>No change orders yet.</span></div>{% endfor %}
+                    </div>
+                </section>
+            </div>
+
+            {% if project_financials %}
+            <section class="construction-panel construction-financial-panel">
+                <div class="construction-panel-heading"><div><span class="section-kicker">Restricted financial view</span><h3>Project performance</h3></div><span class="status-badge">Owner / assigned manager</span></div>
+                <div class="construction-financial-grid">
+                    <div><span>Current contract</span><strong>${{ project_financials.current_contract|floatformat:0 }}</strong></div>
+                    <div><span>Actual costs</span><strong>${{ project_financials.actual_costs|floatformat:0 }}</strong></div>
+                    <div><span>Remaining budget</span><strong>${{ project_financials.budget_remaining|floatformat:0 }}</strong></div>
+                    <div><span>Outstanding balance</span><strong>${{ project_financials.outstanding_balance|floatformat:0 }}</strong></div>
+                    <div><span>Gross margin</span><strong>{{ project_financials.gross_margin|floatformat:1 }}%</strong></div>
+                    <div><span>Next draw</span><strong>${{ project_financials.next_draw|floatformat:0 }}</strong></div>
+                </div>
+                <p class="construction-pulse-note">Manual ledger only. Approved change orders and recorded payments are reflected transactionally.</p>
+            </section>
+            {% endif %}
+
+            {% if can_edit_operations %}
+            <section class="construction-panel construction-action-panel">
+                <div class="construction-panel-heading"><div><span class="section-kicker">Keep scope current</span><h3>Create a change order</h3></div><span class="status-badge">Human approval required</span></div>
+                <form class="construction-form-grid" method="post" action="{% url 'operations:project-change-order' pk=operations_project.pk %}">
+                    {% csrf_token %}
+                    <label class="form-field">Title{{ change_order_form.title }}</label>
+                    <label class="form-field">Price impact{{ change_order_form.price_impact }}</label>
+                    <label class="form-field">Schedule impact (days){{ change_order_form.schedule_impact_days }}</label>
+                    <label class="form-field construction-form-wide">Description{{ change_order_form.description }}</label>
+                    <div class="construction-form-actions"><label class="check-control"><input type="checkbox" name="send" value="1"> Send to client for approval</label><button class="button button-primary button-small" type="submit">Save change order</button></div>
+                </form>
+            </section>
+            {% endif %}
+        </main>
+    </div>
+</div>
+{% endblock %}

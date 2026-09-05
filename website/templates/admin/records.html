@@ -1,0 +1,79 @@
+{% extends 'admin/base.html' %}
+
+{% load i18n %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block bodyclass %}{{ block.super }} gcc-admin-records-page{% endblock %}
+
+{% block branding %}
+    {% include 'unfold/helpers/site_branding.html' %}
+{% endblock %}
+
+{% block content %}
+    <section class='gcc-admin-home gcc-admin-records-home' aria-labelledby='gcc-admin-records-title'>
+        <div class='gcc-admin-home-heading'>
+            <div>
+                <span class='gcc-admin-kicker'>Advanced records</span>
+                <h1 id='gcc-admin-records-title'>System records</h1>
+                <p>Use these low-level records for exceptional maintenance. Daily construction work belongs in Operations.</p>
+            </div>
+            <div class='gcc-admin-heading-actions'>
+                <a class='gcc-admin-button gcc-admin-button-primary' href='{% url "operations:dashboard" %}'>
+                    Open Operations <span aria-hidden='true'>&rarr;</span>
+                </a>
+                <a class='gcc-admin-button gcc-admin-button-outline' href='{% url "admin:index" %}'>
+                    Back to admin home
+                </a>
+            </div>
+        </div>
+
+        <div class='gcc-admin-section-heading'>
+            <div>
+                <span class='gcc-admin-kicker'>Record management</span>
+                <h2>All available records</h2>
+            </div>
+            <a class='gcc-admin-text-link' href='{% url "admin:search" %}'>Search records <span aria-hidden='true'>&rarr;</span></a>
+        </div>
+
+        <div class='gcc-admin-record-panel'>
+            {% if app_list %}
+                <div class='gcc-admin-record-grid'>
+                    {% for app in app_list %}
+                        {% for model in app.models %}
+                            {% if model.admin_url %}
+                                <a class='gcc-admin-record-row' href='{{ model.admin_url }}'>
+                            {% else %}
+                                <div class='gcc-admin-record-row'>
+                            {% endif %}
+                                <span class='gcc-admin-record-copy'>
+                                    <span class='gcc-admin-record-app'>{{ app.name }}</span>
+                                    <strong>{{ model.name }}</strong>
+                                </span>
+                                <span class='gcc-admin-record-actions'>
+                                    {% if model.add_url %}
+                                        <span class='gcc-admin-record-add'>Add</span>
+                                    {% endif %}
+                                    {% if model.admin_url %}
+                                        <span class='gcc-admin-record-open'>Open <span aria-hidden='true'>&rarr;</span></span>
+                                    {% endif %}
+                                </span>
+                            {% if model.admin_url %}
+                                </a>
+                            {% else %}
+                                </div>
+                            {% endif %}
+                        {% endfor %}
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p class='gcc-admin-empty'>You do not have permission to view or edit any administration records.</p>
+            {% endif %}
+        </div>
+
+        <div class='gcc-admin-home-footnote'>
+            <span class='gcc-admin-gold-rule' aria-hidden='true'></span>
+            <span>Advanced records remain available without becoming the daily Operations workspace.</span>
+        </div>
+    </section>
+{% endblock %}

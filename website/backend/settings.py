@@ -33,6 +33,44 @@ SECRET_KEY = os.getenv(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() in {"1", "true", "yes"}
 
+
+def _env_flag(name, default=False):
+    return os.getenv(name, "true" if default else "false").lower() in {"1", "true", "yes"}
+
+
+# Construction modules roll out independently.  Keep the operating-system
+# layer enabled by default for the current workspace; AI, native field
+# capabilities, and outbound email remain explicit opt-ins.
+GCC_OPERATING_SYSTEM_ENABLED = _env_flag("GCC_OPERATING_SYSTEM_ENABLED", True)
+# Keep the existing workspace available while the owner landing-page change is
+# rolled out independently in staging and production.
+GCC_OWNER_COMMAND_CENTER_ENABLED = _env_flag("GCC_OWNER_COMMAND_CENTER_ENABLED", True)
+GCC_AI_ENABLED = _env_flag("GCC_AI_ENABLED", False)
+GCC_NATIVE_FIELD_ENABLED = _env_flag("GCC_NATIVE_FIELD_ENABLED", False)
+GCC_EMAIL_DELIVERY_ENABLED = _env_flag("GCC_EMAIL_DELIVERY_ENABLED", False)
+# The legacy WebView marker is a development convenience only.  Production
+# mobile requests must complete the same anti-automation challenge as web.
+GCC_MOBILE_TURNSTILE_BYPASS_ENABLED = bool(
+    DEBUG and _env_flag("GCC_MOBILE_TURNSTILE_BYPASS_ENABLED", True)
+)
+
+# Production can turn these on without changing application code.  Development
+# and tests remain usable over localhost while production defaults to HTTPS when
+# DEBUG is disabled.
+GCC_REQUIRE_HTTPS = _env_flag("GCC_REQUIRE_HTTPS", not DEBUG)
+SECURE_SSL_REDIRECT = GCC_REQUIRE_HTTPS
+SESSION_COOKIE_SECURE = GCC_REQUIRE_HTTPS
+CSRF_COOKIE_SECURE = GCC_REQUIRE_HTTPS
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000" if GCC_REQUIRE_HTTPS else "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_flag("SECURE_HSTS_INCLUDE_SUBDOMAINS", GCC_REQUIRE_HTTPS)
+SECURE_HSTS_PRELOAD = _env_flag("SECURE_HSTS_PRELOAD", GCC_REQUIRE_HTTPS)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = os.getenv("SECURE_REFERRER_POLICY", "same-origin")
+X_FRAME_OPTIONS = "DENY"
+
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver,192.168.1.172").split(",")
@@ -241,6 +279,14 @@ PASSWORD_RESET_TIMEOUT = int(os.getenv('PASSWORD_RESET_TIMEOUT', '3600'))
 # Cloudflare Turnstile settings
 CLOUDFLARE_TURNSTILE_SITE_KEY = os.getenv('CLOUDFLARE_TURNSTILE_SITE_KEY')
 CLOUDFLARE_TURNSTILE_SECRET_KEY = os.getenv('CLOUDFLARE_TURNSTILE_SECRET_KEY')
+GCC_TURNSTILE_ENABLED = _env_flag(
+    "GCC_TURNSTILE_ENABLED",
+    bool(CLOUDFLARE_TURNSTILE_SITE_KEY and CLOUDFLARE_TURNSTILE_SECRET_KEY),
+)
+GCC_TURNSTILE_ALLOW_MISSING = _env_flag(
+    "GCC_TURNSTILE_ALLOW_MISSING",
+    DEBUG,
+)
 
 
 

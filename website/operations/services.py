@@ -14,7 +14,7 @@ from django.utils import timezone
 from .models import Activity, Client, ClientInvite, EmployeeInvite, EmployeeProfile, Estimate, Lead
 
 
-ROLE_NAMES = ("Owner", "Manager", "Office", "Field")
+ROLE_NAMES = ("Owner", "Manager", "Office", "Field", "Sales")
 
 
 def record_activity(message, detail="", *, actor=None, lead=None, estimate=None, project=None):
@@ -110,7 +110,7 @@ def estimate_total(estimate):
 
 
 def ensure_role_groups():
-    "Create the four application roles without replacing existing group membership."
+    "Create application roles without replacing existing group membership."
     groups = {name: Group.objects.get_or_create(name=name)[0] for name in ROLE_NAMES}
     operation_permissions = Permission.objects.filter(content_type__app_label="operations")
     auth_permissions = Permission.objects.filter(
@@ -136,6 +136,13 @@ def ensure_role_groups():
         "view_scheduleevent", "view_timeentry", "add_timeentry", "change_timeentry", "view_client",
     }
     groups["Field"].permissions.set(operation_permissions.filter(codename__in=field_codenames))
+    sales_codenames = {
+        "view_client", "view_lead", "add_lead", "change_lead",
+        "view_estimate", "add_estimate", "change_estimate",
+        "view_estimatelineitem", "add_estimatelineitem", "change_estimatelineitem",
+        "view_sitevisit", "add_sitevisit", "change_sitevisit",
+    }
+    groups["Sales"].permissions.set(operation_permissions.filter(codename__in=sales_codenames))
     return groups
 
 

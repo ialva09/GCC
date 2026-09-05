@@ -1,0 +1,55 @@
+from django.urls import path
+
+from . import api
+from . import construction_api
+
+
+app_name = "operations-api"
+
+urlpatterns = [
+    path("v1/me/", api.api_v1_me, name="me"),
+    path("v1/leads/", api.api_v1_leads, name="leads"),
+    path("v1/leads/<uuid:pk>/", api.api_v1_lead_detail, name="lead-detail"),
+    path("v1/leads/<uuid:pk>/convert-client/", api.api_v1_lead_convert_client, name="lead-convert-client"),
+    path("v1/leads/<uuid:pk>/site-visits/", api.api_v1_lead_site_visits, name="lead-site-visits"),
+    path("v1/estimates/", api.api_v1_estimates, name="estimates"),
+    path("v1/estimates/<uuid:pk>/send/", api.api_v1_estimate_send, name="estimate-send"),
+    path("v1/estimates/<uuid:pk>/accept/", api.api_v1_estimate_accept, name="estimate-accept"),
+    path("v1/estimates/<uuid:pk>/create-project/", api.api_v1_estimate_project, name="estimate-project"),
+    path("v1/agreements/<uuid:pk>/accept/", api.api_v1_agreement_accept, name="agreement-accept"),
+    path("v1/projects/", api.api_v1_projects, name="projects"),
+    path("v1/projects/<uuid:pk>/", api.api_v1_project_summary, name="project-summary"),
+    path("v1/projects/<uuid:pk>/agreement/", api.api_v1_project_agreement, name="project-agreement"),
+    path("v1/projects/<uuid:pk>/tasks/", api.api_v1_project_tasks, name="project-tasks"),
+    path("v1/projects/<uuid:pk>/blockers/", api.api_v1_project_blockers, name="project-blockers"),
+    path("v1/projects/<uuid:pk>/financials/", api.api_v1_project_financials, name="project-financials"),
+    path("v1/projects/<uuid:pk>/documents/", api.api_v1_project_documents, name="project-documents"),
+    path("v1/projects/<uuid:pk>/media/", api.api_v1_project_media, name="project-media"),
+    path("v1/projects/<uuid:pk>/messages/", api.api_v1_project_messages, name="project-messages"),
+    path("v1/calendar/", api.api_v1_calendar, name="calendar"),
+    path("v1/notifications/", api.api_v1_notifications, name="notifications"),
+    path("v1/notifications/<uuid:pk>/read/", api.api_v1_notification_read, name="notification-read"),
+    path("v1/attention/", api.api_v1_attention, name="attention"),
+    path("v1/readiness/<uuid:pk>/complete/", api.api_v1_readiness_complete, name="readiness-complete"),
+    path("v1/projects/<uuid:pk>/change-orders/", api.api_v1_change_orders, name="change-orders"),
+    path("v1/change-orders/<uuid:pk>/approve/", api.api_v1_change_order_approve, name="change-order-approve"),
+    path("v1/projects/<uuid:pk>/payments/", api.api_v1_payments, name="payments"),
+    path("v1/selections/<uuid:pk>/advance/", api.api_v1_selection_advance, name="selection-advance"),
+    path("v1/inspections/<uuid:pk>/result/", api.api_v1_inspection_result, name="inspection-result"),
+    path("v1/warranty/<uuid:pk>/resolve/", api.api_v1_warranty_resolve, name="warranty-resolve"),
+    path("v1/site-visits/<uuid:pk>/complete/", api.api_v1_site_visit_complete, name="site-visit-complete"),
+    path("v1/projects/<uuid:pk>/daily-reports/", api.api_v1_daily_reports, name="daily-reports"),
+    path("v1/projects/<uuid:pk>/material-requests/", api.api_v1_material_requests, name="material-requests"),
+    path("v1/projects/<uuid:pk>/deposit/", construction_api.api_v1_project_deposit, name="project-deposit"),
+    path("v1/projects/<uuid:pk>/costs/", construction_api.api_v1_project_costs, name="project-costs"),
+    path("v1/costs/<uuid:pk>/void/", construction_api.api_v1_cost_void, name="cost-void"),
+    path("v1/projects/<uuid:pk>/permits/", construction_api.api_v1_project_permits, name="project-permits"),
+    path("v1/permits/<uuid:pk>/status/", construction_api.api_v1_permit_status, name="permit-status"),
+    path("v1/projects/<uuid:pk>/problems/", construction_api.api_v1_project_problems, name="project-problems"),
+    path("v1/problems/<uuid:pk>/resolve/", construction_api.api_v1_problem_resolve, name="problem-resolve"),
+    path("v1/projects/<uuid:pk>/closeout/", construction_api.api_v1_project_closeout, name="project-closeout"),
+    path("v1/closeout/<uuid:pk>/complete/", construction_api.api_v1_closeout_complete, name="closeout-complete"),
+    path("v1/projects/<uuid:pk>/assignments/", construction_api.api_v1_project_assignments, name="project-assignments"),
+    path("v1/reviews/weekly/", construction_api.api_v1_weekly_review, name="weekly-review"),
+    path("v1/ask/", construction_api.api_v1_ask_grand_coast, name="ask-grand-coast"),
+]

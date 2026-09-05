@@ -33,6 +33,7 @@ from .models import (
     ProjectUpdate,
     ScheduleEvent,
     Service,
+    Subcontractor,
     Task,
     TimeEntry,
     validate_contact_upload,
@@ -86,7 +87,7 @@ class ContactLeadForm(forms.Form):
     phone = forms.CharField(max_length=40, required=False)
     project_type = forms.CharField(max_length=120)
     location = forms.CharField(max_length=160)
-    message = forms.CharField(widget=forms.Textarea)
+    message = forms.CharField(widget=forms.Textarea, max_length=20000)
     photos = ContactUploadField(required=False)
 
     def __init__(self, *args, request=None, **kwargs):
@@ -451,7 +452,7 @@ class EmployeeInviteForm(forms.ModelForm):
 
     def __init__(self, *args, group_queryset=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["group"].queryset = group_queryset if group_queryset is not None else Group.objects.filter(name__in=["Manager", "Office", "Field"])
+        self.fields["group"].queryset = group_queryset if group_queryset is not None else Group.objects.filter(name__in=["Manager", "Office", "Field", "Sales"])
 
 
 class ScheduleEventForm(forms.ModelForm):
@@ -726,11 +727,17 @@ class PublicAuthenticationForm(AuthenticationForm):
         if user.is_superuser:
             raise self.get_invalid_login_error()
         if user.is_staff:
-            is_employee = user.groups.filter(name__in=["Manager", "Office", "Field"]).exists()
+            is_employee = user.groups.filter(name__in=["Manager", "Office", "Field", "Sales"]).exists()
             has_active_profile = not EmployeeProfile.objects.filter(user=user, is_active=False).exists()
             if not is_employee or not has_active_profile:
                 raise self.get_invalid_login_error()
-        elif not Client.objects.filter(user=user).exists():
+        elif not (
+            Client.objects.filter(user=user).exists()
+            or Subcontractor.objects.filter(
+                portal_user=user,
+                status=Subcontractor.Status.ACTIVE,
+            ).exists()
+        ):
             raise self.get_invalid_login_error()
         super().confirm_login_allowed(user)
 
@@ -755,9 +762,13 @@ class PublicPasswordResetForm(PasswordResetForm):
             Q(
                 is_staff=True,
                 is_superuser=False,
-                groups__name__in=("Manager", "Office", "Field"),
+                groups__name__in=("Manager", "Office", "Field", "Sales"),
             )
             | Q(is_staff=False, client_record__isnull=False)
+            | Q(
+                is_staff=False,
+                subcontractor_profile__status=Subcontractor.Status.ACTIVE,
+            )
         ).exclude(employee_profile__is_active=False).distinct()
         return (user for user in eligible_users if user.has_usable_password())
 

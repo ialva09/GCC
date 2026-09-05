@@ -21,6 +21,7 @@ from operations import views
 
 urlpatterns = [
     path('gccad/', grand_coast_admin_site.urls),
+    path('api/', include('operations.api_urls')),
     path('manifest.webmanifest', views.pwa_manifest, name='pwa-manifest'),
     path('service-worker.js', views.pwa_service_worker, name='pwa-service-worker'),
     path('offline/', views.pwa_offline, name='pwa-offline'),

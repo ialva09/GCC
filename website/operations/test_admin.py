@@ -105,9 +105,26 @@ class UnfoldAdminTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'gcc-admin-home-page')
         self.assertContains(response, 'gcc-admin-home')
-        self.assertContains(response, 'GCC Inc.')
+        self.assertContains(response, 'Grand Coast')
         self.assertContains(response, 'Open Operations')
-        self.assertContains(response, 'Record management')
+        self.assertContains(response, 'Operations Command Center')
+        self.assertContains(response, 'Website Content')
+        self.assertContains(response, 'Security &amp; Access')
+        self.assertContains(response, 'Advanced Records')
+        self.assertContains(response, reverse('admin:records'))
+        self.assertNotContains(response, 'Record management')
+
+    def test_advanced_records_keeps_the_full_model_catalog_available(self):
+        response = self.browser.get(reverse('admin:records'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'gcc-admin-records-page')
+        self.assertContains(response, 'All available records')
+        self.assertContains(response, 'Leads')
+        self.assertContains(
+            response,
+            reverse('admin:operations_lead_changelist'),
+        )
 
     def test_native_admin_login_matches_operations_visual_language(self):
         self.browser.logout()

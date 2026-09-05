@@ -106,6 +106,82 @@
                 {% endfor %}
             </section>
 
+            {% if portal_agreement or portal_selections or portal_change_orders or portal_payment_schedules %}
+                <section class="portal-construction-strip" aria-labelledby="project-controls-title">
+                    <div class="portal-panel-heading">
+                        <div><span class="section-kicker">Project decisions</span><h2 id="project-controls-title">Keep the next step moving.</h2></div>
+                        <span class="detail-value">Updated from your project workspace</span>
+                    </div>
+                    <div class="portal-construction-grid">
+                        {% if portal_agreement %}
+                            <article class="portal-construction-card">
+                                <span class="section-kicker">Agreement</span>
+                                <h3>{{ portal_agreement.project.title }}</h3>
+                                <div class="portal-control-row"><span>Current contract</span><strong>&#36;{{ portal_agreement.current_contract_value|floatformat:2 }}</strong></div>
+                                <div class="portal-control-row"><span>Status</span><strong>{{ portal_agreement.get_status_display }}</strong></div>
+                                {% if portal_agreement.signed_pdf %}<a class="text-link-button" href="{% url 'operations:agreement-file' pk=portal_agreement.pk %}">View signed agreement →</a>{% endif %}
+                                {% if portal_agreement.status == 'issued' and not request.user.is_staff %}
+                                    <form method="post" action="{% url 'operations:portal-accept-agreement' pk=portal_agreement.pk %}">
+                                        {% csrf_token %}
+                                        <button class="button button-primary full-width" type="submit">Accept agreement <span aria-hidden="true">→</span></button>
+                                    </form>
+                                    <small class="secure-note">Acceptance is recorded with a timestamp and security audit entry.</small>
+                                {% elif portal_agreement.status == 'accepted' %}
+                                    <p class="portal-accepted-note">Accepted{% if portal_agreement.accepted_at %} on {{ portal_agreement.accepted_at|date:'M d, Y' }}{% endif %}</p>
+                                {% endif %}
+                            </article>
+                        {% endif %}
+                        {% if portal_selections %}
+                            <article class="portal-construction-card">
+                                <span class="section-kicker">Selections</span>
+                                <h3>Product decisions</h3>
+                                {% for selection in portal_selections %}
+                                    <div class="portal-control-item">
+                                        <div><strong>{{ selection.item_name }}</strong><span>{{ selection.category }} · {{ selection.get_status_display }}</span></div>
+                                        {% if selection.status == 'pending' and not request.user.is_staff %}
+                                            <form class="portal-inline-form" method="post" action="{% url 'operations:portal-selection-advance' pk=selection.pk %}">
+                                                {% csrf_token %}
+                                                <input type="text" name="client_choice" maxlength="20000" placeholder="Your choice" aria-label="Choice for {{ selection.item_name }}" required>
+                                                <button class="button button-outline button-small" type="submit">Submit choice</button>
+                                            </form>
+                                        {% elif selection.client_choice %}
+                                            <span class="detail-value">{{ selection.client_choice }}</span>
+                                        {% endif %}
+                                    </div>
+                                {% endfor %}
+                            </article>
+                        {% endif %}
+                        {% if portal_change_orders %}
+                            <article class="portal-construction-card">
+                                <span class="section-kicker">Change orders</span>
+                                <h3>Scope updates</h3>
+                                {% for change_order in portal_change_orders %}
+                                    <div class="portal-control-item">
+                                        <div><strong>CO-{{ change_order.number }} · {{ change_order.title }}</strong><span>{{ change_order.get_status_display }} · {% if change_order.price_impact < 0 %}Credit{% else %}+{% endif %}&#36;{{ change_order.price_impact|floatformat:2 }}</span></div>
+                                        {% if change_order.status == 'sent' and not request.user.is_staff %}
+                                            <form method="post" action="{% url 'operations:portal-approve-change-order' pk=change_order.pk %}">
+                                                {% csrf_token %}
+                                                <button class="button button-outline button-small" type="submit">Approve change order</button>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                {% endfor %}
+                            </article>
+                        {% endif %}
+                        {% if portal_payment_schedules %}
+                            <article class="portal-construction-card">
+                                <span class="section-kicker">Payment schedule</span>
+                                <h3>Project milestones</h3>
+                                {% for schedule in portal_payment_schedules %}
+                                    <div class="portal-control-row"><span>{{ schedule.description }} · {{ schedule.get_status_display }}</span><strong>&#36;{{ schedule.remaining_amount|floatformat:2 }}</strong></div>
+                                {% endfor %}
+                                <small class="secure-note">Payments are recorded by Grand Coast. No card or bank details are stored in this portal.</small>
+                            </article>
+                        {% endif %}
+                    </div>
+                </section>
+            {% endif %}
+
             <div class="portal-grid">
                 <div class="portal-primary-column">
                     <section class="portal-update-panel" id="updates">

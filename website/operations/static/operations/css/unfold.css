@@ -242,6 +242,21 @@ body.gcc-admin-home-page #content {
     max-width: 1480px;
 }
 
+body.gcc-admin-records-page {
+    color: var(--gcc-ink);
+    background: var(--gcc-soft);
+    font-family: 'Montserrat', 'Avenir Next', 'Segoe UI', Arial, sans-serif;
+}
+
+body.gcc-admin-records-page #main {
+    background: var(--gcc-soft);
+}
+
+body.gcc-admin-records-page #content {
+    width: 100%;
+    max-width: 1480px;
+}
+
 .gcc-admin-home {
     padding: 0 0 56px;
 }
@@ -323,6 +338,87 @@ body.gcc-admin-home-page #content {
 .gcc-admin-button-outline:hover {
     color: var(--gcc-white);
     background: var(--gcc-blue);
+}
+
+.gcc-admin-heading-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.gcc-admin-launch-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 54px;
+}
+
+.gcc-admin-launch-card {
+    position: relative;
+    display: flex;
+    min-height: 174px;
+    flex-direction: column;
+    padding: 26px 30px 24px;
+    color: var(--gcc-ink);
+    background: var(--gcc-white);
+    border: 1px solid var(--gcc-line-blue);
+    border-top: 3px solid var(--gcc-blue);
+    box-shadow: 0 8px 24px rgba(34, 58, 98, .04);
+    transition: background .2s ease, border-color .2s ease, transform .2s ease, box-shadow .2s ease;
+}
+
+.gcc-admin-launch-card:hover {
+    color: var(--gcc-ink);
+    background: #fbfcfe;
+    border-top-color: var(--gcc-gold);
+    box-shadow: 0 12px 28px rgba(34, 58, 98, .08);
+    transform: translateY(-2px);
+}
+
+.gcc-admin-launch-card strong {
+    display: block;
+    max-width: 310px;
+    margin: 17px 0 9px;
+    color: var(--gcc-navy);
+    font-family: 'Merriweather', Georgia, serif;
+    font-size: 1.18rem;
+    font-weight: 900;
+    letter-spacing: -.035em;
+    line-height: 1.18;
+}
+
+.gcc-admin-launch-card small {
+    max-width: 340px;
+    color: var(--gcc-muted);
+    font-size: .66rem;
+    line-height: 1.55;
+}
+
+.gcc-admin-launch-card-primary {
+    color: var(--gcc-white);
+    background: var(--gcc-navy);
+    border-color: var(--gcc-navy);
+    border-top-color: var(--gcc-gold);
+}
+
+.gcc-admin-launch-card-primary:hover {
+    color: var(--gcc-white);
+    background: var(--gcc-deep);
+    border-color: var(--gcc-deep);
+    border-top-color: var(--gcc-gold);
+}
+
+.gcc-admin-launch-card-primary strong,
+.gcc-admin-launch-card-primary .gcc-admin-stat-label,
+.gcc-admin-launch-card-primary small,
+.gcc-admin-launch-card-primary .gcc-admin-stat-arrow {
+    color: var(--gcc-white);
+}
+
+.gcc-admin-launch-card-gold {
+    border-top-color: var(--gcc-gold);
 }
 
 .gcc-admin-stat-row {
@@ -1394,6 +1490,19 @@ body.gcc-admin-login-page #page {
 @media (max-width: 560px) {
     .gcc-admin-home {
         padding-bottom: 32px;
+    }
+
+    .gcc-admin-launch-grid {
+        grid-template-columns: 1fr;
+        margin-bottom: 36px;
+    }
+
+    .gcc-admin-heading-actions {
+        width: 100%;
+    }
+
+    .gcc-admin-heading-actions .gcc-admin-button {
+        flex: 1;
     }
 
     .gcc-admin-home-heading {

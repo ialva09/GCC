@@ -232,20 +232,20 @@ class WorkflowContractTests(TestCase):
         owner_response = self.http.get(reverse("operations:dashboard"))
         owner_sidebar = self.sidebar_markup(owner_response)
         owner_tokens = (
-            ">Overview<",
-            "Client &amp; Job Operations",
+            ">Command Center<",
+            "Core work",
             ">Leads<",
-            ">Clients<",
-            ">Estimates<",
             ">Projects<",
-            ">Tasks<",
             ">Calendar<",
+            ">Messages<",
+            "More workspace",
+            ">Estimates<",
+            ">Clients<",
+            ">Tasks<",
             ">Time<",
             ">Documents<",
             ">Media<",
-            "Miscellaneous",
             ">Team<",
-            ">Messages<",
             ">Notifications<",
             ">Content<",
         )
@@ -256,13 +256,13 @@ class WorkflowContractTests(TestCase):
         employee_sidebar = self.sidebar_markup(employee_response)
         employee_tokens = (
             ">Overview<",
-            "Client &amp; Job Operations",
+            "Assigned work",
             ">Projects<",
             ">Tasks<",
             ">Calendar<",
             ">Time<",
             ">Media<",
-            "Miscellaneous",
+            "Personal",
             ">Notifications<",
             ">Profile<",
         )
@@ -277,7 +277,7 @@ class WorkflowContractTests(TestCase):
         employee_block = mobile_source[mobile_source.index("const employeeDrawerPages") : mobile_source.index("const adminDrawerPages")]
         admin_block = mobile_source[mobile_source.index("const adminDrawerPages") : mobile_source.index("const tabIcons")]
         employee_labels = ("Overview", "Projects", "Tasks", "Calendar", "Time", "Media", "Notifications", "Profile")
-        admin_labels = ("Overview", "Leads", "Clients", "Estimates", "Projects", "Tasks", "Calendar", "Time", "Documents", "Media", "Team", "Messages", "Notifications", "Content")
+        admin_labels = ("Command center", "Leads", "Projects", "Calendar", "Messages", "Workspace overview", "Estimates", "Clients", "Tasks", "Time", "Documents", "Media", "Team", "Notifications", "Content")
         for block, labels in ((employee_block, employee_labels), (admin_block, admin_labels)):
             positions = [block.index(f"label: '{label}'") for label in labels]
             self.assertEqual(positions, sorted(positions))
@@ -458,4 +458,4 @@ class WorkflowContractTests(TestCase):
             ).status_code,
             302,
         )
-        self.assertTrue(ClientNotification.objects.filter(kind="project-complete", project=project).exists())
+        self.assertTrue(ClientNotification.objects.filter(kind="project-complete", project=project).exists())

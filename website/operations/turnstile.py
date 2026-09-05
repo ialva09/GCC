@@ -24,7 +24,13 @@ def is_mobile_webview(request):
 
 
 def get_turnstile_site_key(request=None):
-    if is_mobile_webview(request):
+    if not getattr(settings, "GCC_TURNSTILE_ENABLED", True):
+        return ""
+    if is_mobile_webview(request) and getattr(
+        settings,
+        "GCC_MOBILE_TURNSTILE_BYPASS_ENABLED",
+        False,
+    ):
         return ""
     site_key = getattr(settings, "CLOUDFLARE_TURNSTILE_SITE_KEY", "") or ""
     secret_key = getattr(settings, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "") or ""
@@ -35,17 +41,24 @@ def verify_turnstile_request(request, expected_action=None):
     """
     Validate the single-use Turnstile token submitted by a website form.
 
-    Native mobile requests are intentionally exempt because the mobile app
-    does not present the website's anti-bot challenge. An unset key pair also
-    leaves local development usable until Turnstile is configured.
+    The legacy native WebView exemption is development-only.  Production
+    requests must provide a valid Turnstile token even when a caller spoofs
+    the mobile user-agent or header.
     """
-    if request is None or is_mobile_webview(request):
+    if request is None:
+        return True
+    if not getattr(settings, "GCC_TURNSTILE_ENABLED", True):
+        return bool(getattr(settings, "GCC_TURNSTILE_ALLOW_MISSING", False))
+    if (
+        is_mobile_webview(request)
+        and getattr(settings, "GCC_MOBILE_TURNSTILE_BYPASS_ENABLED", False)
+    ):
         return True
 
     site_key = get_turnstile_site_key(request)
     secret_key = getattr(settings, "CLOUDFLARE_TURNSTILE_SECRET_KEY", "") or ""
     if not site_key or not secret_key:
-        return True
+        return bool(getattr(settings, "GCC_TURNSTILE_ALLOW_MISSING", False))
 
     token = request.POST.get("cf-turnstile-response", "").strip()
     if not token:

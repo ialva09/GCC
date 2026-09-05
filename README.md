@@ -19,7 +19,7 @@ I converted the original frontend prototype into a database-backed Django applic
 The application now includes:
 
 - Secure Django session authentication
-- Owner, Manager, Office, and Field employee roles
+- Owner, Manager, Office, Sales, and Field employee roles
 - Employee profiles and one-time employee invitation links
 - Client records and one-time client portal invitations
 - Lead capture from the public contact form
@@ -145,12 +145,12 @@ I create a superuser if I do not already have one:
 I use that account for:
 
 - The separate Django/Unfold administration area at /gccad/
-- The full staff Operations workspace at /dashboard/
+- The owner-first Operations Command Center at /dashboard/
 - Employee access, assignments, schedules, and visibility controls
 - Local setup and data inspection
 
 
-Only an active superuser can enter /gccad/ or /dashboard/. The seed command automatically places an existing superuser in the Owner group, creates an EmployeeProfile for staff accounts, and creates a disabled AdminSecurityProfile for each superuser. The Owner group is reserved for this account; employee invitations only offer Manager, Office, and Field.
+Only an active superuser can enter /gccad/ or /dashboard/. The seed command automatically places an existing superuser in the Owner group, creates an EmployeeProfile for staff accounts, and creates a disabled AdminSecurityProfile for each superuser. The Owner group is reserved for this account; employee invitations offer Manager, Office, Sales, and Field.
 
 ## 4. I seed the local presentation data
 
@@ -186,6 +186,7 @@ The command also creates these groups idempotently:
 - Owner
 - Manager
 - Office
+- Sales
 - Field
 
 I can verify the database state with:
@@ -206,9 +207,10 @@ I then open:
 
 - Public website: http://127.0.0.1:8000/
 - Owner Operations workspace: http://127.0.0.1:8000/dashboard/
+- Preserved workspace overview: http://127.0.0.1:8000/dashboard/overview/
 - Employee Team workspace: http://127.0.0.1:8000/team/
 - Authenticated client portal: http://127.0.0.1:8000/portal/
-- Owner-only Unfold administration: http://127.0.0.1:8000/gccad/
+- Owner-only administration launchpad: http://127.0.0.1:8000/gccad/
 - Sign-in page: http://127.0.0.1:8000/accounts/login/
 
 ## 6. I understand the account permissions
@@ -226,6 +228,10 @@ A Manager uses /team/ and cannot enter /dashboard/ or /gccad/. A Manager can vie
 ### Office
 
 An Office user uses /team/ and cannot enter /dashboard/ or /gccad/. Office visibility is assignment-scoped: assigned projects, personally relevant tasks, assigned schedule events, relevant client context, internal reports, personal time entries, and clock-in/out. Office users cannot view another employee's schedule or change anyone's access, assignments, or publication visibility.
+
+### Sales
+
+A Sales user uses /team/ for assigned leads, site visits, estimates, and follow-ups. Sales visibility is assignment-scoped and excludes project financials, internal costs, margins, and construction controls.
 
 ### Field
 
@@ -807,9 +813,18 @@ Before a real deployment, I also configure:
 $env:DJANGO_SECRET_KEY = "<long-random-production-secret>"
 $env:DJANGO_DEBUG = "false"
 $env:ALLOWED_HOSTS = "grandcoastconstruction.com,www.grandcoastconstruction.com"
+$env:GCC_OWNER_COMMAND_CENTER_ENABLED = "true"
+$env:GCC_TURNSTILE_ENABLED = "true"
+$env:GCC_TURNSTILE_ALLOW_MISSING = "false"
+$env:GCC_MOBILE_TURNSTILE_BYPASS_ENABLED = "false"
 ~~~
 
 I do not use the development secret key or DEBUG=true in production.
+
+GCC_OWNER_COMMAND_CENTER_ENABLED is the independent rollout switch for the
+owner's default Operations landing page. Set it to false to keep the existing
+workspace overview as the temporary /dashboard/ fallback; /dashboard/overview/
+remains available as the preserved overview route.
 
 For production security-alert delivery, I also set the existing Django SMTP settings and the alert controls:
 
@@ -852,7 +867,7 @@ I run the Operations test suite:
 The current suite covers:
 
 - Migration and seed behavior
-- Idempotent Owner, Manager, Office, and Field groups
+- Idempotent Owner, Manager, Office, Sales, and Field groups
 - Employee invitation creation, expiry, and one-time use
 - Password setup and manager-issued reset links
 - Owner-only Operations and Unfold access

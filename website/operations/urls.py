@@ -1,6 +1,7 @@
 from django.contrib.auth.views import LogoutView
 from django.urls import path, reverse_lazy
 
+from . import construction_views
 from . import views
 
 
@@ -23,6 +24,10 @@ urlpatterns = [
     path("privacy/", views.legal_page, {"page": "privacy"}, name="privacy"),
     path("terms/", views.legal_page, {"page": "terms"}, name="terms"),
     path("dashboard/", views.dashboard, name="dashboard"),
+    path("dashboard/command-center/", construction_views.command_center, name="command-center"),
+    path("dashboard/projects/<uuid:pk>/operations/", construction_views.project_operations, name="project-operations"),
+    path("dashboard/projects/<uuid:pk>/change-order/", construction_views.project_change_order_create, name="project-change-order"),
+    path("dashboard/readiness/<uuid:pk>/complete/", construction_views.readiness_complete, name="readiness-complete"),
     path("dashboard/<slug:section>/", views.dashboard, name="dashboard-section"),
     path("dashboard/clients/create/", views.client_create, name="client-create"),
     path("dashboard/clients/<uuid:pk>/update/", views.client_update, name="client-update"),
@@ -57,6 +62,10 @@ urlpatterns = [
     path("team/notifications/<uuid:pk>/read/", views.employee_notification_mark_read, name="notification-mark-read"),
     path("team/notifications/read-all/", views.employee_notifications_mark_all_read, name="notifications-mark-all-read"),
     path("team/notifications/", views.employee_notifications, name="team-notifications"),
+    path("team/field/", construction_views.field_today, name="field-today"),
+    path("team/projects/<uuid:pk>/daily-report/", construction_views.field_daily_report, name="field-daily-report"),
+    path("team/projects/<uuid:pk>/material-request/", construction_views.field_material_request, name="field-material-request"),
+    path("team/projects/<uuid:pk>/problem-report/", construction_views.field_problem_report, name="field-problem-report"),
     path("team/clients/<uuid:client_pk>/messages/reply/", views.staff_message_reply, name="team-staff-message-reply"),
     path("dashboard/team/<int:pk>/reset/", views.employee_password_reset_create, name="employee-reset-create"),
     path("dashboard/leads/create/", views.lead_create, name="lead-create"),
@@ -86,6 +95,9 @@ urlpatterns = [
     path("dashboard/content/update/", views.content_update, name="content-update"),
     path("portal/", views.portal, name="portal"),
     path("portal/estimates/<uuid:pk>/accept/", views.portal_accept_estimate, name="portal-accept-estimate"),
+    path("portal/agreements/<uuid:pk>/accept/", views.portal_accept_agreement, name="portal-accept-agreement"),
+    path("portal/selections/<uuid:pk>/advance/", views.portal_selection_advance, name="portal-selection-advance"),
+    path("portal/change-orders/<uuid:pk>/approve/", views.portal_approve_change_order, name="portal-approve-change-order"),
     path("portal/estimates/<uuid:pk>/decline/", views.portal_decline_estimate, name="portal-decline-estimate"),
     path("portal/notifications/<uuid:pk>/read/", views.client_notification_mark_read, name="client-notification-mark-read"),
     path("portal/notifications/read-all/", views.client_notifications_mark_all_read, name="client-notifications-mark-all-read"),
@@ -97,6 +109,7 @@ urlpatterns = [
     path("projects/<uuid:pk>/", views.public_project_detail, name="project-detail"),
     path("project-covers/<uuid:pk>/", views.project_cover_file, name="project-cover"),
     path("documents/<uuid:pk>/", views.document_file, name="document-file"),
+    path("agreements/<uuid:pk>/", views.agreement_file, name="agreement-file"),
     path("media/<uuid:pk>/", views.media_file, name="media-file"),
     # Compatibility aliases for links created during the initial prototype.
     path("demo/admin/", views.legacy_dashboard, name="legacy-admin"),

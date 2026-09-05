@@ -72,6 +72,8 @@ from .models import (
     AdminRecoveryToken,
     CALENDAR_TIME_ZONE,
     AdminSecurityProfile,
+    Agreement,
+    ChangeOrder,
     CalendarDayOverride,
     Client,
     ClientNotification,
@@ -91,7 +93,9 @@ from .models import (
     Project,
     ProjectDocument,
     ProjectUpdate,
+    PaymentSchedule,
     ScheduleEvent,
+    Selection,
     Service,
     SiteSettings,
     Task,
@@ -115,13 +119,29 @@ from .services import (
     get_or_create_client_for_lead,
     record_activity,
 )
+from .construction_services import (
+    accept_agreement as accept_agreement_command,
+    accept_estimate as accept_estimate_command,
+    advance_selection as advance_selection_command,
+    approve_change_order as approve_change_order_command,
+    convert_lead as convert_lead_command,
+    create_project_from_estimate,
+    send_estimate as send_estimate_command,
+)
+from .construction_policies import (
+    can_view_agreement,
+    can_view_lead,
+    can_view_media,
+    can_view_project_document,
+    feature_enabled,
+)
 from .notifications import queue_client_notifications, queue_employee_notifications
 
 
 PUBLIC_PAGES = {"home", "services", "projects", "process", "contact"}
 DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "tasks", "calendar", "time", "media", "documents", "team", "notifications", "content"}
 TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile", "notifications"}
-EMPLOYEE_GROUPS = {"Manager", "Office", "Field"}
+EMPLOYEE_GROUPS = {"Manager", "Office", "Field", "Sales"}
 LEADERSHIP_GROUPS = {"Owner", "Manager"}
 
 
@@ -843,6 +863,17 @@ def _dashboard_context(request, section, form_overrides=None):
 def dashboard(request, section="overview"):
     if section not in DASHBOARD_SECTIONS:
         section = "overview"
+    if (
+        section == "overview"
+        and getattr(request.resolver_match, "url_name", "") == "dashboard"
+        and feature_enabled("owner_command_center")
+        and feature_enabled("operating_system")
+    ):
+        # Keep the existing dashboard section routes intact while making the
+        # action-first operating system the owner's default landing page.
+        from .construction_views import render_command_center
+
+        return render_command_center(request)
     if section == "content" and not _can_manage_content(request.user):
         raise PermissionDenied
     if section in {"clients", "tasks", "calendar", "time", "documents", "team", "notifications"}:
@@ -1193,7 +1224,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         if profile
         else EmployeeProfileForm(allow_status=_can_manage_team(request.user))
     )
-    invite_form = EmployeeInviteForm(group_queryset=Group.objects.filter(name__in=["Manager", "Office", "Field"]))
+    invite_form = EmployeeInviteForm(group_queryset=Group.objects.filter(name__in=["Manager", "Office", "Field", "Sales"]))
     client_form = form_overrides.get("client_form", client_form)
     task_form = form_overrides.get("task_form", task_form)
     event_form = form_overrides.get("event_form", event_form)
@@ -1475,8 +1506,11 @@ def client_revoke_access(request, pk):
 @staff_required
 def lead_convert_client(request, pk):
     lead = _active_lead_or_404(pk)
-    client = get_or_create_client_for_lead(lead, actor=request.user)
-    record_activity("Lead converted to client", f"{lead.name} · {client.email}", actor=request.user, lead=lead)
+    client, _created = convert_lead_command(
+        lead,
+        actor=request.user,
+        idempotency_key=f"lead-client:{lead.pk}",
+    )
     messages.success(request, f"{lead.name} is now a client record.")
     return _workspace_redirect(request, "clients", client=client.pk)
 
@@ -2487,33 +2521,42 @@ def document_upload(request):
 @login_required
 def document_file(request, pk):
     document = get_object_or_404(ProjectDocument.objects.select_related("project", "project__client"), pk=pk)
-    project = document.project
-    is_staff_allowed = (
-        request.user.is_staff
-        and (
-            _can_access_dashboard(request.user)
-            or (
-                _can_access_team(request.user)
-                and project.assigned_staff.filter(pk=request.user.pk).exists()
-            )
-        )
-    )
-    is_client_allowed = bool(
-        _is_active_client(request.user)
-        and document.visibility == ProjectDocument.Visibility.CLIENT
-        and project.client_id
-        and project.client.user_id == request.user.id
-    )
-    if not (is_staff_allowed or is_client_allowed):
-        if not request.user.is_authenticated:
-            return redirect(f"{reverse("operations:login")}?{urlencode({"next": request.path})}")
+    if not request.user.is_authenticated:
+        return redirect(f"{reverse('operations:login')}?{urlencode({'next': request.path})}")
+    if not can_view_project_document(request.user, document):
         raise PermissionDenied
     try:
         opened = document.file.open("rb")
     except FileNotFoundError as exc:
         raise Http404 from exc
     response = FileResponse(opened, content_type=mimetypes.guess_type(document.file.name)[0] or "application/octet-stream")
-    response["Content-Disposition"] = f'attachment; filename="{document.file.name.rsplit("/", 1)[-1]}"'
+    response["Content-Disposition"] = f'attachment; filename="{sanitize_uploaded_name(document.file.name.rsplit("/", 1)[-1])}"'
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Cross-Origin-Resource-Policy"] = "same-origin"
+    return response
+
+
+@require_GET
+@login_required
+def agreement_file(request, pk):
+    agreement = get_object_or_404(
+        Agreement.objects.select_related("project", "project__client"),
+        pk=pk,
+    )
+    if not can_view_agreement(request.user, agreement):
+        raise PermissionDenied
+    if not agreement.signed_pdf:
+        raise Http404
+    try:
+        opened = agreement.signed_pdf.open("rb")
+    except FileNotFoundError as exc:
+        raise Http404 from exc
+    response = FileResponse(opened, content_type="application/pdf")
+    filename = sanitize_uploaded_name(agreement.signed_pdf.name.rsplit("/", 1)[-1])
+    response["Content-Disposition"] = f'inline; filename="{filename}"'
+    response["Cache-Control"] = "private, no-store"
+    response["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -2581,7 +2624,7 @@ def staff_mark_message_read(request, pk):
 def employee_invite_create(request):
     if not _can_manage_team(request.user):
         raise PermissionDenied
-    form = EmployeeInviteForm(request.POST, group_queryset=Group.objects.filter(name__in=["Manager", "Office", "Field"]))
+    form = EmployeeInviteForm(request.POST, group_queryset=Group.objects.filter(name__in=["Manager", "Office", "Field", "Sales"]))
     if form.is_valid():
         invite, raw_token = create_employee_invite(
             email=form.cleaned_data["email"],
@@ -2629,7 +2672,7 @@ def employee_password_reset_create(request, pk):
     if not _can_manage_team(request.user):
         raise PermissionDenied
     profile = get_object_or_404(EmployeeProfile.objects.select_related("user"), pk=pk)
-    group = profile.user.groups.filter(name__in=["Manager", "Office", "Field"]).first()
+    group = profile.user.groups.filter(name__in=["Manager", "Office", "Field", "Sales"]).first()
     if group is None:
         group = Group.objects.get_or_create(name="Field")[0]
     invite, raw_token = create_employee_invite(
@@ -3034,14 +3077,14 @@ def estimate_send(request, pk):
             # title, notes, and deposit are not lost when marking it ready.
             for field_name in EstimateForm.Meta.fields:
                 setattr(estimate, field_name, form.cleaned_data[field_name])
-            estimate.status = Estimate.Status.SENT
             estimate.save()
             formset.instance = estimate
             formset.save()
-        else:
-            estimate.status = Estimate.Status.SENT
-            estimate.save(update_fields=["status", "updated_at"])
-        _apply_estimate_status(estimate, previous_status, request.user)
+        estimate = send_estimate_command(
+            estimate,
+            actor=request.user,
+            idempotency_key=f"estimate-send:{estimate.pk}:{request.POST.get('lines-TOTAL_FORMS', '0')}",
+        )
     _notify_estimate_status_change(estimate, previous_status, actor=request.user)
     messages.success(request, f"Estimate #{estimate.number} is ready in the client portal.")
     return _dashboard_redirect("estimates", estimate=estimate.pk)
@@ -3109,31 +3152,17 @@ def _create_default_milestones(project, approved=False):
 @staff_required
 def estimate_create_project(request, pk):
     estimate = get_object_or_404(Estimate.objects.select_related("lead", "client"), pk=pk)
-    if estimate.status != Estimate.Status.ACCEPTED:
-        messages.error(request, "Only accepted estimates can become projects.")
+    try:
+        project, created = create_project_from_estimate(
+            estimate,
+            actor=request.user,
+            idempotency_key=f"project-from-estimate:{estimate.pk}",
+        )
+    except (PermissionDenied, ValidationError) as exc:
+        messages.error(request, str(exc))
         return _dashboard_redirect("estimates", estimate=estimate.pk)
-    existing = estimate.projects.order_by("-created_at").first()
-    if existing:
-        return _dashboard_redirect("projects", project=existing.pk)
-    client = estimate.client or (get_or_create_client_for_lead(estimate.lead, actor=request.user) if estimate.lead else None)
-    project = Project.objects.create(
-        estimate=estimate,
-        lead=estimate.lead,
-        client=client,
-        title=estimate.title,
-        location=estimate.lead.location if estimate.lead else "",
-        project_type="renovation",
-        status=Project.Status.PLANNING,
-        next_step="Assign project staff",
-        summary=estimate.notes,
-        created_by=request.user,
-        fallback_image="operations/images/progress-kitchen.png",
-    )
-    _create_default_milestones(project, approved=True)
-    if estimate.lead and estimate.lead.status != Lead.Status.WON:
-        estimate.lead.status = Lead.Status.WON
-        estimate.lead.save(update_fields=["status", "updated_at"])
-    record_activity("Project created from accepted estimate", project.title, actor=request.user, estimate=estimate, project=project)
+    if not created:
+        return _dashboard_redirect("projects", project=project.pk)
     _notify_project_staff(
         project,
         kind="project-assignment",
@@ -3540,8 +3569,17 @@ def portal(request):
         return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": [], "portal_estimates": [], "portal_messages": [], "client_notifications": [], "client_unread_notifications_count": 0})
     projects = list(
         Project.objects.filter(client=client)
-        .select_related("estimate")
-        .prefetch_related("milestones", "updates", "media_assets", "documents", "messages")
+        .select_related("estimate", "agreement")
+        .prefetch_related(
+            "milestones",
+            "updates",
+            "media_assets",
+            "documents",
+            "messages",
+            "selections",
+            "change_orders",
+            "payment_schedules",
+        )
     )
     portal_estimates = list(
         Estimate.objects.filter(client=client)
@@ -3585,6 +3623,18 @@ def portal(request):
     if portal_estimate is None and not selected_project and portal_estimates:
         portal_estimate = portal_estimates[0]
     portal_documents = list(selected_project.documents.filter(visibility=ProjectDocument.Visibility.CLIENT)[:12]) if selected_project else []
+    portal_agreement = (
+        Agreement.objects.filter(project=selected_project).first()
+        if selected_project
+        else None
+    )
+    portal_selections = list(selected_project.selections.all()) if selected_project else []
+    portal_change_orders = list(
+        selected_project.change_orders.exclude(status=ChangeOrder.Status.DRAFT)
+    ) if selected_project else []
+    portal_payment_schedules = list(
+        selected_project.payment_schedules.prefetch_related("payments").all()
+    ) if selected_project else []
     # Conversations are client-wide, with an optional project relationship.
     # This keeps general questions and pre-project estimate discussions visible
     # to the same client without duplicating messages in the portal.
@@ -3603,6 +3653,10 @@ def portal(request):
         "portal_latest_update": updates[0] if updates else None,
         "portal_media": media,
         "portal_documents": portal_documents,
+        "portal_agreement": portal_agreement,
+        "portal_selections": portal_selections,
+        "portal_change_orders": portal_change_orders,
+        "portal_payment_schedules": portal_payment_schedules,
         "portal_messages": portal_messages,
         "client_notifications": client_notifications,
         "client_unread_notifications_count": client_unread_notifications_count,
@@ -3629,26 +3683,12 @@ def portal_accept_estimate(request, pk):
         raise PermissionDenied
     accepted = False
     if estimate.status == Estimate.Status.SENT:
-        with transaction.atomic():
-            estimate = Estimate.objects.select_for_update().select_related(
-                "client",
-                "lead",
-                "lead__assigned_to",
-            ).get(pk=estimate.pk)
-            if estimate.status == Estimate.Status.SENT:
-                estimate.status = Estimate.Status.ACCEPTED
-                estimate.accepted_at = timezone.now()
-                estimate.accepted_by = request.user
-                estimate.save(
-                    update_fields=["status", "accepted_at", "accepted_by", "updated_at"]
-                )
-                record_activity(
-                    "Estimate accepted by client",
-                    f"Estimate #{estimate.number}",
-                    actor=request.user,
-                    estimate=estimate,
-                )
-                accepted = True
+        estimate, accepted = accept_estimate_command(
+            estimate,
+            actor=request.user,
+            request=request,
+            idempotency_key=f"estimate-accept:{estimate.pk}",
+        )
     if accepted:
         employee_recipients = _owner_notification_recipients()
         if estimate.lead_id and estimate.lead.assigned_to_id:
@@ -3691,6 +3731,143 @@ def portal_accept_estimate(request, pk):
         messages.info(request, "This estimate is not currently awaiting acceptance.")
     portal_url = reverse("operations:portal")
     return redirect(f"{portal_url}?estimate={estimate.pk}")
+
+
+@require_POST
+@login_required
+def portal_accept_agreement(request, pk):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    agreement = get_object_or_404(
+        Agreement.objects.select_related("project", "project__client"),
+        pk=pk,
+    )
+    if (
+        not agreement.project.client_id
+        or agreement.project.client.user_id != request.user.id
+    ):
+        raise PermissionDenied
+    accepted = False
+    if agreement.status == Agreement.Status.ISSUED:
+        agreement, accepted = accept_agreement_command(
+            agreement,
+            actor=request.user,
+            request=request,
+            idempotency_key=f"agreement-accept:{agreement.pk}",
+        )
+    if accepted:
+        project = agreement.project
+        recipients = _owner_notification_recipients()
+        if project.project_manager_id:
+            recipients.append(project.project_manager)
+        queue_employee_notifications(
+            recipients,
+            kind="agreement-accepted",
+            title=f"Agreement accepted for {project.title}",
+            body="The client accepted the agreement. Confirm the deposit and readiness checklist.",
+            destination_url=reverse(
+                "operations:project-operations",
+                kwargs={"pk": project.pk},
+            ),
+            metadata={"agreement_id": str(agreement.pk)},
+            created_by=request.user,
+            project=project,
+        )
+        queue_client_notifications(
+            [project.client],
+            kind="agreement-accepted",
+            title="Agreement accepted",
+            body="Your agreement was recorded. Grand Coast will confirm the next project step.",
+            destination_url=_portal_notification_url(project.client, project=project),
+            metadata={"agreement_id": str(agreement.pk)},
+            created_by=request.user,
+            exclude_clients=[project.client],
+            project=project,
+        )
+        messages.success(request, "Agreement accepted. Grand Coast will confirm the next step.")
+    else:
+        messages.info(request, "This agreement is not currently awaiting acceptance.")
+    return redirect(
+        f"{reverse('operations:portal')}?project={agreement.project_id}#overview"
+    )
+
+
+@require_POST
+@login_required
+def portal_selection_advance(request, pk):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    selection = get_object_or_404(
+        Selection.objects.select_related("project", "project__client"),
+        pk=pk,
+    )
+    if (
+        not selection.project.client_id
+        or selection.project.client.user_id != request.user.id
+    ):
+        raise PermissionDenied
+    if selection.status == Selection.Status.PENDING:
+        advance_selection_command(
+            selection,
+            actor=request.user,
+            status=Selection.Status.SUBMITTED,
+            client_choice=request.POST.get("client_choice", ""),
+            idempotency_key=f"selection-submit:{selection.pk}",
+        )
+        messages.success(request, "Your selection was submitted to Grand Coast.")
+    else:
+        messages.info(request, "This selection is no longer awaiting your choice.")
+    return redirect(
+        f"{reverse('operations:portal')}?project={selection.project_id}#overview"
+    )
+
+
+@require_POST
+@login_required
+def portal_approve_change_order(request, pk):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+    change_order = get_object_or_404(
+        ChangeOrder.objects.select_related("project", "project__client"),
+        pk=pk,
+    )
+    if (
+        not change_order.project.client_id
+        or change_order.project.client.user_id != request.user.id
+    ):
+        raise PermissionDenied
+    approved = False
+    if change_order.status == ChangeOrder.Status.SENT:
+        change_order, approved = approve_change_order_command(
+            change_order,
+            actor=request.user,
+            request=request,
+            idempotency_key=f"change-order-approve:{change_order.pk}",
+        )
+    if approved:
+        project = change_order.project
+        recipients = _owner_notification_recipients()
+        if project.project_manager_id:
+            recipients.append(project.project_manager)
+        queue_employee_notifications(
+            recipients,
+            kind="change-order-approved",
+            title=f"CO-{change_order.number} approved",
+            body=f"{project.title} contract value was updated by client approval.",
+            destination_url=reverse(
+                "operations:project-operations",
+                kwargs={"pk": project.pk},
+            ),
+            metadata={"change_order_id": str(change_order.pk)},
+            created_by=request.user,
+            project=project,
+        )
+        messages.success(request, "Change order approved. The project balance was updated.")
+    else:
+        messages.info(request, "This change order is not currently awaiting approval.")
+    return redirect(
+        f"{reverse('operations:portal')}?project={change_order.project_id}#overview"
+    )
 
 
 @require_POST
@@ -3844,25 +4021,7 @@ def client_invite(request, token):
 @require_GET
 def media_file(request, pk):
     asset = get_object_or_404(MediaAsset.objects.select_related("project__client"), pk=pk)
-    allowed = asset.visibility == MediaAsset.Visibility.PUBLIC
-    if request.user.is_authenticated and request.user.is_staff:
-        allowed = bool(
-            _can_access_dashboard(request.user)
-            or (
-                _can_access_team(request.user)
-                and asset.project_id
-                and asset.project
-                and asset.project.assigned_staff.filter(pk=request.user.pk).exists()
-            )
-        )
-    if (
-        _is_active_client(request.user)
-        and asset.visibility == MediaAsset.Visibility.CLIENT
-        and asset.project
-        and asset.project.client
-        and asset.project.client.user_id == request.user.id
-    ):
-        allowed = True
+    allowed = can_view_media(request.user, asset)
     if not allowed:
         if not request.user.is_authenticated:
             return redirect(f"{reverse('operations:login')}?{urlencode({'next': request.path})}")
@@ -3874,7 +4033,11 @@ def media_file(request, pk):
             raise Http404 from exc
         content_type = mimetypes.guess_type(asset.file.name)[0] or "application/octet-stream"
         response = FileResponse(opened, content_type=content_type)
-        response["Content-Disposition"] = f'inline; filename="{asset.file.name.rsplit("/", 1)[-1]}"'
+        response["Content-Disposition"] = f'inline; filename="{sanitize_uploaded_name(asset.file.name.rsplit("/", 1)[-1])}"'
+        if asset.visibility != MediaAsset.Visibility.PUBLIC:
+            response["Cache-Control"] = "private, no-store"
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Cross-Origin-Resource-Policy"] = "same-origin"
         return response
     if asset.fallback_image:
         return redirect(_asset(asset.fallback_image))
@@ -3885,6 +4048,8 @@ def media_file(request, pk):
 @staff_required
 def lead_attachment_file(request, pk):
     attachment = get_object_or_404(LeadAttachment.objects.select_related("lead"), pk=pk)
+    if not can_view_lead(request.user, attachment.lead):
+        raise PermissionDenied
     if not attachment.file:
         raise Http404
     try:

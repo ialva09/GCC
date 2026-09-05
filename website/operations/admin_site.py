@@ -361,6 +361,17 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         clear_admin_challenges(request)
         return redirect(self._access_url())
 
+    def records(self, request):
+        return self._render_admin_page(
+            request,
+            "admin/records.html",
+            {
+                "title": "Advanced records",
+                "subtitle": "Low-level administration",
+                "app_list": self.get_app_list(request),
+            },
+        )
+
     def get_urls(self):
         custom_urls = [
             path("access/", self.access, name="access"),
@@ -386,6 +397,11 @@ class GrandCoastAdminSite(UnfoldAdminSite):
                 "password-reset/complete/",
                 PasswordResetCompleteView.as_view(template_name="admin/password_reset_complete.html"),
                 name="password-reset-complete",
+            ),
+            path(
+                "records/",
+                self.admin_view(self.records),
+                name="records",
             ),
             path(
                 "security/",

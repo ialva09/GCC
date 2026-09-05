@@ -322,10 +322,10 @@ class PlatformWorkflowTests(TestCase):
         self.assert_sidebar_sequence(
             dashboard_response,
             (
-                '>Overview<', 'Client &amp; Job Operations', '>Leads<', '>Clients<',
-                '>Estimates<', '>Projects<', '>Tasks<', '>Calendar<', '>Time<',
-                '>Documents<', '>Media<', 'Miscellaneous', '>Team<', '>Messages<',
-                '>Notifications<', '>Content<',
+                '>Command Center<', 'Core work', '>Leads<', '>Projects<',
+                '>Calendar<', '>Messages<', 'More workspace', '>Estimates<',
+                '>Clients<', '>Tasks<', '>Time<', '>Documents<', '>Media<',
+                '>Team<', '>Notifications<', '>Content<',
             ),
         )
 
@@ -335,7 +335,7 @@ class PlatformWorkflowTests(TestCase):
         self.assert_operations_badges(workspace_response, 'admin', admin_keys, 14)
         self.assert_sidebar_sequence(
             workspace_response,
-            ('>Overview<', '>Leads<', '>Clients<', '>Estimates<', '>Projects<', '>Tasks<', '>Calendar<', '>Time<', '>Documents<', '>Media<', 'Miscellaneous', '>Team<', '>Messages<', '>Notifications<', '>Content<'),
+            ('>Command Center<', '>Leads<', '>Projects<', '>Calendar<', '>Messages<', 'More workspace', '>Estimates<', '>Clients<', '>Tasks<', '>Time<', '>Documents<', '>Media<', '>Team<', '>Notifications<', '>Content<'),
         )
 
     def test_employee_operations_sidebar_always_renders_visible_category_counts(self):
@@ -346,7 +346,7 @@ class PlatformWorkflowTests(TestCase):
         self.assert_operations_badges(response, 'employee', employee_keys, 7)
         self.assert_sidebar_sequence(
             response,
-            ('>Overview<', 'Client &amp; Job Operations', '>Projects<', '>Tasks<', '>Calendar<', '>Time<', '>Media<', 'Miscellaneous', '>Notifications<', '>Profile<'),
+            ('>Overview<', 'Assigned work', '>Projects<', '>Tasks<', '>Calendar<', '>Time<', '>Media<', 'Personal', '>Notifications<', '>Profile<'),
         )
         self.assertEqual(
             response.context['operations_nav_counts']['projects'],
