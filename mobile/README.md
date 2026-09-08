@@ -13,6 +13,8 @@ This is an Expo-managed React Native app. It keeps the existing Django website i
 - employee account actions for privacy, terms, logout, and account deletion
 - Android back-button support inside the WebView
 - employee schedule push notifications with an in-app notification inbox
+- an optional native media bridge for camera, photo/video selection, and document picking
+- upload progress with an app-private retry queue that contains no Django credentials
 
 ## Run locally
 
@@ -48,6 +50,18 @@ EXPO_PUBLIC_EXPO_PROJECT_ID=your-expo-project-id
 The project ID is intentionally a placeholder until the app is connected to your Expo account. Native remote push requires a development or production build with native credentials; Expo Go is not a valid remote-push test target for SDK 57. Configure Apple push credentials and the Firebase Cloud Messaging credentials for Android in the Expo/EAS project, then build with EAS or the native build workflow. The Android channel is `schedule-updates` and uses the device default sound. The Django server also needs `EXPO_PUSH_ENABLED=true` and, when used, `EXPO_ACCESS_TOKEN` in `website/.env`; run `python manage.py dispatch_push_notifications` from a scheduled worker to retry transient failures.
 
 The logo-only native splash is configured in app.json and is applied to development and release builds. Expo Go uses its own project loading screen, so it may briefly show the project name instead of the configured logo.
+
+## Native field media
+
+The primary screens and authorization rules remain Django-rendered. The native layer only handles device actions and sends files to a short-lived, one-time Django upload grant. Session cookies, passwords, CSRF secrets, recovery tokens, and API credentials are not copied into native storage.
+
+Enable the server capability independently during staging with GCC_NATIVE_MEDIA_ENABLED=true and enable the device bridge in mobile/.env.mobile with:
+
+~~~dotenv
+EXPO_PUBLIC_NATIVE_MEDIA_ENABLED=true
+~~~
+
+When a device is offline or an upload is interrupted, the selected file remains in the app-private queue until the authenticated WebView can prepare a fresh grant. Files are deleted from that queue only after the server confirms the upload. The server still validates project scope, role, file extension, content signature, size, and protected visibility.
 
 ## Commands
 

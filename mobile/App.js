@@ -20,6 +20,7 @@ import * as Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
+import { createNativeMediaBridge } from './nativeMediaBridge';
 import {
   DrawerContentScrollView,
   DrawerItem,
@@ -840,6 +841,8 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const androidPullOffset = useRef(new Animated.Value(0)).current;
   const refreshInFlightRef = useRef(false);
+  const nativeMediaBridgeRef = useRef(null);
+  const nativeMediaEnabled = process.env.EXPO_PUBLIC_NATIVE_MEDIA_ENABLED !== 'false';
   const canPullToRefresh = isAuthenticated && isPrivatePath(pathnameFromUrl(currentWebViewPath));
   const injectMobileChrome = useWebViewChrome(webViewRef);
   const loginSource = useMemo(() => ({ uri: pageUrl(AUTH_PATH) }), []);
@@ -861,6 +864,30 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
       useNativeDriver: true,
     }).start();
   }, [androidPullOffset]);
+
+  const emitNativeMediaMessage = useCallback((message) => {
+    if (!webViewRef.current) {
+      return;
+    }
+    const encoded = JSON.stringify(message);
+    webViewRef.current.injectJavaScript(
+      '(function () { if (window.__grandCoastReceiveNativeMedia) { window.__grandCoastReceiveNativeMedia('
+      + encoded
+      + '); } true; })();',
+    );
+  }, [webViewRef]);
+
+  useEffect(() => {
+    if (!nativeMediaEnabled) {
+      return undefined;
+    }
+    nativeMediaBridgeRef.current = createNativeMediaBridge({
+      emit: emitNativeMediaMessage,
+    });
+    return () => {
+      nativeMediaBridgeRef.current = null;
+    };
+  }, [emitNativeMediaMessage, nativeMediaEnabled]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') {
@@ -962,6 +989,18 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
   const handleMessage = (event) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
+      if (message.type && message.type.indexOf('native-media-') === 0) {
+        if (nativeMediaEnabled && nativeMediaBridgeRef.current) {
+          nativeMediaBridgeRef.current.handleMessage(message).catch(() => {
+            emitNativeMediaMessage({
+              type: 'native-media-error',
+              request_id: message.request_id,
+              message: 'The device capability is temporarily unavailable.',
+            });
+          });
+        }
+        return;
+      }
       if (message.type === 'mobile-pull-to-refresh-progress') {
         if (Platform.OS === 'android' && canPullToRefresh && !refreshInFlightRef.current) {
           const distance = Number(message.distance);

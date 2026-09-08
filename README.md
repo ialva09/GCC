@@ -316,7 +316,15 @@ I can:
 - Revoke access.
 - Review client messages and unread state.
 
-The application sends password-recovery email for client and employee accounts. Client invitations still use a generated link that I copy and send manually.
+When email delivery is enabled, creating the client invite also queues and sends the one-time link to the client email address. The copy link remains available in the Operations alert as a secure fallback. Local development keeps delivery disabled by default, so it is safe to test without contacting a real inbox.
+
+For a real or development SMTP/provider delivery test, configure `GCC_EMAIL_DELIVERY_ENABLED=true`, `DEFAULT_FROM_EMAIL`, and the existing Django `EMAIL_*` settings. A local console or locmem backend is useful for confirming message contents but does not deliver to an external inbox. Pending and failed messages can be retried with:
+
+~~~text
+python manage.py dispatch_email_outbox --limit 100
+~~~
+
+The invite email is idempotent per generated invite, never logs the raw token, and delivery failure does not roll back the client invite.
 
 The client invite:
 
@@ -826,6 +834,21 @@ owner's default Operations landing page. Set it to false to keep the existing
 workspace overview as the temporary /dashboard/ fallback; /dashboard/overview/
 remains available as the preserved overview route.
 
+The construction execution loop is a separate pilot switch. It is disabled by
+default until staging validation is complete:
+
+~~~powershell
+$env:GCC_EXECUTION_LOOP_ENABLED = "true"
+$env:GCC_EXECUTION_LOOP_PROJECT_IDS = "<pilot-project-uuid>"
+$env:GCC_EXECUTION_LOOP_USER_IDS = "<owner-uuid>,<manager-uuid>,<field-uuid>"
+$env:GCC_AI_ENABLED = "false"
+~~~
+
+When either allowlist is non-empty, a user or project must be explicitly
+listed before the enhanced Project Operations controls, weekly action list,
+and derived calendar signals are available. The existing project page and
+routes remain the fallback when the execution-loop flag is off.
+
 For production security-alert delivery, I also set the existing Django SMTP settings and the alert controls:
 
 ~~~powershell
@@ -863,6 +886,22 @@ I run the Operations test suite:
 ~~~powershell
 .\venv\Scripts\python.exe manage.py test operations --verbosity 1
 ~~~
+
+For a disposable full-lifecycle smoke test, I use the guarded launcher from
+the website directory:
+
+~~~powershell
+.\run_operations_simulation.ps1
+~~~
+
+The launcher creates a fresh SQLite database and media directory beneath the
+operating-system temporary folder, migrates it, creates dummy role accounts,
+and exercises the inquiry-to-warranty workflow with retries, permissions,
+uploads, schedule conflicts, financial calculations, notifications, and
+weekly review data. It prints generated pilot IDs and temporary credentials,
+writes a sanitized JSON report, and removes the temporary data unless I pass
+`-Keep`. It refuses to use the normal development database or media folder and
+requires `GCC_AI_ENABLED=false`.
 
 The current suite covers:
 
@@ -1036,3 +1075,486 @@ This is now a real backend-powered construction-management foundation, but it is
 - No payroll or compliance timekeeping
 
 That boundary lets me demonstrate the complete Grand Coast workflow now while keeping the application ready for the owner's decisions about production hosting, communications, photography, documents, payments, and future integrations.
+
+## Main Testing Staging -> Production Phase
+
+The non-AI code path is now covered by the full Operations suite and the
+disposable simulation. Before production rollout, I still need staging
+validation, backup review, a selected real-project pilot, and real iOS
+simulator/device testing of camera, photo-library, document-picker,
+interrupted-upload, and offline-retry behavior. Production also requires the
+usual HTTPS, secrets, object-storage, database, backup, and deployment
+safeguards.
+
+The current Operations suite has 164 passing tests. AI remains disabled until
+the real staging pilot completes successfully.
+
+## 28. I run development certification before staging
+
+The repository includes a disposable certification runner for the complete
+non-AI Operations workflow. It is intentionally separate from the normal
+development database and media directory. It creates temporary users and
+records, runs the inquiry-to-warranty lifecycle, checks permissions and
+financial redaction, exercises protected uploads, and writes a JSON report.
+
+Certification must never use production credentials, production databases,
+production storage, real client documents, or real client contact information.
+The runner refuses to operate unless simulation mode, the execution loop, the
+storage smoke gate, and GCC_AI_ENABLED=false are all set.
+
+### Development certification prerequisites
+
+I need:
+
+- Python dependencies installed in website/venv.
+- Django migrations available locally.
+- PowerShell 5.1 or newer.
+- Docker Desktop with a local S3-compatible emulator for the Emulator and
+  Both modes.
+- Provider credentials for a separate private development bucket for Provider
+  and Both modes.
+- Node.js/npm for browser smoke tests.
+- A browser installed and available to Playwright CLI for the Browser option.
+
+The application itself can run with local SQLite and local media, but the
+release certification gate uses both storage targets. The local emulator is
+deterministic and the real development bucket catches provider-specific
+behavior.
+
+### Emulator setup
+
+The launcher defaults to MinIO at 127.0.0.1:9000 with the following
+development-only values:
+
+~~~powershell
+docker run --name gcc-certification-minio -p 9000:9000 -p 9001:9001 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data --console-address ":9001"
+~~~
+
+The launcher creates the gcc-certification bucket when it does not exist and
+uses a unique certification/run-id/ object prefix. I stop and remove this
+container only after confirming that no other local project uses it:
+
+~~~powershell
+docker stop gcc-certification-minio
+docker rm gcc-certification-minio
+~~~
+
+Do not point the emulator variables at a shared or production endpoint.
+
+### Private development bucket setup
+
+The provider target must be a private, development-only S3-compatible bucket.
+The access key must be limited to that bucket and must not be a production
+service key. Set these values only in the current PowerShell process, a local
+secret manager, or an ignored environment file:
+
+~~~powershell
+$env:GCC_STORAGE_SMOKE_ENABLED = "true"
+$env:USE_SUPABASE_STORAGE = "true"
+$env:SUPABASE_S3_ENDPOINT = "https://<development-s3-endpoint>"
+$env:SUPABASE_S3_ACCESS_KEY = "<development-only-key>"
+$env:SUPABASE_S3_SECRET_KEY = "<development-only-secret>"
+$env:SUPABASE_STORAGE_BUCKET = "gcc-development-private"
+$env:SUPABASE_S3_REGION = "<development-region>"
+~~~
+
+The bucket must reject anonymous reads. The certification suite checks that
+an unsigned object URL cannot retrieve a file and that Django's protected
+delivery view remains the authorization boundary.
+
+The certification runner also sets:
+
+~~~text
+GCC_STORAGE_PREFIX=certification/<run-id>/<mode>
+~~~
+
+The prefix is validated against traversal and unsafe characters, and is
+removed during cleanup unless -Keep is supplied. Do not manually substitute a
+production bucket or a production prefix.
+
+### Full certification commands
+
+From the repository root:
+
+~~~powershell
+cd website
+.\run_operations_certification.ps1 -StorageMode Emulator
+~~~
+
+The final local gate uses both storage targets:
+
+~~~powershell
+.\run_operations_certification.ps1 -StorageMode Both
+~~~
+
+To retain the disposable database, media, report, and browser artifacts for
+inspection:
+
+~~~powershell
+.\run_operations_certification.ps1 -StorageMode Both -Browser -Keep
+~~~
+
+The command prints the retained temporary root and generated pilot IDs. It
+does not print passwords, cookies, session values, storage secrets, or API
+credentials. The report removes secret-shaped fields before it is written.
+
+The runner creates these disposable identities:
+
+~~~text
+Owner, Office, Project Manager, Sales, Field, Subcontractor, Client,
+Unauthorized user
+~~~
+
+The scenario covers:
+
+~~~text
+Inquiry -> Lead -> Site Visit -> Estimate -> Agreement -> Deposit ->
+Readiness -> Construction -> Field Reports -> Media -> Inspection failure
+and correction -> Selection -> Procurement -> Change Order -> Milestone ->
+Payment -> Closeout -> Warranty
+~~~
+
+It also checks retry idempotency, stale updates, calendar conflicts,
+notification failure isolation, protected files, direct URL/API boundaries,
+financial redaction, command-center attention items, and weekly action-list
+data.
+
+### Browser smoke commands
+
+The browser runner uses Playwright CLI rather than a test framework. It logs
+in with the generated disposable accounts and checks the command center,
+project Operations hub, weekly review, calendar, field view, client portal,
+financial redaction, protected documents, and direct unauthorized URLs.
+
+Run it through the certification launcher:
+
+~~~powershell
+.\run_operations_certification.ps1 -StorageMode Emulator -Browser -Keep
+~~~
+
+If a browser is missing, install a browser supported by the local Playwright
+CLI and rerun the command. The launcher does not silently download a browser
+or weaken the test when none is installed.
+
+The browser target is localhost by default. A remote target is rejected unless
+the explicit staging guard is present:
+
+~~~powershell
+$env:GCC_CERTIFICATION_TARGET = "staging"
+.\run_browser_smoke.ps1 -BaseUrl "https://<staging-domain>" -ProjectId "<generated-staging-project-uuid>" -ReportPath "$env:TEMP\gcc-browser-report.json" -ArtifactDirectory "$env:TEMP\gcc-browser-artifacts" -AllowRemote
+~~~
+
+The remote run must use staging-only accounts. Never pass a production URL,
+production cookie, or production credential to this command.
+
+### Role-by-role acceptance matrix
+
+| Role | Must be able to use | Must not be able to use |
+| --- | --- | --- |
+| Owner | Command Center, all assigned company operations, financials, weekly review | Nothing outside the owners authorized company scope |
+| Office | Leads, clients, messages, scheduling, documents, permitted payment records | Restricted internal financial details outside its policy |
+| Project Manager | Assigned project Operations, readiness, schedules, field activity, budgets, subcontractors | Unassigned projects and unrelated financial records |
+| Sales | Leads, appointments, estimates, follow-ups | Project costs, margins, internal notes, vendor details |
+| Field | Todays work, scope, tasks, plans, photos, daily reports, materials, problems | Financials, margins, internal vendor data, unrelated projects |
+| Subcontractor | Assigned work package and explicitly shared project records | Other projects, client-private records, financials, internal notes |
+| Client | Own project progress, decisions, selections, documents, change orders, payment schedule | Internal costs, margins, vendor details, internal notes, other projects |
+| Unauthorized | Publicly permitted pages only | Operations, client portal, project APIs, documents, and media |
+
+Each role is tested both through visible navigation and through direct URLs/API
+requests. Hiding a link is not considered authorization.
+
+### iOS WebView smoke checklist
+
+Native media is a thin capability bridge around the Django WebView workflow;
+there is no SwiftUI screen architecture. Use a retained local certification
+run and a disposable Field account.
+
+1. Start the retained server on the LAN address, not only 127.0.0.1:
+
+~~~powershell
+$env:GCC_SIMULATION_MODE = "true"
+$env:GCC_AI_ENABLED = "false"
+$env:GCC_NATIVE_MEDIA_ENABLED = "true"
+$env:GCC_DATABASE_PATH = "<retained-certification-root>\db.sqlite3"
+$env:GCC_MEDIA_ROOT = "<retained-certification-root>\media"
+$env:DJANGO_DEBUG = "true"
+.\venv\Scripts\python.exe manage.py runserver 0.0.0.0:8001
+~~~
+
+2. Open the LAN URL in the existing Expo WebView build or use a temporary
+   HTTPS tunnel that points only to this disposable server.
+3. Log in as the generated Field user.
+4. Verify camera photo capture, photo-library selection, video capture, and
+   document picker.
+5. Cancel each picker and confirm the page remains usable.
+6. Try an invalid extension, oversized file, unsafe filename, and an upload
+   to an unrelated project. Each must be rejected server-side.
+7. Interrupt the network during upload, reconnect, and confirm the private
+   retry queue submits exactly one authorized attachment.
+8. Confirm progress, retry, and failure states are visible.
+9. Confirm the app does not persist passwords, session secrets, recovery
+   tokens, or API credentials in plaintext storage.
+10. Confirm the client, subcontractor, and unrelated Field accounts cannot
+    retrieve the uploaded file.
+
+The physical iPhone is authoritative for camera and video behavior. Desktop
+and mobile-web tests prove server authorization and responsive behavior but
+do not replace the device pass.
+
+### Backup and restore verification
+
+Before any staging migration:
+
+1. Make a timestamped database backup.
+2. Record the migration number and application commit.
+3. Copy the staging media/object-storage backup or verify the providers
+   versioned backup policy.
+4. Restore into a separate disposable database and storage prefix.
+5. Run Django checks, migration checks, protected-file checks, and the
+   certification read-only verification against the restore.
+6. Record the restore time, row/file counts, and any missing object.
+
+A backup is not accepted merely because it exists; the restore must be
+readable and the protected delivery rules must still hold.
+
+## 29. I rehearse staging after development certification
+
+Staging is the deployment-infrastructure rehearsal, not the first functional
+test. I create separate staging resources:
+
+- Staging database
+- Private staging object-storage bucket
+- Staging-only storage credentials
+- Email sink or test mail provider
+- Staging-only push configuration
+- HTTPS domain and trusted host configuration
+- Selected pilot users and one pilot project
+
+I keep AI disabled:
+
+~~~powershell
+$env:GCC_AI_ENABLED = "false"
+$env:GCC_EXECUTION_LOOP_ENABLED = "true"
+$env:GCC_EXECUTION_LOOP_PROJECT_IDS = "<staging-pilot-project-uuid>"
+$env:GCC_EXECUTION_LOOP_USER_IDS = "<owner>,<manager>,<office>,<field>,<client>"
+~~~
+
+After a verified backup, I run:
+
+~~~powershell
+.\venv\Scripts\python.exe manage.py check --deploy
+.\venv\Scripts\python.exe manage.py makemigrations --check --dry-run
+.\venv\Scripts\python.exe manage.py migrate --plan
+.\venv\Scripts\python.exe manage.py collectstatic --noinput
+~~~
+
+I then run the same certification workflow against the staging deployment.
+The remote browser run requires GCC_CERTIFICATION_TARGET=staging and
+-AllowRemote. I verify HTTPS, secure cookies, CSRF, signed/protected storage
+delivery, email links, push notifications, audit events, authorization
+failures, failed deliveries, logs, backup, and restore before expanding the
+pilot.
+
+The staging pilot sequence is:
+
+1. Generate or seed only disposable staging records.
+2. Allowlist one project and selected Owner, Office, Project Manager, Field,
+   Subcontractor, and Client users.
+3. Run the lifecycle from inquiry through warranty.
+4. Review the JSON report, audit history, notifications, storage cleanup,
+   financial calculations, and authorization failures.
+5. Fix and rerun any failed check.
+6. Expand to additional staging projects only after the pilot is clean.
+
+No certification command accepts a production URL. Production requires a
+separate release decision and a fresh backup/restore verification.
+
+## 30. I use the final release gate
+
+The non-AI release gate is complete only when all of these have evidence:
+
+~~~text
+Django checks
+Migration dry-run
+Full Operations test suite
+Full lifecycle simulation
+Permission matrix
+Private storage emulator tests
+Real development-bucket smoke test
+Browser role matrix
+Financial and calendar tests
+Notification failure isolation
+Protected-file tests
+Mobile dependency checks
+iOS media smoke checklist
+Backup and restore verification
+Staging pilot report
+~~~
+
+The certification report must show:
+
+- All checks passed.
+- No secret leakage.
+- No duplicate lifecycle records.
+- No cross-project access.
+- No financial redaction failures.
+- No protected-file bypass.
+- Storage cleanup completed, or the retained path is recorded.
+- Browser artifacts generated when browser mode was requested.
+- Temporary database, media, and emulator prefix removed unless -Keep was
+  explicitly supplied.
+
+Artifact locations:
+
+- Disposable certification root: the path printed by the runner when -Keep is
+  supplied.
+- JSON lifecycle report: certification-report.json in that root.
+- Browser report: browser-report.json in that root.
+- Browser screenshots and CLI artifacts: the browser-artifacts directory in
+  that root.
+
+Troubleshooting:
+
+- Missing browser: install a local supported browser, then rerun with
+  -Browser. Do not mark browser certification passed without artifacts.
+- Missing MinIO/Docker: start the local emulator or run a Provider-only
+  development-bucket smoke test; the Both gate still requires both targets.
+- Missing provider credentials: confirm the endpoint, bucket, region, and
+  bucket-scoped development key in the current process. Never copy production
+  secrets.
+- Upload failures: inspect the sanitized report and Django audit events; check
+  content signature, size, protected delivery, prefix, and bucket policy.
+- Retained temporary data: inspect the printed root, then remove that exact
+  generated directory after review. Do not use a wildcard or a workspace root
+  for cleanup.
+- No remote browser access: confirm GCC_CERTIFICATION_TARGET=staging and use
+  -AllowRemote only with a staging HTTPS URL.
+
+AI remains disabled for every development, certification, and staging run.
+
+
+## 31. Disposable manual-test account logins
+
+The following accounts are seeded only in the disposable manual-certification
+database. They are intended to make the complete manual workflow testable
+without manually creating employees or accepting invitation links.
+
+These credentials are fake, temporary, and must never be used in staging,
+production, or with real client information.
+
+| Name | Role | Login email / username | Password | Login location |
+| --- | --- | --- | --- | --- |
+| Manual Owner | Owner / Admin | `owner@manual.test` | `GccManual-Owner-2026!` | `/gccad/` |
+| Mike Rivera | Manager | `manager@manual.test` | `GccManual-Manager-2026!` | `/accounts/login/` |
+| Olivia Bennett | Office | `office@manual.test` | `GccManual-Office-2026!` | `/accounts/login/` |
+| Ethan Cole | Field | `field@manual.test` | `GccManual-Field-2026!` | `/accounts/login/` |
+| Sam Lopez / Harbor Electrical LLC | Subcontractor | `subcontractor@manual.test` | `GccManual-Subcontractor-2026!` | `/accounts/login/` |
+| Taylor Unassigned | Unassigned Field test user | `unauthorized@manual.test` | `GccManual-Unassigned-2026!` | `/accounts/login/` |
+
+The Owner account is a superuser and enters through the protected administration
+gate at `/gccad/`. Managers, Office, Field, Clients, and Subcontractors use
+the normal account login flow. The `unauthorized@manual.test` account is an
+active Field user intentionally left unassigned for project-boundary tests.
+
+The temporary server is available at:
+
+~~~text
+http://127.0.0.1:8001/
+~~~
+
+The disposable database is:
+
+~~~text
+C:\Users\isaia\AppData\Local\Temp\gcc-manual-c98a3fc4e2864860ab697369c4484dbe\db.sqlite3
+~~~
+
+The database is configured with:
+
+- AI disabled (`GCC_AI_ENABLED=false`).
+- Execution-loop testing enabled.
+- Local email and push delivery disabled.
+- No pending employee invitations.
+- Only Owner, Manager, Office, and Field internal roles.
+- An active Harbor Electrical LLC subcontractor portal identity.
+
+The clean workflow state is:
+
+~~~text
+Leads:       0
+Estimates:   0
+Projects:    0
+Tasks:       0
+Site visits: 0
+Pending invites: 0
+Clients:      0
+~~~
+
+The client portal identity is intentionally not pre-seeded. Create a dummy
+Client record through the Operations workspace, create its client portal
+invite, and complete that invite with a temporary password. Use the same
+client email for the website inquiry so lead conversion can reuse the client
+record instead of creating a duplicate.
+
+### Manual test start
+
+1. Open `/gccad/` and sign in as `owner@manual.test`.
+2. Open the Operations Command Center.
+3. Create a dummy Client record and client portal invite through Operations.
+4. Complete the client invite in a separate browser profile and establish a
+   temporary client password.
+5. Submit a website inquiry using that same client email.
+6. Convert the lead and create the estimate, agreement, deposit, and project.
+7. In Project Operations, assign:
+   - `manager@manual.test` as Project Manager.
+   - `office@manual.test` as Office staff.
+   - `field@manual.test` as Field staff.
+8. Log in separately as each employee and verify their scoped workspace.
+9. Use the Client account to approve selections, change orders, and review
+   shared project information.
+10. Complete readiness, construction, field reports, inspections, payments,
+   closeout, and warranty testing.
+
+Refresh or sign out and back in if a browser session was open before the
+accounts were seeded. The temporary credentials and database are disposable;
+delete the exact generated `gcc-manual-*` directory after testing and never
+delete a broad temporary or workspace directory.
+
+## 32. Estimate details stay in the service your team chooses
+
+Grand Coast does not connect to or synchronize with a third-party estimate
+service. That service remains responsible for detailed estimates, signatures,
+invoices, payment collection, reminders, and its own customer notifications.
+Grand Coast stores only the client, a protected estimate link, a lightweight
+status, and the confirmation history needed to continue its own workflow.
+
+The estimate link/status layer is disabled by default:
+
+~~~powershell
+$env:GCC_EXTERNAL_ESTIMATE_ENABLED = "false"
+$env:GCC_AI_ENABLED = "false"
+~~~
+
+For a disposable pilot, use UUIDs for the selected internal users and project
+after they exist in the current database:
+
+~~~powershell
+$env:GCC_EXTERNAL_ESTIMATE_ENABLED = "true"
+$env:GCC_EXTERNAL_ESTIMATE_USER_IDS = "<owner-uuid>,<manager-uuid>,<office-uuid>,<field-uuid>"
+$env:GCC_EXTERNAL_ESTIMATE_PROJECT_IDS = "<pilot-project-uuid>"
+$env:GCC_AI_ENABLED = "false"
+~~~
+
+The normal flow is: create the client and lead; open Estimates in Operations;
+enter only the client and the secure estimate link; then either send the link
+through your usual email/text process, use the optional "Send link to client"
+action in GCC, or publish it to the client portal. Update the lightweight
+status in GCC when the client responds, then continue the agreement, deposit,
+project, construction, portal-update, and closeout workflows. Do not enter
+provider credentials, payment credentials, API keys, or detailed estimate line
+items into GCC.
+
+Owner, Manager, and Office users can change the manual status. Field users and
+clients can see only the permitted lightweight status surface. Clients can open
+an estimate link only after staff explicitly publishes that link. Invoice and
+payment links are handled the same way: GCC records only links and confirmed
+status, while the detailed commercial document remains in the selected service.

@@ -19,6 +19,19 @@
     "plugins": [
       "expo-font",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Grand Coast uses the camera to document project work."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Grand Coast uses your photos to attach project updates."
+        }
+      ],
+      "expo-document-picker",
+      [
         "expo-notifications",
         {
           "defaultChannel": "schedule-updates"
