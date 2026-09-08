@@ -15,7 +15,7 @@
     "@react-navigation/bottom-tabs": "^7.18.18",
     "@react-navigation/drawer": "^7.13.10",
     "@react-navigation/native": "^7.3.18",
-    "expo": "~57.0.20",
+    "expo": "~57.0.21",
     "expo-camera": "~57.0.4",
     "expo-constants": "~57.0.17",
     "expo-document-picker": "~57.0.1",

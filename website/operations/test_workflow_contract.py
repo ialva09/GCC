@@ -275,16 +275,41 @@ class WorkflowContractTests(TestCase):
         self.assertNotIn(">Messages<", employee_sidebar)
         mobile_source = (Path(__file__).resolve().parents[2] / "mobile" / "App.js").read_text(encoding="utf-8")
         employee_block = mobile_source[mobile_source.index("const employeeDrawerPages") : mobile_source.index("const adminDrawerPages")]
-        admin_block = mobile_source[mobile_source.index("const adminDrawerPages") : mobile_source.index("const tabIcons")]
+        admin_block = mobile_source[mobile_source.index("const adminDrawerPages") : mobile_source.index("const clientTabIcons")]
         employee_labels = ("Overview", "Projects", "Tasks", "Calendar", "Time", "Media", "Notifications", "Profile")
         admin_labels = ("Command center", "Leads", "Projects", "Calendar", "Messages", "Workspace overview", "Estimates", "Clients", "Tasks", "Time", "Documents", "Media", "Team", "Notifications", "Content")
         for block, labels in ((employee_block, employee_labels), (admin_block, admin_labels)):
             positions = [block.index(f"label: '{label}'") for label in labels]
             self.assertEqual(positions, sorted(positions))
         self.assertIn("path: '/dashboard/clients/?messages=1'", admin_block)
+        client_block = mobile_source[mobile_source.index("const clientDrawerPages") : mobile_source.index("const employeeDrawerPages")]
+        for route in (
+            "/portal/overview/",
+            "/portal/updates/",
+            "/portal/photos/",
+            "/portal/messages/",
+            "/portal/estimate-files/",
+            "/portal/notifications/",
+        ):
+            self.assertIn(f"path: '{route}'", client_block)
+        self.assertNotIn("/portal/#", client_block)
+        client_tabs = mobile_source[
+            mobile_source.index("const clientBottomTabs") : mobile_source.index("const employeeMorePages")
+        ]
+        for tab_name in ("name: 'Overview'", "name: 'Notifications'", "name: 'More'"):
+            self.assertIn(tab_name, client_tabs)
+        self.assertIn("CLIENT_OVERVIEW_PATH", client_tabs)
+        self.assertIn("CLIENT_NOTIFICATIONS_PATH", client_tabs)
+        self.assertIn("function ClientMoreScreen", mobile_source)
+        self.assertIn("'Open portal overview'", mobile_source)
         self.assertIn("key={`${page.group || 'overview'}:${page.label}`}", mobile_source)
         self.assertIn(".admin-sidebar, .staging-bar", mobile_source)
         self.assertIn(".admin-main { margin-left: 0 !important; }", mobile_source)
+        self.assertIn("const CLIENT_PUSH_REGISTER_PATH = '/portal/notifications/devices/'", mobile_source)
+        self.assertIn("const CLIENT_PUSH_DEACTIVATE_PATH = '/portal/notifications/devices/deactivate/'", mobile_source)
+        self.assertIn("fetch(registerPath", mobile_source)
+        self.assertIn("isPushWorkspace", mobile_source)
+        self.assertIn("requestedPath.startsWith('/portal/')", mobile_source)
 
     def test_client_is_authoritative_for_acceptance_and_project_setup_is_explicit(self):
         estimate = self.make_estimate()
@@ -384,7 +409,9 @@ class WorkflowContractTests(TestCase):
 
         client_alert = ClientNotification.objects.filter(project=project).order_by("-created_at").first()
         self.login_as(self.client_user)
-        portal_response = self.http.get(reverse("operations:portal"))
+        portal_response = self.http.get(
+            reverse("operations:portal-section", kwargs={"section": "notifications"}),
+        )
         self.assertContains(portal_response, "Notifications")
         self.assertContains(portal_response, client_alert.title)
         self.assertEqual(

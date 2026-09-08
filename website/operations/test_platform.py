@@ -24,6 +24,7 @@ from django.utils import timezone
 from .forms import (
     LeadAssignmentForm,
     LeadForm,
+    ProjectCreateForm,
     ProjectDocumentForm,
     ProjectForm,
     QuickTaskForm,
@@ -47,6 +48,7 @@ from .models import (
     Lead,
     MediaAsset,
     Milestone,
+    MobilePushDevice,
     Project,
     ProjectDocument,
     ProjectUpdate,
@@ -775,6 +777,33 @@ class PlatformWorkflowTests(TestCase):
         self.assertNotContains(portal_response, self.other_project.title)
         self.assertEqual(self.browser.get(reverse('admin:index')).status_code, 403)
 
+    def test_client_portal_categories_render_on_separate_compatible_pages(self):
+        self.login(self.client_user)
+        pages = {
+            'overview': 'Choose what you need next.',
+            'updates': 'What&rsquo;s happening on your project.',
+            'photos': 'Photos &amp; videos from the job.',
+            'messages': 'class="conversation-chat portal-chat"',
+            'estimate-files': 'Your estimate and shared project files.',
+            'notifications': 'Important project alerts, decisions, and updates.',
+        }
+        for section, marker in pages.items():
+            response = self.browser.get(
+                reverse('operations:portal-section', kwargs={'section': section}),
+            )
+            self.assertEqual(response.status_code, 200, section)
+            self.assertEqual(response.context['portal_section'], section)
+            self.assertContains(response, f'id="portal-{section}"')
+            self.assertContains(response, marker)
+            self.assertNotContains(response, '#updates')
+            self.assertNotContains(response, '#conversation')
+
+        compatibility_response = self.browser.get(reverse('operations:portal'))
+        self.assertEqual(compatibility_response.status_code, 200)
+        self.assertEqual(compatibility_response.context['portal_section'], 'overview')
+        self.assertContains(compatibility_response, 'Choose what you need next.')
+        self.assertNotContains(compatibility_response, 'class="conversation-chat portal-chat"')
+
     def test_field_employees_cannot_open_client_portal_preview(self):
         self.login(self.field)
         self.assertEqual(self.browser.get(reverse('operations:portal')).status_code, 403)
@@ -1140,6 +1169,55 @@ class PlatformWorkflowTests(TestCase):
         )
         form = ProjectForm(form.data)
         self.assertTrue(form.is_valid())
+
+    def test_project_creation_uses_client_as_authoritative_record(self):
+        create_form = ProjectCreateForm(staff_queryset=get_user_model().objects.filter(pk=self.field.pk))
+        self.assertNotIn('lead', create_form.fields)
+
+        self.login(self.owner)
+        response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'projects'}) + '?new=project',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('lead', response.context['project_form'].fields)
+        rendered = response.content.decode()
+        create_form_start = rendered.index(
+            f'action="{reverse("operations:project-create")}"',
+        )
+        create_form_end = rendered.index('</form>', create_form_start)
+        self.assertNotIn('id="id_lead"', rendered[create_form_start:create_form_end])
+
+        accepted_estimate = Estimate.objects.create(
+            number=9910,
+            lead=self.lead,
+            client=self.client_record,
+            title='Client-approved project scope',
+            status=Estimate.Status.ACCEPTED,
+            accepted_at=timezone.now(),
+            accepted_by=self.client_user,
+            created_by=self.owner,
+        )
+        response = self.browser.post(
+            reverse('operations:project-create'),
+            {
+                'title': 'Client-authoritative project',
+                'client': str(self.client_record.pk),
+                'assigned_staff': [str(self.manager.pk)],
+                'location': 'Ventura, CA',
+                'project_type': 'renovation',
+                'status': Project.Status.PLANNING,
+                'next_step': 'Start readiness',
+                'summary': '',
+                'is_published': 'on',
+                'start_date': '',
+                'target_date': '',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        project = Project.objects.get(title='Client-authoritative project')
+        self.assertEqual(project.client_id, self.client_record.pk)
+        self.assertEqual(project.estimate_id, accepted_estimate.pk)
+        self.assertEqual(project.lead_id, self.lead.pk)
 
     def test_task_assignment_status_filters_and_activity(self):
         self.login(self.owner)
@@ -1819,7 +1897,7 @@ class PlatformWorkflowTests(TestCase):
         staff_message = ClientMessage.objects.get(body='Yes, the team will share it today.')
         self.assertTrue(staff_message.sent_by.is_staff)
         self.login(self.client_user)
-        self.browser.get(reverse('operations:portal'))
+        self.browser.get(reverse('operations:portal-section', kwargs={'section': 'messages'}))
         staff_message.refresh_from_db()
         self.assertTrue(staff_message.is_read)
 
@@ -1863,7 +1941,9 @@ class PlatformWorkflowTests(TestCase):
         self.assertLess(admin_markup.index('First client question'), admin_markup.index('Grand Coast response'))
 
         self.login(self.client_user)
-        portal_response = self.browser.get(reverse('operations:portal'))
+        portal_response = self.browser.get(
+            reverse('operations:portal-section', kwargs={'section': 'messages'}),
+        )
         self.assertEqual(portal_response.status_code, 200)
         self.assertContains(portal_response, 'class="conversation-chat portal-chat"')
         self.assertContains(portal_response, 'Messages with Grand Coast')
@@ -1882,7 +1962,7 @@ class PlatformWorkflowTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
-    def test_direct_client_estimate_reaches_preproject_portal_and_can_be_accepted(self):
+    def test_direct_client_estimate_reaches_preproject_portal_as_status_only(self):
         user_model = get_user_model()
         preproject_user = user_model.objects.create_user(
             username='platform-preproject-client',
@@ -1919,20 +1999,14 @@ class PlatformWorkflowTests(TestCase):
 
         self.login(preproject_user)
         portal_response = self.browser.get(
-            reverse('operations:portal'),
+            reverse('operations:portal-section', kwargs={'section': 'estimate-files'}),
             {'estimate': estimate.pk},
         )
         self.assertEqual(portal_response.status_code, 200)
         self.assertContains(portal_response, estimate.title)
-        self.assertContains(portal_response, 'Accept estimate')
-
-        accept_response = self.browser.post(
-            reverse('operations:portal-accept-estimate', kwargs={'pk': estimate.pk}),
-        )
-        self.assertEqual(accept_response.status_code, 302)
-        estimate.refresh_from_db()
-        self.assertEqual(estimate.status, Estimate.Status.ACCEPTED)
-        self.assertEqual(estimate.accepted_by_id, preproject_user.pk)
+        self.assertContains(portal_response, 'Not started')
+        self.assertContains(portal_response, 'Grand Coast will publish the estimate link here when it is ready.')
+        self.assertNotContains(portal_response, 'Accept estimate')
 
     def test_mark_ready_persists_submitted_scope_before_client_access(self):
         draft = Estimate.objects.create(
@@ -1980,9 +2054,13 @@ class PlatformWorkflowTests(TestCase):
         self.assertTrue(draft.line_items.filter(description='Hardware allowance').exists())
 
         self.login(self.client_user)
-        portal_response = self.browser.get(reverse('operations:portal'), {'estimate': draft.pk})
+        portal_response = self.browser.get(
+            reverse('operations:portal-section', kwargs={'section': 'estimate-files'}),
+            {'estimate': draft.pk},
+        )
         self.assertContains(portal_response, 'Final scope before send')
-        self.assertContains(portal_response, 'Revised cabinetry')
+        self.assertContains(portal_response, 'Grand Coast will publish the estimate link here when it is ready.')
+        self.assertNotContains(portal_response, 'Revised cabinetry')
 
     def test_project_portal_view_keeps_primary_estimate_in_project_context(self):
         unrelated = Estimate.objects.create(
@@ -2001,7 +2079,9 @@ class PlatformWorkflowTests(TestCase):
         )
 
         self.login(self.client_user)
-        response = self.browser.get(reverse('operations:portal'))
+        response = self.browser.get(
+            reverse('operations:portal-section', kwargs={'section': 'estimate-files'}),
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context['portal_project'].pk, self.project.pk)
@@ -2157,12 +2237,49 @@ class PlatformWorkflowTests(TestCase):
             self.assertEqual(response.status_code, 200, page)
 
         self.login(self.client_user)
-        self.assertEqual(self.browser.get(reverse('operations:account-delete')).status_code, 403)
+        client_delete_page = self.browser.get(reverse('operations:account-delete'))
+        self.assertEqual(client_delete_page.status_code, 200)
+        self.assertContains(client_delete_page, 'client portal access')
         self.login(self.owner)
         self.assertEqual(self.browser.get(reverse('operations:account-delete')).status_code, 403)
         self.browser.logout()
         anonymous = self.browser.get(reverse('operations:account-delete'))
         self.assertEqual(anonymous.status_code, 302)
+
+    def test_client_account_delete_anonymizes_client_and_preserves_project_history(self):
+        self.login(self.client_user)
+        client_user_id = self.client_user.pk
+        client_record_id = self.client_record.pk
+        project_id = self.project.pk
+        device = MobilePushDevice.objects.create(
+            client=self.client_record,
+            token='ExponentPushToken[client-delete-device]',
+            platform='ios',
+        )
+
+        response = self.browser.post(
+            reverse('operations:account-delete'),
+            {'password': 'client-pass-123', 'confirmation': 'DELETE'},
+        )
+        self.assertRedirects(response, reverse('operations:login'))
+        self.assertIsNone(self.browser.session.get('_auth_user_id'))
+
+        self.client_user.refresh_from_db()
+        self.client_record.refresh_from_db()
+        self.project.refresh_from_db()
+        self.assertEqual(self.client_user.pk, client_user_id)
+        self.assertTrue(self.client_user.username.startswith('deleted-account-'))
+        self.assertFalse(self.client_user.is_active)
+        self.assertFalse(self.client_user.is_staff)
+        self.assertEqual(self.client_user.email, '')
+        self.assertEqual(self.client_record.pk, client_record_id)
+        self.assertIsNone(self.client_record.user)
+        self.assertEqual(self.client_record.name, 'Deleted client')
+        self.assertEqual(self.client_record.email, f'deleted-client-{client_user_id}@invalid.local')
+        self.assertEqual(self.project.pk, project_id)
+        self.assertEqual(self.project.client_id, client_record_id)
+        device.refresh_from_db()
+        self.assertFalse(device.is_active)
 
     def test_employee_account_delete_requires_exact_confirmation_and_password(self):
         self.login(self.field)

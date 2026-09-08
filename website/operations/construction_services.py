@@ -29,7 +29,6 @@ from .construction_policies import (
     can_view_estimate,
     can_view_lead,
     can_view_project,
-    feature_enabled,
     is_staff_user,
     is_field,
     is_client,
@@ -2967,40 +2966,39 @@ def attention_feed(user, *, limit=80):
             project=schedule.project,
             source="Payment schedule",
         ))
-    if feature_enabled("external_estimate", default=False):
-        for schedule in PaymentSchedule.objects.filter(
-            project_id__in=financial_project_ids,
-            external_invoice_status__in=[
-                PaymentSchedule.ExternalInvoiceStatus.PENDING,
-                PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
-                PaymentSchedule.ExternalInvoiceStatus.PAID,
-            ],
-        ).select_related("project"):
-            if not external_estimate_enabled_for(user, project=schedule.project):
-                continue
-            if schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.PENDING:
-                title = f"{schedule.project.title}: Invoice needs confirmation"
-                description = "Check the invoice service and record the invoice event."
-                priority = "normal"
-            elif schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.OVERDUE:
-                title = f"{schedule.project.title}: Invoice overdue"
-                description = "Follow up in the invoice service and update the Grand Coast payment record when confirmed."
-                priority = "high"
-            elif schedule.payments.filter(voided_at__isnull=True).exists():
-                continue
-            else:
-                title = f"{schedule.project.title}: Record payment"
-                description = "Payment was manually confirmed; record the internal payment in Grand Coast."
-                priority = "high"
-            items.append(_attention_item(
-                kind="external_invoice",
-                title=title,
-                description=description,
-                priority=priority,
-                due_at=schedule.due_date,
-                project=schedule.project,
-                source="Invoice",
-            ))
+    for schedule in PaymentSchedule.objects.filter(
+        project_id__in=financial_project_ids,
+        external_invoice_status__in=[
+            PaymentSchedule.ExternalInvoiceStatus.PENDING,
+            PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+            PaymentSchedule.ExternalInvoiceStatus.PAID,
+        ],
+    ).select_related("project"):
+        if not external_estimate_enabled_for(user, project=schedule.project):
+            continue
+        if schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.PENDING:
+            title = f"{schedule.project.title}: Invoice needs confirmation"
+            description = "Check the invoice service and record the invoice event."
+            priority = "normal"
+        elif schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.OVERDUE:
+            title = f"{schedule.project.title}: Invoice overdue"
+            description = "Follow up in the invoice service and update the Grand Coast payment record when confirmed."
+            priority = "high"
+        elif schedule.payments.filter(voided_at__isnull=True).exists():
+            continue
+        else:
+            title = f"{schedule.project.title}: Record payment"
+            description = "Payment was manually confirmed; record the internal payment in Grand Coast."
+            priority = "high"
+        items.append(_attention_item(
+            kind="external_invoice",
+            title=title,
+            description=description,
+            priority=priority,
+            due_at=schedule.due_date,
+            project=schedule.project,
+            source="Invoice",
+        ))
     for selection in Selection.objects.filter(
         project_id__in=project_ids,
         status__in=[Selection.Status.SUBMITTED, Selection.Status.PENDING],
@@ -3095,45 +3093,44 @@ def attention_feed(user, *, limit=80):
                 lead=estimate.lead,
                 source="Estimate",
             ))
-        if feature_enabled("external_estimate", default=False):
-            for external_estimate in visible_estimates(user).filter(
-                external_status__in=[
-                    Estimate.ExternalEstimateStatus.PENDING,
-                    Estimate.ExternalEstimateStatus.REJECTED,
-                    Estimate.ExternalEstimateStatus.APPROVED,
-                ],
-            ).select_related("lead", "client")[:80]:
-                if not external_estimate_enabled_for(user, estimate=external_estimate):
-                    continue
-                linked_project = external_estimate.projects.order_by("-created_at").first()
-                if external_estimate.external_status == Estimate.ExternalEstimateStatus.PENDING:
-                    title = f"Estimate #{external_estimate.number}: Confirm estimate response"
-                    description = "Check the estimate service and record whether the estimate was approved or rejected."
-                    priority = "high"
-                elif external_estimate.external_status == Estimate.ExternalEstimateStatus.REJECTED:
-                    title = f"Estimate #{external_estimate.number}: Estimate rejected"
-                    description = external_estimate.external_status_note or "Follow up or create a new revision."
-                    priority = "high"
-                elif linked_project is None or not Agreement.objects.filter(
-                    project=linked_project,
-                    status=Agreement.Status.ACCEPTED,
-                ).exists():
-                    title = f"Estimate #{external_estimate.number}: Approved, agreement or deposit incomplete"
-                    description = "Continue the Grand Coast agreement, deposit, and project workflow."
-                    priority = "high"
-                else:
-                    continue
-                items.append(_attention_item(
-                    kind="external_estimate",
-                    title=title,
-                    description=description,
-                    priority=priority,
-                    due_at=external_estimate.external_status_at or external_estimate.updated_at,
-                    project=linked_project,
-                    lead=external_estimate.lead,
-                    estimate=external_estimate,
-                    source="Estimate status",
-                ))
+        for external_estimate in visible_estimates(user).filter(
+            external_status__in=[
+                Estimate.ExternalEstimateStatus.PENDING,
+                Estimate.ExternalEstimateStatus.REJECTED,
+                Estimate.ExternalEstimateStatus.APPROVED,
+            ],
+        ).select_related("lead", "client")[:80]:
+            if not external_estimate_enabled_for(user, estimate=external_estimate):
+                continue
+            linked_project = external_estimate.projects.order_by("-created_at").first()
+            if external_estimate.external_status == Estimate.ExternalEstimateStatus.PENDING:
+                title = f"Estimate #{external_estimate.number}: Confirm estimate response"
+                description = "Check the estimate service and record whether the estimate was approved or rejected."
+                priority = "high"
+            elif external_estimate.external_status == Estimate.ExternalEstimateStatus.REJECTED:
+                title = f"Estimate #{external_estimate.number}: Estimate rejected"
+                description = external_estimate.external_status_note or "Follow up or create a new revision."
+                priority = "high"
+            elif linked_project is None or not Agreement.objects.filter(
+                project=linked_project,
+                status=Agreement.Status.ACCEPTED,
+            ).exists():
+                title = f"Estimate #{external_estimate.number}: Approved, agreement or deposit incomplete"
+                description = "Continue the Grand Coast agreement, deposit, and project workflow."
+                priority = "high"
+            else:
+                continue
+            items.append(_attention_item(
+                kind="external_estimate",
+                title=title,
+                description=description,
+                priority=priority,
+                due_at=external_estimate.external_status_at or external_estimate.updated_at,
+                project=linked_project,
+                lead=external_estimate.lead,
+                estimate=external_estimate,
+                source="Estimate status",
+            ))
     if is_owner(user) or is_manager(user):
         for outbox in EmailOutbox.objects.filter(
             status=EmailOutbox.Status.FAILED,

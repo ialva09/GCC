@@ -210,36 +210,11 @@ def execution_loop_enabled_for(user, project=None):
 
 
 def external_estimate_enabled_for(user, *, project=None, estimate=None):
-    """Return the independent estimate-link pilot gate for this actor/object."""
-    if (
-        not feature_enabled("operating_system", default=True)
-        or not feature_enabled("external_estimate", default=False)
-        or not is_active_user(user)
-    ):
-        return False
-    user_ids = _execution_loop_allowlist("GCC_EXTERNAL_ESTIMATE_USER_IDS")
-    if user_ids and str(user.pk) not in user_ids:
-        return False
-    project_ids = _execution_loop_allowlist("GCC_EXTERNAL_ESTIMATE_PROJECT_IDS")
-    if project is not None and project_ids and str(project.pk) not in project_ids:
-        return False
-    if estimate is not None and project_ids:
-        linked_project_ids = {
-            str(project_id)
-            for project_id in estimate.projects.values_list("pk", flat=True)
-        }
-        if linked_project_ids:
-            if not linked_project_ids.intersection(project_ids):
-                return False
-        elif not user_ids:
-            # A project allowlist cannot identify a pre-project estimate. Keep
-            # that surface closed unless the pilot also names its users.
-            return False
-    elif project_ids and project is None and estimate is None and not user_ids:
-        # Do not replace the global dashboard with the pilot surface when the
-        # pilot is scoped only to selected projects.
-        return False
-    return True
+    """Return whether the automatic estimate-status surface is available."""
+    return bool(
+        feature_enabled("operating_system", default=True)
+        and is_active_user(user)
+    )
 
 
 def can_manage_external_estimate(user, *, project=None, estimate=None):

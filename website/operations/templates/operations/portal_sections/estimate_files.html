@@ -1,0 +1,35 @@
+<div class="portal-page-heading"><span class="section-kicker">Estimate &amp; files</span><h1>Your estimate and shared project files.</h1><p>Estimate details remain with the third-party estimate service. Grand Coast shows the current status and links you to the shared document.</p></div>
+{% if portal_projects|length > 1 %}{% include 'operations/portal_sections/project_selector.html' %}{% endif %}
+<div class="portal-grid portal-category-grid-layout">
+    <div class="portal-primary-column">
+        {% include 'operations/portal_estimate_card.html' %}
+        <section class="portal-document-card" aria-labelledby="portal-files-title">
+            <span class="section-kicker">Project documents</span>
+            <h2 id="portal-files-title">Files shared with you</h2>
+            <div class="portal-document-list">
+                {% for document in portal_documents %}
+                    <a class="portal-document-row" href="{% url 'operations:document-file' pk=document.pk %}"><span>{{ document.title }}</span><small>{{ document.category }} &middot; Download</small></a>
+                {% empty %}
+                    <p class="detail-value">Client-ready documents will appear here when the team shares them.</p>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+    <aside class="portal-side-column">
+        {% if portal_estimates %}
+            <section class="portal-document-card" aria-labelledby="portal-estimates-title">
+                <span class="section-kicker">Estimate history</span>
+                <h2 id="portal-estimates-title">Your estimates</h2>
+                <div class="portal-document-list">
+                    {% for estimate in portal_estimates %}
+                        <a class="portal-document-row" href="{% url 'operations:portal-section' section='estimate-files' %}?client={{ portal_client.pk }}&amp;estimate={{ estimate.pk }}{% if estimate.portal_project %}&amp;project={{ estimate.portal_project.pk }}{% endif %}">
+                            <span><strong>{{ estimate.title }}</strong><small>{% if estimate.portal_project %}{{ estimate.portal_project.title }}{% else %}Pre-project scope{% endif %}</small></span>
+                            <span>{{ estimate.get_external_status_display }}</span>
+                        </a>
+                    {% endfor %}
+                </div>
+            </section>
+        {% endif %}
+        <section class="portal-help-panel"><span class="section-kicker">Project contact</span><h3>Grand Coast Construction</h3><p>Owner &amp; project team</p><a class="text-link-button" href="tel:+18057181502">(805) 718-1502 &rarr;</a></section>
+    </aside>
+</div>

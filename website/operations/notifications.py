@@ -1,8 +1,9 @@
-"""Persistent employee notifications and Expo Push Service delivery."""
+"""Persistent employee/client notifications and Expo Push Service delivery."""
 
 import json
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit, urlunsplit
 
 from django.conf import settings
 from django.db import transaction
@@ -126,7 +127,7 @@ def queue_client_notifications(
     if not client_ids:
         return []
 
-    return ClientNotification.objects.bulk_create(
+    notifications = ClientNotification.objects.bulk_create(
         [
             ClientNotification(
                 client_id=client_id,
@@ -145,13 +146,41 @@ def queue_client_notifications(
             for client_id in client_ids
         ]
     )
+    notification_ids = [notification.pk for notification in notifications]
+    transaction.on_commit(
+        lambda notification_ids=notification_ids: dispatch_client_notification_ids(notification_ids)
+    )
+    return notifications
+
+
+def _client_push_destination(notification):
+    """Return a portal-only destination suitable for a client device."""
+    parsed = urlsplit(str(notification.destination_url or ""))
+    path = parsed.path or ""
+    if path in {"/portal", "/portal/"}:
+        return "/portal/notifications/"
+    if parsed.scheme or parsed.netloc or not path.startswith("/portal/"):
+        return "/portal/notifications/"
+    return urlunsplit(("", "", path, parsed.query, ""))
+
+
+def _delivery_notification(delivery):
+    return delivery.notification or delivery.client_notification
 
 
 def _delivery_payload(notification, device):
-    data = dict(notification.metadata or {})
+    if isinstance(notification, ClientNotification):
+        # Client pushes intentionally carry no arbitrary metadata.  The portal
+        # inbox remains the source of detail and the mobile client is only
+        # given a safe internal destination plus the durable alert identity.
+        destination_url = _client_push_destination(notification)
+        data = {}
+    else:
+        destination_url = notification.destination_url
+        data = dict(notification.metadata or {})
     data.update(
         {
-            "url": notification.destination_url,
+            "url": destination_url,
             "notification_id": str(notification.pk),
             "kind": notification.kind,
         }
@@ -210,8 +239,35 @@ def _mark_delivery(delivery, *, status, detail="", ticket_id=""):
 
 def deliver_push_delivery(delivery):
     """Attempt one delivery. It is safe to call repeatedly for retryable failures."""
+    notification = _delivery_notification(delivery)
+    if notification is None:
+        _mark_delivery(
+            delivery,
+            status=PushDelivery.Status.INVALID,
+            detail="The delivery has no notification.",
+        )
+        return delivery
+
     if not delivery.device_id or not delivery.device or not delivery.device.is_active:
         _mark_delivery(delivery, status=PushDelivery.Status.INVALID, detail="The device is inactive.")
+        return delivery
+
+    if isinstance(notification, ClientNotification):
+        device_matches = (
+            delivery.device.client_id == notification.client_id
+            and delivery.device.employee_id is None
+        )
+    else:
+        device_matches = (
+            delivery.device.employee_id == notification.employee_id
+            and delivery.device.client_id is None
+        )
+    if not device_matches:
+        _mark_delivery(
+            delivery,
+            status=PushDelivery.Status.INVALID,
+            detail="The device is not owned by the notification recipient.",
+        )
         return delivery
 
     if not _is_expo_token(delivery.device.token):
@@ -227,7 +283,7 @@ def deliver_push_delivery(delivery):
 
     request = Request(
         _push_url(),
-        data=json.dumps(_delivery_payload(delivery.notification, delivery.device)).encode("utf-8"),
+        data=json.dumps(_delivery_payload(notification, delivery.device)).encode("utf-8"),
         headers=_push_headers(),
         method="POST",
     )
@@ -276,18 +332,12 @@ def deliver_push_delivery(delivery):
     return delivery
 
 
-def dispatch_notification_ids(notification_ids):
-    """Create one delivery row per active device and attempt configured pushes."""
-    notifications = EmployeeNotification.objects.filter(pk__in=notification_ids).prefetch_related(
-        "employee__mobile_push_devices"
-    )
+def _dispatch_notification_batch(notifications, *, owner_field, delivery_field):
     for notification in notifications:
-        devices = [device for device in notification.employee.mobile_push_devices.all() if device.is_active]
+        owner = getattr(notification, owner_field)
+        devices = [device for device in owner.mobile_push_devices.all() if device.is_active]
         for device in devices:
-            delivery, _ = PushDelivery.objects.get_or_create(
-                notification=notification,
-                device=device,
-            )
+            delivery, _ = PushDelivery.objects.get_or_create(device=device, **{delivery_field: notification})
             if delivery.status in {PushDelivery.Status.SENT, PushDelivery.Status.INVALID}:
                 continue
             if delivery.attempt_count >= MAX_PUSH_ATTEMPTS:
@@ -296,13 +346,37 @@ def dispatch_notification_ids(notification_ids):
                 deliver_push_delivery(delivery)
 
 
+def dispatch_notification_ids(notification_ids):
+    """Create one delivery row per active employee device and attempt pushes."""
+    notifications = EmployeeNotification.objects.filter(pk__in=notification_ids).prefetch_related(
+        "employee__mobile_push_devices"
+    )
+    _dispatch_notification_batch(
+        notifications,
+        owner_field="employee",
+        delivery_field="notification",
+    )
+
+
+def dispatch_client_notification_ids(notification_ids):
+    """Create one delivery row per active client device and attempt pushes."""
+    notifications = ClientNotification.objects.filter(pk__in=notification_ids).prefetch_related(
+        "client__mobile_push_devices"
+    )
+    _dispatch_notification_batch(
+        notifications,
+        owner_field="client",
+        delivery_field="client_notification",
+    )
+
+
 def retry_pending_push_deliveries(*, limit=100):
     if not _push_enabled():
         return 0
     deliveries = PushDelivery.objects.filter(
         status=PushDelivery.Status.PENDING,
         attempt_count__lt=MAX_PUSH_ATTEMPTS,
-    ).select_related("notification", "device")[:limit]
+    ).select_related("notification", "client_notification", "device", "device__employee", "device__client")[:limit]
     count = 0
     for delivery in deliveries:
         deliver_push_delivery(delivery)
@@ -310,7 +384,7 @@ def retry_pending_push_deliveries(*, limit=100):
     failed_deliveries = PushDelivery.objects.filter(
         status=PushDelivery.Status.FAILED,
         attempt_count__lt=MAX_PUSH_ATTEMPTS,
-    ).select_related("notification", "device")[: max(0, limit - count)]
+    ).select_related("notification", "client_notification", "device", "device__employee", "device__client")[: max(0, limit - count)]
     for delivery in failed_deliveries:
         deliver_push_delivery(delivery)
         count += 1

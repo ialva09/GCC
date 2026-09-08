@@ -62,6 +62,7 @@ from .forms import (
     MediaEditForm,
     MediaUploadForm,
     PublicPasswordResetForm,
+    ProjectCreateForm,
     ProjectDocumentForm,
     ProjectForm,
     ProjectUpdateForm,
@@ -83,6 +84,7 @@ from .models import (
     ChangeOrder,
     CalendarDayOverride,
     Client,
+    ClientInvite,
     ClientNotification,
     ClientMessage,
     Estimate,
@@ -331,6 +333,10 @@ def _can_delete_employee_account(user):
         and not _is_owner(user)
         and roles & EMPLOYEE_GROUPS
     )
+
+
+def _can_delete_account(user):
+    return bool(_can_delete_employee_account(user) or _is_active_client(user))
 
 
 def _deleted_account_username(user_id):
@@ -1090,7 +1096,7 @@ def _dashboard_context(request, section, form_overrides=None):
         "project_form": (
             ProjectForm(instance=selected_project, staff_queryset=_staff_users())
             if selected_project and new_type != "project"
-            else ProjectForm(staff_queryset=_staff_users())
+            else ProjectCreateForm(staff_queryset=_staff_users())
         ),
         "project_document_form": ProjectDocumentForm(
             project_queryset=Project.objects.all(),
@@ -1940,7 +1946,7 @@ def team(request, section="overview"):
 @require_http_methods(["GET", "POST"])
 @login_required
 def account_delete(request):
-    if not _can_delete_employee_account(request.user):
+    if not _can_delete_account(request.user):
         raise PermissionDenied
 
     form = AccountDeleteForm(request.POST or None, user=request.user)
@@ -1948,8 +1954,38 @@ def account_delete(request):
         user_model = get_user_model()
         with transaction.atomic():
             user = user_model.objects.select_for_update().get(pk=request.user.pk)
-            if not _can_delete_employee_account(user):
+            if not _can_delete_account(user):
                 raise PermissionDenied
+
+            is_client_account = _is_active_client(user)
+            client_record = None
+            if is_client_account:
+                client_record = Client.objects.select_for_update().filter(user=user).first()
+                if client_record:
+                    MobilePushDevice.objects.filter(
+                        client=client_record,
+                        is_active=True,
+                    ).update(
+                        is_active=False,
+                        deactivated_at=timezone.now(),
+                        updated_at=timezone.now(),
+                    )
+                    ClientInvite.objects.filter(client=client_record).delete()
+                    client_record.name = "Deleted client"
+                    client_record.company = ""
+                    client_record.email = f"deleted-client-{user.pk}@invalid.local"
+                    client_record.phone = ""
+                    client_record.user = None
+                    client_record.save(
+                        update_fields=[
+                            "name",
+                            "company",
+                            "email",
+                            "phone",
+                            "user",
+                            "updated_at",
+                        ]
+                    )
 
             EmployeeProfile.objects.filter(user=user).update(
                 job_title="",
@@ -1993,10 +2029,17 @@ def account_delete(request):
             )
 
         logout(request)
-        messages.success(request, "Your employee account was deleted and personal details were anonymized.")
+        if is_client_account:
+            messages.success(request, "Your client portal account was deleted and personal details were anonymized.")
+        else:
+            messages.success(request, "Your employee account was deleted and personal details were anonymized.")
         return redirect("operations:login")
 
-    return render(request, "operations/account_delete.html", {"form": form})
+    return render(
+        request,
+        "operations/account_delete.html",
+        {"form": form, "is_client_account": _is_active_client(request.user)},
+    )
 
 
 @require_POST
@@ -2904,7 +2947,10 @@ def notification_device_register(request):
 
     now = timezone.now()
     with transaction.atomic():
-        MobilePushDevice.objects.filter(token=token).exclude(employee=request.user).update(
+        MobilePushDevice.objects.filter(token=token).exclude(
+            employee=request.user,
+            client__isnull=True,
+        ).update(
             is_active=False,
             deactivated_at=now,
             updated_at=now,
@@ -2913,6 +2959,7 @@ def notification_device_register(request):
             token=token,
             defaults={
                 'employee': request.user,
+                'client': None,
                 'platform': str(data.get('platform') or '')[:20],
                 'is_active': True,
                 'last_seen_at': now,
@@ -2934,6 +2981,67 @@ def notification_device_deactivate(request):
         is_active=False,
         deactivated_at=timezone.now(),
         updated_at=timezone.now(),
+    )
+    return JsonResponse({'ok': True, 'deactivated': updated})
+
+
+@require_POST
+@login_required
+def client_notification_device_register(request):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+
+    client = get_object_or_404(Client, user=request.user)
+    data = _notification_request_data(request)
+    token = str(data.get('token') or data.get('expo_push_token') or '').strip()
+    if not token or len(token) > 255 or not token.startswith(('ExpoPushToken[', 'ExponentPushToken[')):
+        return JsonResponse({'error': 'A valid Expo push token is required.'}, status=400)
+
+    now = timezone.now()
+    with transaction.atomic():
+        MobilePushDevice.objects.filter(token=token).exclude(
+            client=client,
+            employee__isnull=True,
+        ).update(
+            is_active=False,
+            deactivated_at=now,
+            updated_at=now,
+        )
+        device, _ = MobilePushDevice.objects.update_or_create(
+            token=token,
+            defaults={
+                'employee': None,
+                'client': client,
+                'platform': str(data.get('platform') or '')[:20],
+                'is_active': True,
+                'last_seen_at': now,
+                'deactivated_at': None,
+            },
+        )
+    return JsonResponse({'ok': True, 'device_id': str(device.pk)})
+
+
+@require_POST
+@login_required
+def client_notification_device_deactivate(request):
+    if not _is_active_client(request.user):
+        raise PermissionDenied
+
+    client = get_object_or_404(Client, user=request.user)
+    data = _notification_request_data(request)
+    token = str(data.get('token') or data.get('expo_push_token') or '').strip()
+    devices = MobilePushDevice.objects.filter(
+        client=client,
+        employee__isnull=True,
+        is_active=True,
+    )
+    if token:
+        devices = devices.filter(token=token)
+    now = timezone.now()
+    updated = devices.update(
+        is_active=False,
+        deactivated_at=now,
+        updated_at=now,
     )
     return JsonResponse({'ok': True, 'deactivated': updated})
 
@@ -3577,7 +3685,10 @@ def _external_estimate_from_form(form, request):
 @require_POST
 @staff_required
 def estimate_create(request):
-    if external_estimate_enabled_for(request.user):
+    # New estimate records use the simple recipient/link workflow. Keep the
+    # legacy detailed form available for existing callers and compatibility
+    # routes that still submit the old line-item fields.
+    if external_estimate_enabled_for(request.user) and "external_url" in request.POST:
         form = ExternalEstimateCreateForm(
             request.POST,
             client_queryset=Client.objects.all(),
@@ -3631,8 +3742,6 @@ def estimate_create(request):
 @staff_required
 def external_estimate_send(request, pk):
     """Email the saved estimate link and publish it to the client portal."""
-    if not feature_enabled("external_estimate", default=False):
-        raise Http404
     estimate = get_object_or_404(
         Estimate.objects.select_related("client"),
         pk=pk,
@@ -3862,18 +3971,29 @@ def estimate_send(request, pk):
     return _dashboard_redirect("estimates", estimate=estimate.pk)
 
 
+def _accepted_estimate_for_project_client(client):
+    return (
+        Estimate.objects.filter(status=Estimate.Status.ACCEPTED)
+        .filter(Q(client=client) | Q(lead__client=client))
+        .exclude(projects__isnull=False)
+        .select_related("lead")
+        .order_by("-accepted_at", "-created_at")
+        .first()
+    )
+
+
 @require_POST
 @staff_required
 def project_create(request):
-    form = ProjectForm(request.POST, staff_queryset=_staff_users())
+    form = ProjectCreateForm(request.POST, staff_queryset=_staff_users())
     if form.is_valid():
         project = form.save(commit=False)
-        if project.lead_id and not project.estimate_id:
-            project.estimate = project.lead.estimates.filter(status=Estimate.Status.ACCEPTED).order_by("-accepted_at").first()
-        if project.lead_id and not project.client_id:
-            project.client = project.lead.client
+        if project.client_id and not project.estimate_id:
+            project.estimate = _accepted_estimate_for_project_client(project.client)
         if project.estimate_id and not project.client_id:
             project.client = project.estimate.client
+        if project.estimate_id and not project.lead_id:
+            project.lead = project.estimate.lead
         project.created_by = request.user
         project.save()
         # ModelForm.save(commit=False) postpones the many-to-many write. The
@@ -4368,8 +4488,6 @@ def _portal_client(request):
 @login_required
 def external_estimate_link(request, pk):
     """Permission-checked redirect to a manually published estimate."""
-    if not feature_enabled("external_estimate", default=False):
-        raise Http404
     estimate = get_object_or_404(Estimate.objects.select_related("client"), pk=pk)
     is_linked_client = bool(
         is_client(request.user)
@@ -4390,8 +4508,6 @@ def external_estimate_link(request, pk):
 @login_required
 def external_invoice_link(request, pk):
     """Permission-checked redirect to a manually published Invoice."""
-    if not feature_enabled("external_estimate", default=False):
-        raise Http404
     schedule = get_object_or_404(
         PaymentSchedule.objects.select_related("project", "project__client"),
         pk=pk,
@@ -4409,11 +4525,54 @@ def external_invoice_link(request, pk):
     return redirect(schedule.external_invoice_url)
 
 
+_PORTAL_SECTION_LABELS = (
+    ("overview", "Project overview"),
+    ("updates", "Updates"),
+    ("photos", "Photos & videos"),
+    ("messages", "Messages"),
+    ("estimate-files", "Estimate & files"),
+    ("notifications", "Notifications"),
+)
+_PORTAL_SECTION_KEYS = {key for key, _label in _PORTAL_SECTION_LABELS}
+
+
+def _portal_navigation(request, client, project=None, estimate=None):
+    base_params = {"client": str(client.pk)}
+    if project is not None:
+        base_params["project"] = str(project.pk)
+    navigation = []
+    for key, label in _PORTAL_SECTION_LABELS:
+        params = dict(base_params)
+        if key == "estimate-files" and estimate is not None:
+            params["estimate"] = str(estimate.pk)
+        destination = reverse("operations:portal-section", kwargs={"section": key})
+        navigation.append({
+            "key": key,
+            "label": label,
+            "url": f"{destination}?{urlencode(params)}",
+        })
+    return navigation
+
+
 @client_required
-def portal(request):
+def portal(request, section="overview"):
+    section = (section or "overview").lower()
+    if section not in _PORTAL_SECTION_KEYS:
+        raise Http404
+    section_title = dict(_PORTAL_SECTION_LABELS)[section]
     client = _portal_client(request)
     if client is None:
-        return render(request, "operations/portal.html", {"portal_client": None, "portal_projects": [], "portal_estimates": [], "portal_messages": [], "client_notifications": [], "client_unread_notifications_count": 0})
+        return render(request, "operations/portal.html", {
+            "portal_client": None,
+            "portal_projects": [],
+            "portal_estimates": [],
+            "portal_messages": [],
+            "client_notifications": [],
+            "client_unread_notifications_count": 0,
+            "portal_nav": [],
+            "portal_section": section,
+            "portal_section_title": section_title,
+        })
     projects = list(
         Project.objects.filter(client=client)
         .select_related("estimate", "agreement")
@@ -4434,8 +4593,6 @@ def portal(request):
         .select_related("lead")
         .prefetch_related("projects")
     )
-    if not feature_enabled("external_estimate", default=False):
-        portal_estimate_queryset = portal_estimate_queryset.prefetch_related("line_items")
     portal_estimates = list(portal_estimate_queryset)
     for estimate in portal_estimates:
         estimate.portal_project = estimate.projects.order_by("-created_at").first()
@@ -4486,16 +4643,12 @@ def portal(request):
         selected_project.payment_schedules.prefetch_related("payments").all()
     ) if selected_project else []
     external_estimate_portal_enabled = bool(
-        feature_enabled("external_estimate", default=False)
-        and (
-            external_estimate_enabled_for(request.user, project=selected_project)
-            or (
-                portal_estimate is not None
-                and external_estimate_enabled_for(request.user, estimate=portal_estimate)
-            )
+        external_estimate_enabled_for(request.user, project=selected_project)
+        or (
+            portal_estimate is not None
+            and external_estimate_enabled_for(request.user, estimate=portal_estimate)
         )
     )
-    external_estimate_feature_enabled = feature_enabled("external_estimate", default=False)
     # Conversations are client-wide, with an optional project relationship.
     # This keeps general questions and pre-project estimate discussions visible
     # to the same client without duplicating messages in the portal.
@@ -4514,7 +4667,6 @@ def portal(request):
         "portal_project": selected_project,
         "portal_estimate": portal_estimate,
         "external_estimate_portal_enabled": external_estimate_portal_enabled,
-        "external_estimate_feature_enabled": external_estimate_feature_enabled,
         "portal_updates": updates,
         "portal_latest_update": updates[0] if updates else None,
         "portal_media": media,
@@ -4528,6 +4680,9 @@ def portal(request):
         "client_unread_notifications_count": client_unread_notifications_count,
         "google_review_url": _site_settings().google_review_url,
         "portal_message_form": ClientMessageForm(),
+        "portal_nav": _portal_navigation(request, client, selected_project, portal_estimate),
+        "portal_section": section,
+        "portal_section_title": section_title,
     })
 
 

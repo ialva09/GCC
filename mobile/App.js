@@ -62,7 +62,13 @@ const EMPLOYEE_PROJECTS_PATH = '/team/projects/';
 const EMPLOYEE_PROFILE_PATH = '/team/profile/';
 const EMPLOYEE_NOTIFICATIONS_PATH = '/team/notifications/';
 const ADMIN_NOTIFICATIONS_PATH = '/dashboard/notifications/';
+const EMPLOYEE_PUSH_REGISTER_PATH = '/team/notifications/devices/';
+const EMPLOYEE_PUSH_DEACTIVATE_PATH = '/team/notifications/devices/deactivate/';
 const CLIENT_WORKSPACE_PATH = '/portal/';
+const CLIENT_OVERVIEW_PATH = '/portal/overview/';
+const CLIENT_NOTIFICATIONS_PATH = '/portal/notifications/';
+const CLIENT_PUSH_REGISTER_PATH = '/portal/notifications/devices/';
+const CLIENT_PUSH_DEACTIVATE_PATH = '/portal/notifications/devices/deactivate/';
 const PRIVATE_ROUTE_PREFIXES = ['/dashboard', '/team', '/portal'];
 const LAUNCH_SPLASH_HOLD_MS = 1000;
 const LAUNCH_SPLASH_FADE_MS = 600;
@@ -123,10 +129,12 @@ const transparentNavigationTheme = {
 };
 
 const clientDrawerPages = [
-  { label: 'Services', icon: 'construct-outline', path: '/services/', tab: 'Projects' },
-  { label: 'Projects', icon: 'images-outline', path: '/projects/', tab: 'Projects' },
-  { label: 'Process', icon: 'git-branch-outline', path: '/process/', tab: 'Projects' },
-  { label: 'Contact', icon: 'chatbubble-ellipses-outline', path: '/contact/', tab: 'Contact' },
+  { label: 'Project overview', icon: 'home-outline', path: '/portal/overview/', tab: 'Workspace' },
+  { label: 'Updates', icon: 'megaphone-outline', path: '/portal/updates/', tab: 'Workspace' },
+  { label: 'Photos & videos', icon: 'images-outline', path: '/portal/photos/', tab: 'Workspace' },
+  { label: 'Messages', icon: 'chatbubbles-outline', path: '/portal/messages/', tab: 'Workspace' },
+  { label: 'Estimate & files', icon: 'receipt-outline', path: '/portal/estimate-files/', tab: 'Workspace' },
+  { label: 'Notifications', icon: 'notifications-outline', path: '/portal/notifications/', tab: 'Workspace' },
 ];
 
 const employeeDrawerPages = [
@@ -159,10 +167,10 @@ const adminDrawerPages = [
   { label: 'Content', icon: 'sparkles-outline', path: '/dashboard/content/', tab: 'Workspace', countKey: 'content', group: 'More workspace' },
 ];
 
-const tabIcons = {
-  Projects: ['images-outline', 'images'],
-  Contact: ['chatbubble-ellipses-outline', 'chatbubble-ellipses'],
-  Workspace: ['briefcase-outline', 'briefcase'],
+const clientTabIcons = {
+  Overview: ['home-outline', 'home'],
+  Notifications: ['notifications-outline', 'notifications'],
+  More: ['menu-outline', 'menu-outline'],
 };
 
 const employeeTabIcons = {
@@ -178,9 +186,9 @@ const employeeBottomTabs = [
 ];
 
 const clientBottomTabs = [
-  { label: 'Projects', name: 'Projects', path: '/projects/' },
-  { label: 'Contact', name: 'Contact', path: '/contact/' },
-  { label: 'Workspace', name: 'Workspace', path: null },
+  { label: 'Overview', name: 'Overview', path: CLIENT_OVERVIEW_PATH },
+  { label: 'Notifications', name: 'Notifications', path: CLIENT_NOTIFICATIONS_PATH },
+  { label: 'More', name: 'More', path: null },
 ];
 
 const employeeMorePages = [
@@ -194,6 +202,13 @@ const adminMorePages = [
   { label: 'Privacy Policy', icon: 'shield-checkmark-outline', path: PRIVACY_PATH },
   { label: 'Terms of Service', icon: 'document-text-outline', path: TERMS_PATH },
   { label: 'Log out', icon: 'log-out-outline', path: ADMIN_WORKSPACE_PATH, action: 'logout' },
+];
+
+const clientMorePages = [
+  { label: 'Privacy Policy', icon: 'shield-checkmark-outline', path: PRIVACY_PATH },
+  { label: 'Terms of Service', icon: 'document-text-outline', path: TERMS_PATH },
+  { label: 'Log out', icon: 'log-out-outline', path: CLIENT_OVERVIEW_PATH, action: 'logout' },
+  { label: 'Delete account', icon: 'trash-outline', path: ACCOUNT_DELETE_PATH, danger: true },
 ];
 
 const employeeMoreContactPage = {
@@ -334,14 +349,21 @@ const MOBILE_LOGOUT_WITH_DEVICE_SCRIPT = `
       submitLogout();
       return true;
     }
+    var deviceDeactivatePath = window.__grandCoastPushDeviceDeactivatePath || '/team/notifications/devices/deactivate/';
     var csrfMatch = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
     var csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
-    fetch('/team/notifications/devices/deactivate/', {
+    fetch(deviceDeactivatePath, {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken},
       body: 'token=' + encodeURIComponent(token),
-    }).catch(function () {}).then(submitLogout, submitLogout);
+    }).catch(function () {}).then(function () {
+      window.__grandCoastPushToken = '';
+      submitLogout();
+    }, function () {
+      window.__grandCoastPushToken = '';
+      submitLogout();
+    });
   } catch (error) {
     // The existing Django logout form remains the source of truth.
   }
@@ -490,10 +512,11 @@ function AppHeader({ navigation }) {
   const openProfile = useCallback(() => {
     const isEmployee = workspaceKind === 'employee';
     const isAdmin = workspaceKind === 'admin';
+    const isClient = workspaceKind === 'client';
     const profilePath = isEmployee
       ? EMPLOYEE_PROFILE_PATH
-      : isAdmin ? ADMIN_WORKSPACE_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
-    setActiveTab(isAdmin ? 'Dashboard' : 'Workspace');
+      : isAdmin ? ADMIN_WORKSPACE_PATH : isClient ? CLIENT_OVERVIEW_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
+    setActiveTab(isAdmin ? 'Dashboard' : isClient ? 'Overview' : 'Workspace');
     setActiveWebPath(profilePath);
     navigate(profilePath);
   }, [navigate, setActiveTab, setActiveWebPath, workspaceKind, workspacePath]);
@@ -516,7 +539,7 @@ function AppHeader({ navigation }) {
         </View>
 
         <Pressable
-          accessibilityLabel={workspaceKind === 'employee' ? 'Open profile' : workspaceKind === 'admin' ? 'Open operations' : 'Open workspace'}
+          accessibilityLabel={workspaceKind === 'employee' ? 'Open profile' : workspaceKind === 'admin' ? 'Open operations' : 'Open portal overview'}
           hitSlop={10}
           onPress={openProfile}
           style={styles.headerButton}
@@ -598,19 +621,18 @@ function AppDrawerContent({ navigation, ...props }) {
   const { isAuthenticated, navigationCounts, workspaceKind, workspacePath } = useSession();
   const isAdmin = workspaceKind === 'admin';
   const isEmployee = workspaceKind === 'employee';
+  const isClient = workspaceKind === 'client';
   const isOperations = isAdmin || isEmployee;
   const pages = isAdmin ? adminDrawerPages : isEmployee ? employeeDrawerPages : clientDrawerPages;
 
   const accountPages = useMemo(
-    () => [
-      {
-        label: 'Workspace',
-        icon: 'briefcase-outline',
-        path: workspacePath || CLIENT_WORKSPACE_PATH,
-        tab: 'Workspace',
-      },
-    ],
-    [workspacePath],
+    () => [{
+      label: isClient ? 'Portal home' : 'Workspace',
+      icon: 'briefcase-outline',
+      path: isClient ? CLIENT_OVERVIEW_PATH : workspacePath || CLIENT_WORKSPACE_PATH,
+      tab: isClient ? 'Overview' : 'Workspace',
+    }],
+    [isClient, workspacePath],
   );
 
   if (!isAuthenticated) {
@@ -658,7 +680,7 @@ function AppDrawerContent({ navigation, ...props }) {
             </View>
           </View>
 
-          <Text style={styles.drawerSectionLabel}>Explore</Text>
+          <Text style={styles.drawerSectionLabel}>{isClient ? 'Client portal' : 'Explore'}</Text>
           {pages.map((page) => (
             <NativeDrawerItem key={page.path} navigation={navigation} page={page} />
           ))}
@@ -691,37 +713,56 @@ function PushNotificationBridge() {
   const pushTokenRef = useRef(null);
   const registrationAttemptedRef = useRef(false);
   const pendingNotificationDestinationRef = useRef(null);
-  const isOperationsWorkspace = workspaceKind === 'employee' || workspaceKind === 'admin';
+  const isPushWorkspace = workspaceKind === 'employee' || workspaceKind === 'admin' || workspaceKind === 'client';
+  const isClientWorkspace = workspaceKind === 'client';
   const ownerPushClientEnabled = process.env.EXPO_PUBLIC_MOBILE_OWNER_PUSH_ENABLED !== 'false';
 
   const safeNotificationDestination = useCallback((requestedDestination) => {
-    const fallback = workspaceKind === 'admin'
-      ? ADMIN_NOTIFICATIONS_PATH
-      : EMPLOYEE_NOTIFICATIONS_PATH;
+    const fallback = isClientWorkspace
+      ? CLIENT_NOTIFICATIONS_PATH
+      : workspaceKind === 'admin' ? ADMIN_NOTIFICATIONS_PATH : EMPLOYEE_NOTIFICATIONS_PATH;
     if (
       typeof requestedDestination !== 'string'
       || !requestedDestination.startsWith('/')
-      || isAdminPath(requestedDestination)
     ) {
       return fallback;
     }
+    if (isClientWorkspace) {
+      const requestedPath = pathnameFromUrl(requestedDestination);
+      if (
+        requestedPath === '/portal'
+        || requestedPath === '/portal/'
+        || !requestedPath.startsWith('/portal/')
+      ) {
+        return fallback;
+      }
+      return requestedDestination;
+    }
+    if (isAdminPath(requestedDestination)) {
+      return fallback;
+    }
     return requestedDestination;
-  }, [workspaceKind]);
+  }, [isClientWorkspace, workspaceKind]);
 
   const registerTokenInWebView = useCallback((token) => {
     if (!token || !webViewRef.current) {
       return;
     }
     const platform = Platform.OS;
+    const registerPath = isClientWorkspace ? CLIENT_PUSH_REGISTER_PATH : EMPLOYEE_PUSH_REGISTER_PATH;
+    const deactivatePath = isClientWorkspace ? CLIENT_PUSH_DEACTIVATE_PATH : EMPLOYEE_PUSH_DEACTIVATE_PATH;
     const script = `
 (function () {
   var token = ${JSON.stringify(token)};
   var platform = ${JSON.stringify(platform)};
+  var registerPath = ${JSON.stringify(registerPath)};
+  var deactivatePath = ${JSON.stringify(deactivatePath)};
   window.__grandCoastPushToken = token;
+  window.__grandCoastPushDeviceDeactivatePath = deactivatePath;
   window.__grandCoastRegisterPushToken = function (value, devicePlatform) {
     var csrfMatch = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
     var csrfToken = csrfMatch ? decodeURIComponent(csrfMatch[1]) : '';
-    return fetch('/team/notifications/devices/', {
+    return fetch(registerPath, {
       method: 'POST',
       credentials: 'same-origin',
       headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrfToken},
@@ -732,22 +773,22 @@ function PushNotificationBridge() {
 })();
 true;`;
     webViewRef.current.injectJavaScript(script);
-  }, [webViewRef]);
+  }, [isClientWorkspace, webViewRef]);
 
   const openNotificationDestination = useCallback((response) => {
     const data = response?.notification?.request?.content?.data || {};
     const requestedDestination = typeof data.url === 'string' && data.url.startsWith('/')
       ? data.url
       : '';
-    if (!isAuthenticated || !isOperationsWorkspace || !webViewRef.current) {
+    if (!isAuthenticated || !isPushWorkspace || !webViewRef.current) {
       pendingNotificationDestinationRef.current = requestedDestination;
       return false;
     }
     const destination = safeNotificationDestination(requestedDestination);
-    setActiveTab('Workspace');
+    setActiveTab(isClientWorkspace ? 'Notifications' : 'Workspace');
     setActiveWebPath(destination);
     return navigate(destination);
-  }, [isAuthenticated, isOperationsWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef]);
+  }, [isAuthenticated, isClientWorkspace, isPushWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef]);
 
   useEffect(() => {
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(
@@ -768,17 +809,27 @@ true;`;
     if (
       destination === null
       || !isAuthenticated
-      || !isOperationsWorkspace
+      || !isPushWorkspace
       || !webViewRef.current
     ) {
       return;
     }
     pendingNotificationDestinationRef.current = null;
     const safeDestination = safeNotificationDestination(destination);
-    setActiveTab('Workspace');
+    setActiveTab(isClientWorkspace ? 'Notifications' : 'Workspace');
     setActiveWebPath(safeDestination);
     navigate(safeDestination);
-  }, [isAuthenticated, isOperationsWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef, workspacePath]);
+  }, [isAuthenticated, isClientWorkspace, isPushWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef, workspacePath]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isPushWorkspace || !webViewRef.current) {
+      return;
+    }
+    const deactivatePath = isClientWorkspace ? CLIENT_PUSH_DEACTIVATE_PATH : EMPLOYEE_PUSH_DEACTIVATE_PATH;
+    webViewRef.current.injectJavaScript(
+      `window.__grandCoastPushDeviceDeactivatePath=${JSON.stringify(deactivatePath)}; true;`,
+    );
+  }, [isAuthenticated, isClientWorkspace, isPushWorkspace, webViewRef, workspacePath]);
 
   useEffect(() => {
     if (Platform.OS === 'android') {
@@ -795,6 +846,7 @@ true;`;
   useEffect(() => {
     const canRegisterPush = isAuthenticated && (
       workspaceKind === 'employee'
+      || workspaceKind === 'client'
       || (workspaceKind === 'admin' && ownerPushClientEnabled)
     );
     if (!canRegisterPush) {
@@ -842,6 +894,7 @@ true;`;
   useEffect(() => {
     const canRegisterPush = isAuthenticated && (
       workspaceKind === 'employee'
+      || workspaceKind === 'client'
       || (workspaceKind === 'admin' && ownerPushClientEnabled)
     );
     if (canRegisterPush && pushTokenRef.current && workspacePath) {
@@ -1476,8 +1529,47 @@ function AdminMoreScreen({ onNavigate }) {
   );
 }
 
+function ClientMoreScreen({ onNavigate }) {
+  const { requestLogout } = useContext(SharedWebViewContext);
+  const { setActiveTab, setActiveWebPath } = useContext(NativeShellContext);
+  const openPage = useCallback((page) => {
+    if (page.action === 'logout') {
+      requestLogout(CLIENT_OVERVIEW_PATH);
+      setActiveTab('Overview');
+      setActiveWebPath(CLIENT_OVERVIEW_PATH);
+      return;
+    }
+
+    onNavigate('Overview', page.path);
+  }, [onNavigate, requestLogout, setActiveTab, setActiveWebPath]);
+
+  return (
+    <View style={styles.moreScreen}>
+      <ScrollView contentContainerStyle={styles.moreContent} showsVerticalScrollIndicator={false}>
+        <Text style={styles.moreSectionLabel}>Account & support</Text>
+        {clientMorePages.slice(0, 2).map((page) => (
+          <EmployeeMoreItem
+            key={page.path}
+            onPress={() => openPage(page)}
+            page={page}
+          />
+        ))}
+
+        <Text style={[styles.moreSectionLabel, styles.moreSectionLabelSpaced]}>Session</Text>
+        {clientMorePages.slice(2).map((page) => (
+          <EmployeeMoreItem
+            key={page.path}
+            onPress={() => openPage(page)}
+            page={page}
+          />
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
 function NativeTabBar({ activeTab, insets, isEmployee, onSelect }) {
-  const icons = isEmployee ? employeeTabIcons : tabIcons;
+  const icons = isEmployee ? employeeTabIcons : clientTabIcons;
   const tabs = isEmployee ? employeeBottomTabs : clientBottomTabs;
 
   return (
@@ -1528,7 +1620,7 @@ function MainTabs() {
   const isAdmin = workspaceKind === 'admin';
   const isEmployee = workspaceKind === 'employee';
   const isOperations = isAdmin || isEmployee;
-  const isMore = isOperations && activeTab === 'More';
+  const isMore = (isOperations || workspaceKind === 'client') && activeTab === 'More';
   const tabBarHeight = 62 + insets.bottom;
   const handleWebViewLoadEnd = useCallback((loadedPath) => {
     const pendingTab = pendingTabRef.current;
@@ -1565,15 +1657,15 @@ function MainTabs() {
       return activeTab === 'Dashboard' ? EMPLOYEE_WORKSPACE_PATH : EMPLOYEE_PROJECTS_PATH;
     }
 
-    if (activeTab === 'Projects') {
-      return '/projects/';
+    if (activeTab === 'Overview') {
+      return CLIENT_OVERVIEW_PATH;
     }
 
-    if (activeTab === 'Contact') {
-      return '/contact/';
+    if (activeTab === 'Notifications') {
+      return CLIENT_NOTIFICATIONS_PATH;
     }
 
-    return workspacePath || CLIENT_WORKSPACE_PATH;
+    return workspacePath || CLIENT_OVERVIEW_PATH;
   }, [activeTab, isAdmin, isAuthenticated, isOperations, isMore, selectedWebPath, workspacePath]);
 
   useEffect(() => {
@@ -1593,9 +1685,9 @@ function MainTabs() {
     const tabPath = isOperations
       ? isAdmin ? ADMIN_WORKSPACE_PATH
         : tabName === 'Dashboard' ? EMPLOYEE_WORKSPACE_PATH : EMPLOYEE_PROJECTS_PATH
-      : tabName === 'Projects' ? '/projects/'
-        : tabName === 'Contact' ? '/contact/'
-          : workspacePath || CLIENT_WORKSPACE_PATH;
+      : tabName === 'Overview' ? CLIENT_OVERVIEW_PATH
+        : tabName === 'Notifications' ? CLIENT_NOTIFICATIONS_PATH
+          : CLIENT_OVERVIEW_PATH;
 
     if (activeTab === 'More') {
       navigateFromMore(tabName, tabPath);
@@ -1605,7 +1697,7 @@ function MainTabs() {
     pendingTabRef.current = null;
     setActiveTab(tabName);
     setActiveWebPath(tabPath);
-  }, [activeTab, isAdmin, isOperations, navigateFromMore, setActiveTab, setActiveWebPath, workspacePath]);
+  }, [activeTab, isAdmin, isOperations, navigateFromMore, setActiveTab, setActiveWebPath]);
 
   return (
     <View style={styles.mainTabs}>
@@ -1624,7 +1716,9 @@ function MainTabs() {
         <View style={[styles.nativeContentOverlay, { bottom: tabBarHeight }]}>
           {isAdmin
             ? <AdminMoreScreen onNavigate={navigateFromMore} />
-            : <EmployeeMoreScreen onNavigate={navigateFromMore} />}
+            : isEmployee
+              ? <EmployeeMoreScreen onNavigate={navigateFromMore} />
+              : <ClientMoreScreen onNavigate={navigateFromMore} />}
         </View>
       ) : null}
 
@@ -1652,9 +1746,9 @@ function AppShell() {
     ? null
     : validTabs.some((tab) => tab.name === activeTab)
       ? activeTab
-      : isOperations ? 'Dashboard' : 'Workspace';
+      : isOperations ? 'Dashboard' : 'Overview';
   useEffect(() => {
-    setActiveTab(isAuthenticated ? (isOperations ? 'Dashboard' : 'Workspace') : null);
+    setActiveTab(isAuthenticated ? (isOperations ? 'Dashboard' : 'Overview') : null);
     setActiveWebPath(null);
   }, [isAuthenticated, isOperations]);
 
@@ -2093,7 +2187,6 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingBottom: 24,
     paddingHorizontal: 10,
-    paddingTop: 10,
   },
   employeeDrawerItem: {
     borderRadius: 8,

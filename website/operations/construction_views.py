@@ -657,8 +657,6 @@ def project_operations(request, pk):
 @login_required
 def external_estimate_status(request, pk):
     _require_operating_system()
-    if not feature_enabled("external_estimate", default=False):
-        raise Http404
     estimate = get_object_or_404(
         Estimate.objects.select_related("lead", "client"),
         pk=pk,
@@ -693,8 +691,6 @@ def external_estimate_status(request, pk):
 @login_required
 def external_invoice_status(request, pk):
     _require_operating_system()
-    if not feature_enabled("external_estimate", default=False):
-        raise Http404
     schedule = get_object_or_404(
         PaymentSchedule.objects.select_related("project"),
         pk=pk,

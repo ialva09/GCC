@@ -538,11 +538,13 @@ Office and Field employees view only their own assigned schedule at:
 
 The Team workspace provides a monthly calendar with a mobile-friendly list fallback. Each event shows the complete range, such as Monday · 4:00 PM – 8:00 PM, in America/Los_Angeles. Clicking an employee event opens read-only details for non-Owners.
 
-Schedule mutations also create persistent employee inbox notifications. When a native employee app is configured, the same notification is sent through Expo Push Service with the device default sound and a link back to the relevant calendar day. Failed deliveries remain retryable with:
+Schedule mutations also create persistent employee inbox notifications. When a native employee app is configured, the same notification is sent through Expo Push Service with the device default sound and a link back to the relevant calendar day. Client portal alerts use the same delivery path when a client has enabled notifications in the Expo app. Client payloads contain only the client-visible title, body, notification ID, type, and an authorized `/portal/...` destination; internal costs, margins, vendors, notes, and staff notifications are never included. Failed deliveries remain retryable with:
 
 ~~~powershell
 python manage.py dispatch_push_notifications
 ~~~
+
+The existing employee/owner device endpoints are `/team/notifications/devices/` and `/team/notifications/devices/deactivate/`. Client devices use `/portal/notifications/devices/` and `/portal/notifications/devices/deactivate/`; the mobile app selects the correct endpoint from the authenticated workspace. Device registration is scoped to the authenticated account, and logout or client account deletion deactivates that account's device. `EXPO_PUSH_ENABLED`, `EXPO_PUSH_URL`, and `EXPO_ACCESS_TOKEN` are shared by employee, owner, and client delivery. There is no separate client push flag.
 
 ## 15. I test employee clock-in and time tracking
 
@@ -924,6 +926,7 @@ The current suite covers:
 - Public project pages and public-media filtering
 - Google Review link visibility
 - Public content updates
+- Client Expo push registration, portal-only notification destinations, post-commit delivery, redacted payloads, duplicate prevention, and invalid-token deactivation
 - Payment exclusion
 - No business state stored in browser local storage
 
@@ -1527,20 +1530,14 @@ invoices, payment collection, reminders, and its own customer notifications.
 Grand Coast stores only the client, a protected estimate link, a lightweight
 status, and the confirmation history needed to continue its own workflow.
 
-The estimate link/status layer is disabled by default:
+The estimate link/status layer is automatic. No estimate-specific environment
+variables, pilot IDs, or allowlists are required. Once an authorized staff
+member creates an estimate record, the estimate link and status actions are
+available according to the normal server-side permissions.
+
+AI remains disabled during this phase:
 
 ~~~powershell
-$env:GCC_EXTERNAL_ESTIMATE_ENABLED = "false"
-$env:GCC_AI_ENABLED = "false"
-~~~
-
-For a disposable pilot, use UUIDs for the selected internal users and project
-after they exist in the current database:
-
-~~~powershell
-$env:GCC_EXTERNAL_ESTIMATE_ENABLED = "true"
-$env:GCC_EXTERNAL_ESTIMATE_USER_IDS = "<owner-uuid>,<manager-uuid>,<office-uuid>,<field-uuid>"
-$env:GCC_EXTERNAL_ESTIMATE_PROJECT_IDS = "<pilot-project-uuid>"
 $env:GCC_AI_ENABLED = "false"
 ~~~
 

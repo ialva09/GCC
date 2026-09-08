@@ -4,7 +4,7 @@ from operations.notifications import retry_pending_push_deliveries
 
 
 class Command(BaseCommand):
-    help = 'Retry pending and failed Expo employee push notifications.'
+    help = 'Retry pending and failed Expo employee and client push notifications.'
 
     def add_arguments(self, parser):
         parser.add_argument('--limit', type=int, default=100)

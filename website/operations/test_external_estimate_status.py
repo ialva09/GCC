@@ -31,11 +31,6 @@ from .models import (
 User = get_user_model()
 
 
-@override_settings(
-    GCC_EXTERNAL_ESTIMATE_ENABLED=True,
-    GCC_EXTERNAL_ESTIMATE_PROJECT_IDS="",
-    GCC_EXTERNAL_ESTIMATE_USER_IDS="",
-)
 class ExternalEstimateStatusTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(
@@ -296,16 +291,12 @@ class ExternalEstimateStatusTests(TestCase):
             404,
         )
 
-    def test_project_allowlist_limits_the_external_surface(self):
+    def test_estimate_status_surface_is_automatic_for_authorized_users(self):
         project = self._approve_and_create_project()
-        with override_settings(
-            GCC_EXTERNAL_ESTIMATE_PROJECT_IDS=str(project.pk),
-            GCC_EXTERNAL_ESTIMATE_USER_IDS="",
-        ):
-            self.assertFalse(external_estimate_enabled_for(self.owner))
-            self.assertTrue(external_estimate_enabled_for(self.owner, project=project))
-            self.assertTrue(can_manage_external_estimate(self.owner, project=project))
-            self.assertTrue(can_manage_external_estimate(self.owner, estimate=self.estimate))
+        self.assertTrue(external_estimate_enabled_for(self.owner))
+        self.assertTrue(external_estimate_enabled_for(self.owner, project=project))
+        self.assertTrue(can_manage_external_estimate(self.owner, project=project))
+        self.assertTrue(can_manage_external_estimate(self.owner, estimate=self.estimate))
 
     def test_dashboard_external_estimate_creation_only_requires_client_and_link(self):
         http = HttpClient()
@@ -413,10 +404,9 @@ class ExternalEstimateStatusTests(TestCase):
 
     def test_client_portal_never_falls_back_to_internal_estimate_details(self):
         project = self._approve_and_create_project()
-        with override_settings(GCC_EXTERNAL_ESTIMATE_USER_IDS=str(self.owner.pk)):
-            http = HttpClient()
-            http.force_login(self.client_user)
-            portal = http.get(reverse("operations:portal"), {"project": project.pk})
+        http = HttpClient()
+        http.force_login(self.client_user)
+        portal = http.get(reverse("operations:portal"), {"project": project.pk})
         self.assertEqual(portal.status_code, 200)
         self.assertContains(portal, "Estimate")
         self.assertNotContains(portal, "Internal budget line that must not appear in External mode")

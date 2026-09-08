@@ -389,6 +389,19 @@ class ProjectForm(forms.ModelForm):
         return cleaned
 
 
+class ProjectCreateForm(ProjectForm):
+    """Create a project from its converted client record.
+
+    The legacy ``lead`` relationship remains on ``Project`` for history and
+    existing records, but it is not a user-selectable input once a lead has
+    become a client. The create view resolves that relationship from the
+    selected client's accepted estimate when one is available.
+    """
+
+    class Meta(ProjectForm.Meta):
+        fields = [field for field in ProjectForm.Meta.fields if field != "lead"]
+
+
 class ProjectUpdateForm(forms.ModelForm):
     class Meta:
         model = ProjectUpdate

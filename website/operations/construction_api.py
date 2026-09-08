@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
@@ -102,8 +101,6 @@ def _boolean_payload(value):
 @_api_access
 def api_v1_estimate_external_status(request, pk):
     try:
-        if not getattr(settings, "GCC_EXTERNAL_ESTIMATE_ENABLED", False):
-            return _error("Estimate status is disabled.", 404)
         estimate = get_object_or_404(Estimate.objects.select_related("client"), pk=pk)
         if not can_view_external_estimate(request.user, estimate=estimate):
             return _error("Record not found.", 404)
@@ -166,8 +163,6 @@ def api_v1_estimate_external_status(request, pk):
 @_api_access
 def api_v1_payment_schedule_external_status(request, pk):
     try:
-        if not getattr(settings, "GCC_EXTERNAL_ESTIMATE_ENABLED", False):
-            return _error("Estimate status is disabled.", 404)
         schedule = get_object_or_404(PaymentSchedule.objects.select_related("project"), pk=pk)
         if not can_view_external_estimate(request.user, project=schedule.project):
             return _error("Record not found.", 404)

@@ -1,7 +1,7 @@
 {% extends "operations/base.html" %}
 {% load static %}
 
-{% block title %}Client portal | Grand Coast Construction Inc.{% endblock %}
+{% block title %}{{ portal_section_title }} | Client portal | Grand Coast Construction Inc.{% endblock %}
 {% block body_class %}portal-site{% endblock %}
 
 {% block body %}
@@ -10,7 +10,7 @@
     <span>Project updates, decisions, and next steps in one place.</span>
     <span class="staging-spacer"></span>
     {% if request.user.is_staff %}
-        <a href="{% url 'operations:dashboard' %}">← Return to Operations</a>
+        <a href="{% url 'operations:dashboard' %}">&larr; Return to Operations</a>
     {% else %}
         <form method="post" action="{% url 'operations:logout' %}">{% csrf_token %}<button class="portal-signout" type="submit">Sign out</button></form>
     {% endif %}
@@ -23,19 +23,18 @@
         </a>
         {% if portal_client %}
             <nav class="portal-nav" aria-label="Client portal navigation">
-                <a class="is-current" href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#overview">Project overview</a>
-                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#updates">Updates</a>
-                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#photos">Photos &amp; videos</a>
-                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#conversation">Messages</a>
-                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#documents">Estimate &amp; files</a>
-                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#notifications">Notifications{% if client_unread_notifications_count %} ({{ client_unread_notifications_count }}){% endif %}</a>
+                {% for item in portal_nav %}
+                    <a class="{% if item.key == portal_section %}is-current{% endif %}" href="{{ item.url }}">
+                        {{ item.label }}{% if item.key == 'notifications' and client_unread_notifications_count %} ({{ client_unread_notifications_count }}){% endif %}
+                    </a>
+                {% endfor %}
             </nav>
             <div class="portal-user"><span class="avatar avatar-light">{{ portal_client.name|slice:':1'|upper }}</span><span>{{ portal_client.name }}</span></div>
         {% endif %}
     </div>
 </header>
 
-<main class="portal-main" id="overview">
+<main class="portal-main" id="portal-{{ portal_section }}">
     <div class="container portal-container">
         {% if not portal_client %}
             <section class="portal-empty">
@@ -45,221 +44,21 @@
                 <p>Grand Coast will connect your client record to this workspace before sharing an invitation.</p>
                 <a class="button button-primary" href="{% url 'operations:home' %}">Return to Grand Coast</a>
             </section>
-        {% elif not portal_project and not portal_estimates %}
-            <section class="portal-empty">
-                <span class="gold-rule"></span>
-                <span class="section-kicker">Welcome, {{ portal_client.name }}</span>
-                <h1>We’re preparing your project workspace.</h1>
-                <p>Your account is active. The Grand Coast team will add project details and next steps here.</p>
-            </section>
-            {% include 'operations/portal_conversation.html' %}
-        {% elif portal_estimates and not portal_project %}
-            <section class="portal-empty">
-                <span class="gold-rule"></span>
-                <span class="section-kicker">Welcome, {{ portal_client.name }}</span>
-                <h1>Your scope is ready to review.</h1>
-                <p>Review the estimate below and send questions to the Grand Coast team before a project is created.</p>
-            </section>
-            <div class="portal-grid">
-                <div class="portal-primary-column">
-                    {% include 'operations/portal_conversation.html' %}
-                </div>
-                <aside class="portal-side-column">{% include 'operations/portal_estimate_card.html' %}</aside>
-            </div>
-        {% else %}
-            {% if portal_projects|length > 1 %}
-                <div class="portal-project-selector" aria-label="Choose a project">
-                    <span class="section-kicker">Your projects</span>
-                    {% for project in portal_projects %}<a class="{% if project.pk == portal_project.pk %}is-current{% endif %}" href="?client={{ portal_client.pk }}&amp;project={{ project.pk }}#overview">{{ project.title }}</a>{% endfor %}
-                </div>
-            {% endif %}
-            <div class="portal-heading">
-                <div>
-                    <span class="section-kicker">Your project</span>
-                    <h1>{{ portal_client.name|truncatewords:1 }}, here’s your project.</h1>
-                    <div class="portal-project-meta">
-                        <strong>{{ portal_project.title }}</strong>
-                        <span>{{ portal_project.location|default:'Southern California' }}</span>
-                        <span class="status-dot"><i></i><b>{{ portal_project.get_status_display }}</b></span>
-                    </div>
-                </div>
-                <div class="portal-heading-actions">
-                    {% if portal_estimate %}<a class="button button-primary" href="#documents">Review estimate</a>{% endif %}
-                    <a class="button button-outline" href="#conversation">Message the team</a>
-                </div>
-            </div>
-
-            <section class="portal-progress" aria-label="Project progress">
-                <div class="portal-progress-line"></div>
-                {% for milestone in portal_project.milestones.all %}
-                    <div class="portal-progress-step {% if milestone.is_complete %}is-complete{% elif forloop.first %}is-current{% endif %}">
-                        <span>{% if milestone.is_complete %}✓{% else %}{{ forloop.counter }}{% endif %}</span>
-                        <strong>{{ milestone.title }}</strong>
-                    </div>
-                {% empty %}
-                    <p class="detail-value">The project sequence will appear here soon.</p>
-                {% endfor %}
-            </section>
-
-            {% if portal_agreement or portal_selections or portal_change_orders or portal_payment_schedules %}
-                <section class="portal-construction-strip" aria-labelledby="project-controls-title">
-                    <div class="portal-panel-heading">
-                        <div><span class="section-kicker">Project decisions</span><h2 id="project-controls-title">Keep the next step moving.</h2></div>
-                        <span class="detail-value">Updated from your project workspace</span>
-                    </div>
-                    <div class="portal-construction-grid">
-                        {% if portal_agreement %}
-                            <article class="portal-construction-card">
-                                <span class="section-kicker">Agreement</span>
-                                <h3>{{ portal_agreement.project.title }}</h3>
-                                <div class="portal-control-row"><span>Current contract</span><strong>&#36;{{ portal_agreement.current_contract_value|floatformat:2 }}</strong></div>
-                                <div class="portal-control-row"><span>Status</span><strong>{{ portal_agreement.get_status_display }}</strong></div>
-                                {% if portal_agreement.signed_pdf %}<a class="text-link-button" href="{% url 'operations:agreement-file' pk=portal_agreement.pk %}">View signed agreement →</a>{% endif %}
-                                {% if portal_agreement.status == 'issued' and not request.user.is_staff %}
-                                    <form method="post" action="{% url 'operations:portal-accept-agreement' pk=portal_agreement.pk %}">
-                                        {% csrf_token %}
-                                        <button class="button button-primary full-width" type="submit">Accept agreement <span aria-hidden="true">→</span></button>
-                                    </form>
-                                    <small class="secure-note">Acceptance is recorded with a timestamp and security audit entry.</small>
-                                {% elif portal_agreement.status == 'accepted' %}
-                                    <p class="portal-accepted-note">Accepted{% if portal_agreement.accepted_at %} on {{ portal_agreement.accepted_at|date:'M d, Y' }}{% endif %}</p>
-                                {% endif %}
-                            </article>
-                        {% endif %}
-                        {% if portal_selections %}
-                            <article class="portal-construction-card">
-                                <span class="section-kicker">Selections</span>
-                                <h3>Product decisions</h3>
-                                {% for selection in portal_selections %}
-                                    <div class="portal-control-item">
-                                        <div><strong>{{ selection.item_name }}</strong><span>{{ selection.category }} · {{ selection.get_status_display }}</span></div>
-                                        {% if selection.status == 'pending' and not request.user.is_staff %}
-                                            <form class="portal-inline-form" method="post" action="{% url 'operations:portal-selection-advance' pk=selection.pk %}">
-                                                {% csrf_token %}
-                                                <input type="text" name="client_choice" maxlength="20000" placeholder="Your choice" aria-label="Choice for {{ selection.item_name }}" required>
-                                                <button class="button button-outline button-small" type="submit">Submit choice</button>
-                                            </form>
-                                        {% elif selection.client_choice %}
-                                            <span class="detail-value">{{ selection.client_choice }}</span>
-                                        {% endif %}
-                                    </div>
-                                {% endfor %}
-                            </article>
-                        {% endif %}
-                        {% if portal_change_orders %}
-                            <article class="portal-construction-card">
-                                <span class="section-kicker">Change orders</span>
-                                <h3>Scope updates</h3>
-                                {% for change_order in portal_change_orders %}
-                                    <div class="portal-control-item">
-                                        <div><strong>CO-{{ change_order.number }} · {{ change_order.title }}</strong><span>{{ change_order.get_status_display }} · {% if change_order.price_impact < 0 %}Credit{% else %}+{% endif %}&#36;{{ change_order.price_impact|floatformat:2 }}</span></div>
-                                        {% if change_order.status == 'sent' and not request.user.is_staff %}
-                                            <form method="post" action="{% url 'operations:portal-approve-change-order' pk=change_order.pk %}">
-                                                {% csrf_token %}
-                                                <button class="button button-outline button-small" type="submit">Approve change order</button>
-                                            </form>
-                                        {% endif %}
-                                    </div>
-                                {% endfor %}
-                            </article>
-                        {% endif %}
-                        {% if portal_payment_schedules %}
-                            <article class="portal-construction-card">
-                                <span class="section-kicker">Payment schedule</span>
-                                <h3>Project milestones</h3>
-                                {% for schedule in portal_payment_schedules %}
-                                    <div class="portal-control-row"><span>{{ schedule.description }} · {{ schedule.get_status_display }}{% if external_estimate_portal_enabled and schedule.external_invoice_status != 'not_started' %} · Invoice {{ schedule.get_external_invoice_status_display }}{% endif %}</span><strong>&#36;{{ schedule.remaining_amount|floatformat:2 }}</strong></div>
-                                    {% if external_estimate_portal_enabled and schedule.external_client_visible and schedule.external_invoice_url %}<a class="text-link-button" href="{% url 'operations:external-invoice-link' pk=schedule.pk %}">Open invoice →</a>{% endif %}
-                                {% endfor %}
-                                <small class="secure-note">Payments are recorded by Grand Coast. No card or bank details are stored in this portal.</small>
-                            </article>
-                        {% endif %}
-                    </div>
-                </section>
-            {% endif %}
-
-            <div class="portal-grid">
-                <div class="portal-primary-column">
-                    <section class="portal-update-panel" id="updates">
-                        <div class="update-icon" aria-hidden="true"><svg viewBox="0 0 48 48"><rect x="10" y="7" width="28" height="34" rx="3"/><path d="M16 15h16M16 22h16M16 29l4 4 9-9"/></svg></div>
-                        <div class="update-copy">
-                            <span class="section-kicker">Latest update</span>
-                            {% if portal_latest_update %}
-                                <h2>{{ portal_latest_update.title }}</h2>
-                                <p>{{ portal_latest_update.body }}</p>
-                                <span class="update-time">Updated {{ portal_latest_update.created_at|date:'M d, Y · g:i A' }}</span>
-                            {% else %}
-                                <h2>Your project is underway.</h2>
-                                <p>The Grand Coast team will post the next client-visible update here.</p>
-                                <span class="update-time">Updates will appear as work progresses.</span>
-                            {% endif %}
-                        </div>
-                        <img src="{{ portal_project.display_image }}" alt="{{ portal_project.title }}" class="update-image">
-                    </section>
-
-                    <section class="portal-media-panel" id="photos">
-                        <div class="portal-panel-heading"><div><span class="section-kicker">Project story</span><h2>Recent photos &amp; videos</h2></div><span class="detail-value">Shared by Grand Coast</span></div>
-                        <div class="portal-media-grid">
-                            {% for media in portal_media %}
-                                {% if media.media_type == 'video' and media.file %}
-                                    <a class="portal-media-tile" href="{{ media.display_url }}" target="_blank" rel="noreferrer"><video src="{{ media.display_url }}" preload="metadata"></video><span class="media-tile-label">{{ media.title }} · Video</span></a>
-                                {% else %}
-                                    <button class="portal-media-tile js-lightbox" type="button" data-lightbox-src="{{ media.display_url }}" data-lightbox-alt="{{ media.caption|default:media.title }}"><img src="{{ media.display_url }}" alt="{{ media.caption|default:media.title }}"><span class="media-tile-label">{{ media.title }}</span></button>
-                                {% endif %}
-                            {% empty %}
-                                <p class="detail-value">Photos and videos will be shared here as the project moves forward.</p>
-                            {% endfor %}
-                        </div>
-                    </section>
-
-                    {% include 'operations/portal_conversation.html' %}
-                </div>
-
-                <aside class="portal-side-column">
-                    {% if external_estimate_portal_enabled or external_estimate_feature_enabled %}
-                    <section class="estimate-card" id="documents">
-                        {% if portal_estimate %}
-                            <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">Status</span></div>
-                            <h2>{{ portal_estimate.title }}</h2>
-                            <div class="estimate-status"><span class="status-check">{% if portal_estimate.external_status == 'approved' %}✓{% else %}•{% endif %}</span><span>{{ portal_estimate.get_external_status_display }}</span></div>
-                            {% if portal_estimate.external_client_visible and portal_estimate.external_url %}<a class="button button-primary full-width" href="{% url 'operations:external-estimate-link' pk=portal_estimate.pk %}">Open estimate →</a>{% endif %}
-                            {% if portal_estimate.external_status == 'approved' %}<div class="portal-accepted-note">Grand Coast has recorded the estimate as approved. The team will share the next project step here.</div>{% elif portal_estimate.external_status == 'rejected' %}<div class="portal-accepted-note">This estimate was declined. Contact Grand Coast if you would like to discuss a revision.</div>{% else %}<div class="portal-accepted-note">The detailed estimate and signature action are handled by the estimate service selected by Grand Coast.</div>{% endif %}
-                        {% else %}
-                            <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the team records its status.</p>
-                        {% endif %}
-                    </section>
-                    {% else %}
-                    <section class="estimate-card" id="documents">
-                        {% if portal_estimate %}
-                            <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">#{{ portal_estimate.number }}</span></div>
-                            <h2>{{ portal_estimate.title }}</h2>
-                            <div class="estimate-total"><span>Project estimate</span><strong>${{ portal_estimate.total|floatformat:2 }}</strong></div>
-                            <div class="estimate-status"><span class="status-check">{% if portal_estimate.status == 'accepted' %}✓{% else %}•{% endif %}</span><span>{{ portal_estimate.get_status_display }}</span></div>
-                            <div class="portal-estimate-lines">
-                                {% for item in portal_estimate.line_items.all %}<div><span>{{ item.description }}</span><strong>${{ item.line_total|floatformat:2 }}</strong></div>{% endfor %}
-                            </div>
-                            {% if portal_estimate.status == 'sent' %}
-                                {% if not request.user.is_staff %}<div class="estimate-decision-actions"><form method="post" action="{% url 'operations:portal-accept-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-primary full-width" type="submit">Accept estimate <span aria-hidden="true">→</span></button></form><form method="post" action="{% url 'operations:portal-decline-estimate' pk=portal_estimate.pk %}">{% csrf_token %}<button class="button button-outline full-width" type="submit">Decline estimate</button></form></div>
-                                {% endif %}
-                                <small class="secure-note">Acceptance is recorded in your project workspace. No payment is collected here.</small>
-                            {% elif portal_estimate.status == 'accepted' %}
-                                <div class="portal-accepted-note">Accepted{% if portal_estimate.accepted_at %} on {{ portal_estimate.accepted_at|date:'M d, Y' }}{% endif %}</div>
-                            {% else %}
-                                <div class="portal-accepted-note">The team will let you know when this estimate is ready for review.</div>
-                            {% endif %}
-                            <div class="estimate-divider"></div>
-                            <div class="deposit-block"><span>Deposit amount</span><strong>${{ portal_estimate.deposit_amount|floatformat:2 }}</strong><small>Informational only · Contact Grand Coast for next steps</small></div>
-                        {% else %}
-                            <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the project scope is ready to review.</p>
-                        {% endif %}
-                    </section>
-                    <section class="portal-help-panel"><span class="section-kicker">Project contact</span><h3>Grand Coast Construction</h3><p>Owner &amp; project team</p><a class="text-link-button" href="tel:+18057181502">(805) 718-1502 →</a></section>
-                    {% endif %}
-                </aside>
-            </div>
+        {% elif portal_section == 'overview' %}
+            {% include 'operations/portal_sections/overview.html' %}
+        {% elif portal_section == 'updates' %}
+            {% include 'operations/portal_sections/updates.html' %}
+        {% elif portal_section == 'photos' %}
+            {% include 'operations/portal_sections/photos.html' %}
+        {% elif portal_section == 'messages' %}
+            {% include 'operations/portal_sections/messages.html' %}
+        {% elif portal_section == 'estimate-files' %}
+            {% include 'operations/portal_sections/estimate_files.html' %}
+        {% elif portal_section == 'notifications' %}
+            {% include 'operations/portal_sections/notifications.html' %}
         {% endif %}
     </div>
-{% include 'operations/portal_additional.html' %}
 </main>
+{% if google_review_url %}<div class="google-review-band"><div class="container"><span class="section-kicker">Enjoying the experience?</span><a class="text-link" href="{{ google_review_url }}" target="_blank" rel="noopener">Review us on Google &rarr;</a></div></div>{% endif %}
 <footer class="portal-footer"><div class="container"><span>Grand Coast Construction Inc.</span><span>Client portal</span></div></footer>
 {% endblock %}

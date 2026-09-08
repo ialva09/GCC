@@ -6,16 +6,20 @@
 
 {% block body %}
 <main class="auth-shell"><div class="auth-card account-delete-card">
-    <a class="auth-brand" href="{% url 'operations:team' %}"><img src="{% static 'operations/images/gcc-logo.png' %}" alt="Grand Coast Construction Inc. logo"><span><strong>Grand Coast</strong><small>Account security</small></span></a>
+    <a class="auth-brand" href="{% if is_client_account %}{% url 'operations:portal' %}{% else %}{% url 'operations:team' %}{% endif %}"><img src="{% static 'operations/images/gcc-logo.png' %}" alt="Grand Coast Construction Inc. logo"><span><strong>Grand Coast</strong><small>Account security</small></span></a>
     <span class="section-kicker">Account settings</span>
     <h1>Delete your account?</h1>
+    {% if is_client_account %}
+    <p>Your client portal access will be disabled and your personal details will be anonymized. Project, update, message, and audit history will remain with an anonymous account record.</p>
+    {% else %}
     <p>Your employee access will be disabled and your personal details will be anonymized. Project, task, time, message, and audit history will remain with an anonymous account record.</p>
+    {% endif %}
     <div class="account-delete-warning"><strong>This action cannot be undone.</strong><span>Enter your current password and type DELETE exactly to continue.</span></div>
     <form method="post" class="auth-form">
         {% csrf_token %}
         {{ form.non_field_errors }}
         {% for field in form %}<label>{{ field.label }}{{ field }}{{ field.errors }}</label>{% endfor %}
-        <div class="account-delete-actions"><button class="button button-danger" type="submit">Delete account</button><a class="button button-quiet" href="{% url 'operations:team' %}">Cancel</a></div>
+        <div class="account-delete-actions"><button class="button button-danger" type="submit">Delete account</button><a class="button button-quiet" href="{% if is_client_account %}{% url 'operations:portal' %}{% else %}{% url 'operations:team' %}{% endif %}">Cancel</a></div>
     </form>
 </div></main>
 {% endblock %}

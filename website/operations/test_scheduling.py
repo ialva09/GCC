@@ -10,6 +10,8 @@ from django.utils import timezone
 
 from .models import (
     CalendarDayOverride,
+    Client as ClientRecord,
+    ClientNotification,
     EmployeeNotification,
     EmployeeProfile,
     EmployeeScheduleOverride,
@@ -18,7 +20,11 @@ from .models import (
     PushDelivery,
     effective_employee_schedule,
 )
-from .notifications import deliver_push_delivery
+from .notifications import (
+    dispatch_client_notification_ids,
+    deliver_push_delivery,
+    queue_client_notifications,
+)
 from .services import ensure_role_groups
 
 
@@ -162,11 +168,12 @@ class EmployeeSchedulingTests(TestCase):
             'HTTP_USER_AGENT': 'GrandCoastMobile/1.0',
             'HTTP_X_GRAND_COAST_MOBILE': '1',
         }
-        disabled = self.client.post(
-            reverse('operations:notification-device-register'),
-            {'token': token, 'platform': 'ios'},
-            **mobile_headers,
-        )
+        with self.settings(GCC_MOBILE_OWNER_PUSH_ENABLED=False):
+            disabled = self.client.post(
+                reverse('operations:notification-device-register'),
+                {'token': token, 'platform': 'ios'},
+                **mobile_headers,
+            )
         self.assertEqual(disabled.status_code, 403)
         self.assertFalse(MobilePushDevice.objects.filter(token=token).exists())
 
@@ -185,6 +192,206 @@ class EmployeeSchedulingTests(TestCase):
         device = MobilePushDevice.objects.get(token=token)
         self.assertEqual(device.employee_id, self.owner.pk)
         self.assertTrue(device.is_active)
+
+    def test_client_device_registration_is_scoped_to_client(self):
+        user_model = get_user_model()
+        client_user = user_model.objects.create_user(
+            username='schedule-client',
+            password='client-pass',
+            email='schedule-client@example.com',
+        )
+        client = ClientRecord.objects.create(
+            name='Schedule Client',
+            email=client_user.email,
+            user=client_user,
+        )
+        other_client_user = user_model.objects.create_user(
+            username='schedule-other-client',
+            password='client-pass',
+            email='schedule-other-client@example.com',
+        )
+        other_client = ClientRecord.objects.create(
+            name='Other Schedule Client',
+            email=other_client_user.email,
+            user=other_client_user,
+        )
+        token = 'ExponentPushToken[client-device]'
+
+        self.client.force_login(client_user)
+        response = self.client.post(
+            reverse('operations:client-notification-device-register'),
+            {'token': token, 'platform': 'ios'},
+        )
+        self.assertEqual(response.status_code, 200)
+        device = MobilePushDevice.objects.get(token=token)
+        self.assertEqual(device.client_id, client.pk)
+        self.assertIsNone(device.employee_id)
+        self.assertTrue(device.is_active)
+
+        self.client.force_login(other_client_user)
+        response = self.client.post(
+            reverse('operations:client-notification-device-deactivate'),
+            {'token': token},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['deactivated'], 0)
+        device.refresh_from_db()
+        self.assertEqual(device.client_id, client.pk)
+        self.assertTrue(device.is_active)
+
+        self.client.force_login(self.employee)
+        staff_response = self.client.post(
+            reverse('operations:client-notification-device-register'),
+            {'token': 'ExponentPushToken[staff-cannot-register-client]'},
+        )
+        self.assertEqual(staff_response.status_code, 403)
+
+        self.client.force_login(client_user)
+        response = self.client.post(
+            reverse('operations:client-notification-device-register'),
+            {'token': 'not-an-expo-token'},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(other_client.user_id, other_client_user.pk)
+
+        response = self.client.post(
+            reverse('operations:client-notification-device-deactivate'),
+            {'token': token},
+        )
+        self.assertEqual(response.status_code, 200)
+        device.refresh_from_db()
+        self.assertFalse(device.is_active)
+
+    @override_settings(EXPO_PUSH_ENABLED=True)
+    def test_client_notifications_dispatch_after_commit_and_are_deduplicated(self):
+        user_model = get_user_model()
+        client_user = user_model.objects.create_user(
+            username='schedule-push-client',
+            password='client-pass',
+            email='schedule-push-client@example.com',
+        )
+        client = ClientRecord.objects.create(
+            name='Push Client',
+            email=client_user.email,
+            user=client_user,
+        )
+        device = MobilePushDevice.objects.create(
+            client=client,
+            token='ExponentPushToken[client-push-device]',
+            platform='ios',
+            last_seen_at=timezone.now(),
+        )
+
+        with patch('operations.notifications.deliver_push_delivery') as deliver:
+            with self.captureOnCommitCallbacks(execute=True):
+                notifications = queue_client_notifications(
+                    [client, client],
+                    kind='project-update',
+                    title='Project update',
+                    body='A new update is ready.',
+                    destination_url='/portal/updates/',
+                )
+            deliver.assert_called_once()
+            self.assertEqual(
+                PushDelivery.objects.filter(
+                    client_notification_id=notifications[0].pk,
+                    device=device,
+                ).count(),
+                1,
+            )
+
+        with self.settings(EXPO_PUSH_ENABLED=False):
+            dispatch_client_notification_ids([notifications[0].pk])
+            dispatch_client_notification_ids([notifications[0].pk])
+        self.assertEqual(
+            PushDelivery.objects.filter(
+                client_notification_id=notifications[0].pk,
+                device=device,
+            ).count(),
+            1,
+        )
+
+    @override_settings(EXPO_PUSH_ENABLED=True)
+    def test_client_push_payload_is_portal_only_and_redacts_metadata(self):
+        user_model = get_user_model()
+        client_user = user_model.objects.create_user(
+            username='schedule-payload-client',
+            password='client-pass',
+            email='schedule-payload-client@example.com',
+        )
+        client = ClientRecord.objects.create(
+            name='Payload Client',
+            email=client_user.email,
+            user=client_user,
+        )
+        device = MobilePushDevice.objects.create(
+            client=client,
+            token='ExponentPushToken[client-payload-device]',
+            platform='android',
+            last_seen_at=timezone.now(),
+        )
+        notification = ClientNotification.objects.create(
+            client=client,
+            kind='project-update',
+            title='Project update',
+            body='The project has a new update.',
+            destination_url='/dashboard/projects/private/',
+            metadata={'internal_cost': '999999', 'vendor': 'Private Vendor'},
+        )
+        delivery = PushDelivery.objects.create(
+            client_notification=notification,
+            device=device,
+        )
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {'data': {'status': 'ok', 'id': 'client-ticket-123'}}
+        ).encode('utf-8')
+        with patch('operations.notifications.urlopen', return_value=response) as urlopen:
+            deliver_push_delivery(delivery)
+
+        payload = json.loads(urlopen.call_args.args[0].data.decode('utf-8'))
+        self.assertEqual(payload['data']['url'], '/portal/notifications/')
+        self.assertEqual(
+            set(payload['data']),
+            {'url', 'notification_id', 'kind'},
+        )
+        delivery.refresh_from_db()
+        self.assertEqual(delivery.status, PushDelivery.Status.SENT)
+
+    @override_settings(EXPO_PUSH_ENABLED=True)
+    def test_invalid_client_push_token_is_deactivated(self):
+        user_model = get_user_model()
+        client_user = user_model.objects.create_user(
+            username='schedule-invalid-client',
+            password='client-pass',
+            email='schedule-invalid-client@example.com',
+        )
+        client = ClientRecord.objects.create(
+            name='Invalid Token Client',
+            email=client_user.email,
+            user=client_user,
+        )
+        device = MobilePushDevice.objects.create(
+            client=client,
+            token='not-an-expo-token',
+            platform='ios',
+        )
+        notification = ClientNotification.objects.create(
+            client=client,
+            kind='project-update',
+            title='Project update',
+            body='A new update is ready.',
+        )
+        delivery = PushDelivery.objects.create(
+            client_notification=notification,
+            device=device,
+        )
+
+        deliver_push_delivery(delivery)
+        device.refresh_from_db()
+        delivery.refresh_from_db()
+        self.assertFalse(device.is_active)
+        self.assertEqual(delivery.status, PushDelivery.Status.INVALID)
 
     def test_blank_weekly_days_do_not_create_noop_notifications(self):
         day = self.pacific_day()

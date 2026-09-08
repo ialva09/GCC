@@ -1165,6 +1165,15 @@ class EmployeeScheduleOverride(TimeStampedModel):
 class MobilePushDevice(TimeStampedModel):
     employee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='mobile_push_devices',
+    )
+    client = models.ForeignKey(
+        Client,
+        null=True,
+        blank=True,
         on_delete=models.CASCADE,
         related_name='mobile_push_devices',
     )
@@ -1176,9 +1185,19 @@ class MobilePushDevice(TimeStampedModel):
 
     class Meta:
         ordering = ['-last_seen_at', '-created_at']
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(employee__isnull=False, client__isnull=True)
+                    | models.Q(employee__isnull=True, client__isnull=False)
+                ),
+                name='mobile_push_device_one_owner',
+            ),
+        ]
 
     def __str__(self):
-        return f'{self.employee} - {self.platform or "mobile"}'
+        owner = self.employee or self.client or 'Unassigned'
+        return f'{owner} - {self.platform or "mobile"}'
 
 
 class EmployeeNotification(TimeStampedModel):
@@ -1328,6 +1347,15 @@ class PushDelivery(TimeStampedModel):
 
     notification = models.ForeignKey(
         EmployeeNotification,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name='push_deliveries',
+    )
+    client_notification = models.ForeignKey(
+        ClientNotification,
+        null=True,
+        blank=True,
         on_delete=models.CASCADE,
         related_name='push_deliveries',
     )
@@ -1350,6 +1378,17 @@ class PushDelivery(TimeStampedModel):
             models.UniqueConstraint(
                 fields=['notification', 'device'],
                 name='unique_notification_push_device',
+            ),
+            models.UniqueConstraint(
+                fields=['client_notification', 'device'],
+                name='unique_client_notification_push_device',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(notification__isnull=False, client_notification__isnull=True)
+                    | models.Q(notification__isnull=True, client_notification__isnull=False)
+                ),
+                name='push_delivery_one_notification',
             ),
         ]
 
