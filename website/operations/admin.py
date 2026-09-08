@@ -195,7 +195,23 @@ class EstimateAdmin(GrandCoastModelAdmin):
     )
     list_filter = ("status",)
     search_fields = ("title", "client__name", "lead__name")
-    readonly_fields = ("sent_at", "accepted_at", "declined_at", "accepted_by")
+    # Estimate and invoice link fields are changed through the permission-checked Operations
+    # command, never through a generic admin save.
+    readonly_fields = (
+        "sent_at",
+        "accepted_at",
+        "declined_at",
+        "accepted_by",
+        "external_url",
+        "external_reference",
+        "external_total",
+        "external_deposit_amount",
+        "external_status",
+        "external_status_at",
+        "external_status_by",
+        "external_status_note",
+        "external_client_visible",
+    )
 
 
 @admin.register(EstimateLineItem, site=grand_coast_admin_site)
@@ -504,7 +520,19 @@ grand_coast_admin_site.register(EmailOutbox, GrandCoastModelAdmin)
 grand_coast_admin_site.register(Inspection, GrandCoastModelAdmin)
 grand_coast_admin_site.register(MaterialRequest, GrandCoastModelAdmin)
 grand_coast_admin_site.register(PaymentRecord, PaymentRecordAdmin)
-grand_coast_admin_site.register(PaymentSchedule, GrandCoastModelAdmin)
+class PaymentScheduleAdmin(GrandCoastModelAdmin):
+    readonly_fields = (
+        "external_invoice_url",
+        "external_invoice_reference",
+        "external_invoice_status",
+        "external_invoice_status_at",
+        "external_invoice_status_by",
+        "external_invoice_status_note",
+        "external_client_visible",
+    )
+
+
+grand_coast_admin_site.register(PaymentSchedule, PaymentScheduleAdmin)
 grand_coast_admin_site.register(Permit, GrandCoastModelAdmin)
 grand_coast_admin_site.register(PreconstructionItem, GrandCoastModelAdmin)
 grand_coast_admin_site.register(Selection, GrandCoastModelAdmin)

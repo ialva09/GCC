@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -29,6 +31,8 @@ from .api import (
     _required_idempotency_key,
 )
 from .construction_policies import (
+    can_manage_external_estimate,
+    can_view_external_estimate,
     can_view_closeout,
     can_view_financials,
     can_view_permit,
@@ -41,21 +45,33 @@ from .construction_policies import (
 )
 from .construction_services import (
     complete_closeout_item,
+    create_commitment,
     record_cost,
+    record_commitment_status,
+    record_material_request_status,
     create_permit,
     record_deposit,
+    record_external_estimate_status,
+    record_external_invoice_status,
     record_permit_status,
     resolve_problem_report,
+    set_milestone_status,
     submit_problem_report,
     void_cost_entry,
 )
 from .models import (
     CloseoutItem,
+    Commitment,
     CostEntry,
     BudgetLine,
     Permit,
     ProblemReport,
     Project,
+    Milestone,
+    MaterialRequest,
+    Subcontractor,
+    Estimate,
+    PaymentSchedule,
 )
 
 
@@ -71,6 +87,138 @@ def _cost_data(entry):
         "source": entry.source,
         "is_void": entry.is_void,
     }
+
+
+def _boolean_payload(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+@_api_access
+def api_v1_estimate_external_status(request, pk):
+    try:
+        if not getattr(settings, "GCC_EXTERNAL_ESTIMATE_ENABLED", False):
+            return _error("Estimate status is disabled.", 404)
+        estimate = get_object_or_404(Estimate.objects.select_related("client"), pk=pk)
+        if not can_view_external_estimate(request.user, estimate=estimate):
+            return _error("Record not found.", 404)
+        if request.method == "GET":
+            can_manage = can_manage_external_estimate(request.user, estimate=estimate)
+            client_link = bool(
+                is_client(request.user)
+                and estimate.client_id
+                and estimate.client.user_id == request.user.pk
+                and estimate.external_client_visible
+            )
+            return JsonResponse({
+                "estimate": {
+                    "id": str(estimate.pk),
+                    "status": estimate.external_status,
+                    "status_label": estimate.get_external_status_display(),
+                    "core_status": estimate.status,
+                    "reference": estimate.external_reference,
+                    "status_at": estimate.external_status_at.isoformat() if estimate.external_status_at else None,
+                    "summary_amount": str(estimate.external_total) if can_manage and estimate.external_total is not None else None,
+                    "deposit_amount": str(estimate.external_deposit_amount) if can_manage and estimate.external_deposit_amount is not None else None,
+                    "has_published_link": bool(estimate.external_url and (can_manage or client_link)),
+                    "link": (
+                        request.build_absolute_uri(reverse("operations:external-estimate-link", kwargs={"pk": estimate.pk}))
+                        if estimate.external_url and (can_manage or client_link)
+                        else None
+                    ),
+                }
+            })
+        if not can_manage_external_estimate(request.user, estimate=estimate):
+            return _error("Estimate status updates are restricted to Owner, Manager, and Office users.", 403)
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        updated, created = record_external_estimate_status(
+            estimate,
+            actor=request.user,
+            status=payload.get("external_status"),
+            external_url=payload.get("external_url", estimate.external_url),
+            external_reference=payload.get("external_reference", estimate.external_reference),
+            external_total=payload.get("external_total", estimate.external_total),
+            external_deposit_amount=payload.get("external_deposit_amount", estimate.external_deposit_amount),
+            external_status_note=payload.get("external_status_note", estimate.external_status_note),
+            external_client_visible=(
+                _boolean_payload(payload.get("external_client_visible"))
+                if "external_client_visible" in payload
+                else estimate.external_client_visible
+            ),
+            expected_updated_at=payload.get("expected_updated_at"),
+            idempotency_key=key,
+        )
+        return JsonResponse({"created": created, "status": updated.external_status, "core_status": updated.status})
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+@_api_access
+def api_v1_payment_schedule_external_status(request, pk):
+    try:
+        if not getattr(settings, "GCC_EXTERNAL_ESTIMATE_ENABLED", False):
+            return _error("Estimate status is disabled.", 404)
+        schedule = get_object_or_404(PaymentSchedule.objects.select_related("project"), pk=pk)
+        if not can_view_external_estimate(request.user, project=schedule.project):
+            return _error("Record not found.", 404)
+        if request.method == "GET":
+            can_manage = can_manage_external_estimate(request.user, project=schedule.project)
+            client_link = bool(
+                is_client(request.user)
+                and schedule.project.client_id
+                and schedule.project.client.user_id == request.user.pk
+                and schedule.external_client_visible
+            )
+            return JsonResponse({
+                "payment_schedule": {
+                    "id": str(schedule.pk),
+                    "status": schedule.external_invoice_status,
+                    "status_label": schedule.get_external_invoice_status_display(),
+                    "grand_coast_status": schedule.status,
+                    "reference": schedule.external_invoice_reference,
+                    "status_at": schedule.external_invoice_status_at.isoformat() if schedule.external_invoice_status_at else None,
+                    "has_published_link": bool(schedule.external_invoice_url and (can_manage or client_link)),
+                    "link": (
+                        request.build_absolute_uri(reverse("operations:external-invoice-link", kwargs={"pk": schedule.pk}))
+                        if schedule.external_invoice_url and (can_manage or client_link)
+                        else None
+                    ),
+                }
+            })
+        if not can_manage_external_estimate(request.user, project=schedule.project):
+            return _error("Invoice updates are restricted to Owner, Manager, and Office users.", 403)
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        updated, created = record_external_invoice_status(
+            schedule,
+            actor=request.user,
+            status=payload.get("external_invoice_status"),
+            external_invoice_url=payload.get("external_invoice_url", schedule.external_invoice_url),
+            external_invoice_reference=payload.get("external_invoice_reference", schedule.external_invoice_reference),
+            external_invoice_status_note=payload.get("external_invoice_status_note", schedule.external_invoice_status_note),
+            external_client_visible=(
+                _boolean_payload(payload.get("external_client_visible"))
+                if "external_client_visible" in payload
+                else schedule.external_client_visible
+            ),
+            expected_updated_at=payload.get("expected_updated_at"),
+            idempotency_key=key,
+        )
+        return JsonResponse({"created": created, "status": updated.external_invoice_status, "grand_coast_status": updated.status})
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
 
 
 @never_cache
@@ -148,6 +296,148 @@ def api_v1_project_costs(request, pk):
             "created": created,
             "cost": _cost_data(entry),
         }, status=201 if created else 200)
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+def _commitment_data(commitment):
+    return {
+        "id": str(commitment.pk),
+        "project_id": str(commitment.project_id),
+        "budget_line_id": str(commitment.budget_line_id) if commitment.budget_line_id else None,
+        "subcontractor_id": str(commitment.subcontractor_id) if commitment.subcontractor_id else None,
+        "description": commitment.description,
+        "amount": str(commitment.amount),
+        "status": commitment.status,
+        "due_date": commitment.due_date.isoformat() if commitment.due_date else None,
+    }
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+@_api_access
+def api_v1_project_commitments(request, pk):
+    project = get_object_or_404(visible_projects(request.user), pk=pk)
+    if not can_view_financials(request.user, project):
+        return _error("Financial access denied.", 403)
+    if request.method == "GET":
+        return JsonResponse({
+            "results": [_commitment_data(item) for item in project.commitments.all()]
+        })
+    try:
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        budget_line = None
+        subcontractor = None
+        if payload.get("budget_line_id"):
+            budget_line = get_object_or_404(BudgetLine, pk=payload["budget_line_id"], project=project)
+        if payload.get("subcontractor_id"):
+            subcontractor = get_object_or_404(Subcontractor, pk=payload["subcontractor_id"])
+        commitment, created = create_commitment(
+            project,
+            actor=request.user,
+            description=payload.get("description"),
+            amount=_decimal(payload.get("amount"), minimum=Decimal("0.01")),
+            subcontractor=subcontractor,
+            budget_line=budget_line,
+            status=str(payload.get("status", Commitment.Status.PLANNED)),
+            due_date=_date(payload.get("due_date")),
+            idempotency_key=key,
+        )
+        return JsonResponse({
+            "created": created,
+            "commitment": _commitment_data(commitment),
+        }, status=201 if created else 200)
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+@never_cache
+@require_POST
+@_api_access
+def api_v1_commitment_status(request, pk):
+    try:
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        commitment = get_object_or_404(Commitment.objects.select_related("project"), pk=pk)
+        if not can_view_project(request.user, commitment.project):
+            return _error("Record not found.", 404)
+        commitment = record_commitment_status(
+            commitment,
+            actor=request.user,
+            status=str(payload.get("status", "")),
+            idempotency_key=key,
+        )
+        return JsonResponse({"commitment": _commitment_data(commitment)})
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+@never_cache
+@require_POST
+@_api_access
+def api_v1_milestone_status(request, pk):
+    try:
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        milestone = get_object_or_404(Milestone.objects.select_related("project"), pk=pk)
+        if not can_view_project(request.user, milestone.project):
+            return _error("Record not found.", 404)
+        milestone = set_milestone_status(
+            milestone,
+            actor=request.user,
+            is_complete=_boolean_payload(payload.get("is_complete")),
+            idempotency_key=key,
+        )
+        return JsonResponse({
+            "milestone": {
+                "id": str(milestone.pk),
+                "project_id": str(milestone.project_id),
+                "title": milestone.title,
+                "is_complete": milestone.is_complete,
+                "completed_at": milestone.completed_at.isoformat() if milestone.completed_at else None,
+            }
+        })
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+@never_cache
+@require_POST
+@_api_access
+def api_v1_material_request_status(request, pk):
+    try:
+        payload = _body(request)
+        key = _required_idempotency_key(request, payload)
+        material_request = get_object_or_404(
+            MaterialRequest.objects.select_related("project"),
+            pk=pk,
+        )
+        if not can_view_project(request.user, material_request.project):
+            return _error("Record not found.", 404)
+        material_request = record_material_request_status(
+            material_request,
+            actor=request.user,
+            status=str(payload.get("status", "")),
+            idempotency_key=key,
+        )
+        return JsonResponse({
+            "material_request": {
+                "id": str(material_request.pk),
+                "project_id": str(material_request.project_id),
+                "description": material_request.description,
+                "status": material_request.status,
+                "approved_at": material_request.approved_at.isoformat() if material_request.approved_at else None,
+            }
+        })
     except PermissionDenied as exc:
         return _error(exc, 403)
     except ValidationError as exc:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from urllib.parse import urlparse
 
 from django import forms
 from django.contrib.auth import get_user_model
@@ -9,6 +10,7 @@ from django.contrib.auth.forms import AuthenticationForm, PasswordResetForm
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.db.models import Q
 from django.forms import BaseInlineFormSet, inlineformset_factory
 
@@ -112,7 +114,11 @@ class ContactLeadForm(forms.Form):
 class LeadForm(forms.ModelForm):
     class Meta:
         model = Lead
-        fields = ["name", "email", "phone", "service", "location", "budget", "timeline", "source", "note", "status", "priority", "assigned_to"]
+        fields = [
+            "name", "email", "phone", "service", "location", "budget", "budget_amount",
+            "timeline", "source", "note", "address_line1", "address_line2", "city",
+            "state", "postal_code", "status", "priority", "assigned_to",
+        ]
         widgets = {
             "note": forms.Textarea(attrs={"rows": 4}),
         }
@@ -222,6 +228,38 @@ class EstimateCreateForm(forms.ModelForm):
         if not lead and not client:
             raise ValidationError("Choose a lead or client for this estimate.")
         return cleaned
+
+
+class ExternalEstimateCreateForm(forms.ModelForm):
+    class Meta:
+        model = Estimate
+        fields = ["client", "external_url"]
+        labels = {
+            "client": "Client",
+            "external_url": "Estimate link",
+        }
+        widgets = {
+            "external_url": forms.URLInput(
+                attrs={"placeholder": "https://...", "autocomplete": "url"}
+            ),
+        }
+
+    def __init__(self, *args, client_queryset=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["client"].required = True
+        self.fields["external_url"].required = True
+        if client_queryset is not None:
+            self.fields["client"].queryset = client_queryset
+
+    def clean_external_url(self):
+        value = (self.cleaned_data.get("external_url") or "").strip()
+        URLValidator()(value)
+        parsed = urlparse(value)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            raise ValidationError("Use an HTTPS estimate link.")
+        if parsed.username or parsed.password:
+            raise ValidationError("Estimate links cannot contain embedded credentials.")
+        return value
 
 
 class EstimateForm(forms.ModelForm):
@@ -395,14 +433,14 @@ class ClientMessageForm(forms.ModelForm):
     class Meta:
         model = ClientMessage
         fields = ["body"]
-        widgets = {"body": forms.Textarea(attrs={"rows": 4, "placeholder": "How can the team help?"})}
+        widgets = {"body": forms.Textarea(attrs={"rows": 4, "placeholder": "Write a message to Grand Coast..."})}
 
 
 class StaffMessageForm(forms.ModelForm):
     class Meta:
         model = ClientMessage
         fields = ["body"]
-        widgets = {"body": forms.Textarea(attrs={"rows": 3, "placeholder": "Reply to the client..."})}
+        widgets = {"body": forms.Textarea(attrs={"rows": 3, "placeholder": "Write a message to the client..."})}
 
 
 class EmployeeProfileForm(forms.ModelForm):

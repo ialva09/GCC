@@ -26,6 +26,7 @@
                 <a class="is-current" href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#overview">Project overview</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#updates">Updates</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#photos">Photos &amp; videos</a>
+                <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#conversation">Messages</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#documents">Estimate &amp; files</a>
                 <a href="?client={{ portal_client.pk }}{% if portal_project %}&amp;project={{ portal_project.pk }}{% endif %}#notifications">Notifications{% if client_unread_notifications_count %} ({{ client_unread_notifications_count }}){% endif %}</a>
             </nav>
@@ -51,10 +52,7 @@
                 <h1>We’re preparing your project workspace.</h1>
                 <p>Your account is active. The Grand Coast team will add project details and next steps here.</p>
             </section>
-            <section class="portal-message-panel" id="conversation">
-                <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the Grand Coast team while your project is being prepared.</p></div>
-                {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message â†’</button></form>{% endif %}
-            </section>
+            {% include 'operations/portal_conversation.html' %}
         {% elif portal_estimates and not portal_project %}
             <section class="portal-empty">
                 <span class="gold-rule"></span>
@@ -64,10 +62,7 @@
             </section>
             <div class="portal-grid">
                 <div class="portal-primary-column">
-                    <section class="portal-message-panel" id="conversation">
-                        <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the team and keep project context in one place.</p></div>
-                        {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}{% if portal_estimate %}<input type="hidden" name="estimate" value="{{ portal_estimate.pk }}">{% endif %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message →</button></form>{% endif %}
-                    </section>
+                    {% include 'operations/portal_conversation.html' %}
                 </div>
                 <aside class="portal-side-column">{% include 'operations/portal_estimate_card.html' %}</aside>
             </div>
@@ -173,7 +168,8 @@
                                 <span class="section-kicker">Payment schedule</span>
                                 <h3>Project milestones</h3>
                                 {% for schedule in portal_payment_schedules %}
-                                    <div class="portal-control-row"><span>{{ schedule.description }} · {{ schedule.get_status_display }}</span><strong>&#36;{{ schedule.remaining_amount|floatformat:2 }}</strong></div>
+                                    <div class="portal-control-row"><span>{{ schedule.description }} · {{ schedule.get_status_display }}{% if external_estimate_portal_enabled and schedule.external_invoice_status != 'not_started' %} · Invoice {{ schedule.get_external_invoice_status_display }}{% endif %}</span><strong>&#36;{{ schedule.remaining_amount|floatformat:2 }}</strong></div>
+                                    {% if external_estimate_portal_enabled and schedule.external_client_visible and schedule.external_invoice_url %}<a class="text-link-button" href="{% url 'operations:external-invoice-link' pk=schedule.pk %}">Open invoice →</a>{% endif %}
                                 {% endfor %}
                                 <small class="secure-note">Payments are recorded by Grand Coast. No card or bank details are stored in this portal.</small>
                             </article>
@@ -216,14 +212,23 @@
                         </div>
                     </section>
 
-                    <section class="portal-message-panel" id="conversation">
-                        <div><span class="section-kicker">Questions?</span><h2>Keep the conversation moving.</h2><p>Send a question to the team and keep project context in one place.</p></div>
-                        {% if not request.user.is_staff %}<form class="portal-message-form" method="post" action="{% url 'operations:portal-message' %}">{% csrf_token %}<input type="hidden" name="project" value="{{ portal_project.pk }}">{% if portal_estimate %}<input type="hidden" name="estimate" value="{{ portal_estimate.pk }}">{% endif %}{{ portal_message_form.body }}<button class="button button-outline" type="submit">Send message →</button></form>
-{% endif %}
-                    </section>
+                    {% include 'operations/portal_conversation.html' %}
                 </div>
 
                 <aside class="portal-side-column">
+                    {% if external_estimate_portal_enabled or external_estimate_feature_enabled %}
+                    <section class="estimate-card" id="documents">
+                        {% if portal_estimate %}
+                            <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">Status</span></div>
+                            <h2>{{ portal_estimate.title }}</h2>
+                            <div class="estimate-status"><span class="status-check">{% if portal_estimate.external_status == 'approved' %}✓{% else %}•{% endif %}</span><span>{{ portal_estimate.get_external_status_display }}</span></div>
+                            {% if portal_estimate.external_client_visible and portal_estimate.external_url %}<a class="button button-primary full-width" href="{% url 'operations:external-estimate-link' pk=portal_estimate.pk %}">Open estimate →</a>{% endif %}
+                            {% if portal_estimate.external_status == 'approved' %}<div class="portal-accepted-note">Grand Coast has recorded the estimate as approved. The team will share the next project step here.</div>{% elif portal_estimate.external_status == 'rejected' %}<div class="portal-accepted-note">This estimate was declined. Contact Grand Coast if you would like to discuss a revision.</div>{% else %}<div class="portal-accepted-note">The detailed estimate and signature action are handled by the estimate service selected by Grand Coast.</div>{% endif %}
+                        {% else %}
+                            <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the team records its status.</p>
+                        {% endif %}
+                    </section>
+                    {% else %}
                     <section class="estimate-card" id="documents">
                         {% if portal_estimate %}
                             <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">#{{ portal_estimate.number }}</span></div>
@@ -249,6 +254,7 @@
                         {% endif %}
                     </section>
                     <section class="portal-help-panel"><span class="section-kicker">Project contact</span><h3>Grand Coast Construction</h3><p>Owner &amp; project team</p><a class="text-link-button" href="tel:+18057181502">(805) 718-1502 →</a></section>
+                    {% endif %}
                 </aside>
             </div>
         {% endif %}

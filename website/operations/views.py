@@ -3,7 +3,8 @@ from __future__ import annotations
 import calendar as calendar_module
 import json
 import mimetypes
-from datetime import date, timedelta
+import uuid
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import wraps
 from urllib.parse import urlencode
@@ -31,6 +32,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.templatetags.static import static
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .forms import (
@@ -40,6 +42,7 @@ from .forms import (
     ContactLeadForm,
     ClientForm,
     EstimateCreateForm,
+    ExternalEstimateCreateForm,
     EstimateForm,
     EstimateLineItemFormSet,
     EmployeeInviteForm,
@@ -85,6 +88,7 @@ from .models import (
     EmployeeNotification,
     EmployeeScheduleOverride,
     EmployeeWeeklySchedule,
+    EmailOutbox,
     Lead,
     LeadAttachment,
     MediaAsset,
@@ -98,9 +102,13 @@ from .models import (
     Selection,
     Service,
     SiteSettings,
+    Inspection,
+    SiteVisit,
+    SubcontractorAssignment,
     Task,
     TimeEntry,
     MobilePushDevice,
+    WorkflowEvent,
     effective_employee_schedule,
     schedule_event_local_dates,
     sanitize_uploaded_name,
@@ -126,16 +134,27 @@ from .construction_services import (
     approve_change_order as approve_change_order_command,
     convert_lead as convert_lead_command,
     create_project_from_estimate,
+    record_external_estimate_status,
+    record_external_invoice_status,
+    set_milestone_status,
     send_estimate as send_estimate_command,
 )
 from .construction_policies import (
+    can_manage_external_estimate,
     can_view_agreement,
     can_view_lead,
     can_view_media,
     can_view_project_document,
+    can_view_external_estimate,
+    execution_loop_enabled_for,
     feature_enabled,
+    is_client,
+    external_estimate_enabled_for,
+    visible_estimates,
 )
+from .construction_forms import ExternalEstimateStatusForm, ExternalInvoiceStatusForm
 from .notifications import queue_client_notifications, queue_employee_notifications
+from .email_delivery import deliver_email_outbox, queue_client_invite_email, queue_email
 
 
 PUBLIC_PAGES = {"home", "services", "projects", "process", "contact"}
@@ -143,6 +162,43 @@ DASHBOARD_SECTIONS = {"overview", "clients", "leads", "estimates", "projects", "
 TEAM_SECTIONS = {"overview", "projects", "tasks", "calendar", "time", "media", "profile", "notifications"}
 EMPLOYEE_GROUPS = {"Manager", "Office", "Field", "Sales"}
 LEADERSHIP_GROUPS = {"Owner", "Manager"}
+
+
+def _prepare_client_invite_delivery(request, *, client, invite, raw_token, actor):
+    '''Queue and, when enabled, immediately deliver a client portal invite.'''
+    invite_url = request.build_absolute_uri(
+        reverse('operations:client-invite', kwargs={'token': raw_token})
+    )
+    outbox = queue_client_invite_email(invite, invite_url, actor=actor)
+    outbox = deliver_email_outbox(outbox)
+    request.session['last_invite_url'] = invite_url
+    request.session['last_invite_email_status'] = outbox.status if outbox else ''
+    request.session['last_invite_recipient'] = client.email
+    if outbox and outbox.status == EmailOutbox.Status.SENT:
+        messages.success(
+            request,
+            f'A one-time client portal invite was emailed to {client.email}. '
+            'The copy link remains available below.',
+        )
+    elif outbox and outbox.status == EmailOutbox.Status.FAILED:
+        messages.warning(
+            request,
+            'The invite was created, but email delivery failed. '
+            'Use the one-time copy link below.',
+        )
+    elif outbox:
+        messages.info(
+            request,
+            'The invite was created. Email delivery is pending or disabled; '
+            'use the one-time copy link below.',
+        )
+    else:
+        messages.warning(
+            request,
+            'The invite was created, but this client has no deliverable email address. '
+            'Use the one-time copy link below.',
+        )
+    return invite_url, outbox
 
 
 def pwa_manifest(request):
@@ -362,7 +418,11 @@ def _operations_navigation_counts(user, *, team_mode=False):
     active_projects_count = projects_qs.exclude(status=Project.Status.COMPLETE).count()
     visible_documents_count = ProjectDocument.objects.filter(project__in=projects_qs).count()
     visible_media_count = MediaAsset.objects.filter(project__in=projects_qs).count()
-    unread_notifications_count = EmployeeNotification.objects.filter(employee=user, read_at__isnull=True).count()
+    unread_notifications_count = EmployeeNotification.objects.filter(
+        employee=user,
+        read_at__isnull=True,
+        dismissed_at__isnull=True,
+    ).count()
 
     if is_admin_workspace:
         unread_messages_count = ClientMessage.objects.filter(
@@ -697,11 +757,12 @@ def _dashboard_context(request, section, form_overrides=None):
     if selected_lead is None and leads:
         selected_lead = leads[0]
 
-    estimates = list(
-        Estimate.objects.select_related("lead", "client")
-        .prefetch_related("line_items", "projects")
-        .all()
-    )
+    external_estimate_enabled = external_estimate_enabled_for(request.user)
+    estimate_queryset = visible_estimates(request.user) if external_estimate_enabled else Estimate.objects.all()
+    estimate_queryset = estimate_queryset.select_related("lead", "client").prefetch_related("projects")
+    if not external_estimate_enabled:
+        estimate_queryset = estimate_queryset.prefetch_related("line_items")
+    estimates = list(estimate_queryset)
     selected_estimate = None
     if request.GET.get("estimate"):
         selected_estimate = next((item for item in estimates if str(item.pk) == request.GET["estimate"]), None)
@@ -757,13 +818,18 @@ def _dashboard_context(request, section, form_overrides=None):
 
     new_type = request.GET.get("new", "")
     initial_lead = selected_lead if new_type == "estimate" else None
-    dashboard_forms = {
-        "lead_form": LeadForm(staff_queryset=_staff_users()),
-        "estimate_create_form": EstimateCreateForm(
+    estimate_create_form = (
+        ExternalEstimateCreateForm(client_queryset=Client.objects.all())
+        if external_estimate_enabled
+        else EstimateCreateForm(
             lead_queryset=Lead.objects.filter(deleted_at__isnull=True).exclude(status=Lead.Status.LOST),
             client_queryset=Client.objects.all(),
             initial={"lead": initial_lead.pk if initial_lead else None},
-        ),
+        )
+    )
+    dashboard_forms = {
+        "lead_form": LeadForm(staff_queryset=_staff_users()),
+        "estimate_create_form": estimate_create_form,
         "estimate_form": EstimateForm(instance=selected_estimate) if selected_estimate else EstimateForm(),
         "estimate_line_formset": (
             EstimateLineItemFormSet(instance=selected_estimate, prefix="lines")
@@ -786,6 +852,15 @@ def _dashboard_context(request, section, form_overrides=None):
         "lead_note_form": LeadNoteForm(instance=selected_lead, prefix="note") if selected_lead else LeadNoteForm(prefix="note"),
         "lead_assignment_form": LeadAssignmentForm(instance=selected_lead, staff_queryset=_staff_users()) if selected_lead else LeadAssignmentForm(staff_queryset=_staff_users()),
         "follow_up_form": QuickTaskForm(prefix="followup", staff_queryset=_staff_users()),
+        "external_estimate_status_form": (
+            ExternalEstimateStatusForm(instance=selected_estimate)
+            if (
+                external_estimate_enabled
+                and selected_estimate
+                and can_manage_external_estimate(request.user, estimate=selected_estimate)
+            )
+            else None
+        ),
     }
     dashboard_forms.update(form_overrides)
     content_form = dashboard_forms["content_form"]
@@ -829,6 +904,14 @@ def _dashboard_context(request, section, form_overrides=None):
         "selected_lead": selected_lead,
         "estimates": estimates,
         "selected_estimate": selected_estimate,
+        "external_estimate_enabled": external_estimate_enabled,
+        "can_manage_external_estimate_status": bool(
+            external_estimate_enabled
+            and selected_estimate
+            and can_manage_external_estimate(request.user, estimate=selected_estimate)
+        ),
+        "external_status_idempotency_key": str(uuid.uuid4()),
+        "external_email_idempotency_key": str(uuid.uuid4()),
         "projects": projects,
         "selected_project": selected_project,
         "media_assets": media_assets,
@@ -855,6 +938,8 @@ def _dashboard_context(request, section, form_overrides=None):
         "site_settings": site_settings,
         "new_type": new_type,
         "last_invite_url": request.session.pop("last_invite_url", ""),
+        "last_invite_email_status": request.session.pop("last_invite_email_status", ""),
+        "last_invite_recipient": request.session.pop("last_invite_recipient", ""),
         **dashboard_forms,
     }
 
@@ -887,6 +972,182 @@ def _workspace_redirect(request, section, **params):
     url = reverse(route, kwargs={url_name: section})
     clean_params = {key: value for key, value in params.items() if value not in (None, "")}
     return redirect(f"{url}?{urlencode(clean_params)}" if clean_params else url)
+
+
+class _DerivedCalendarAssignees:
+    def __init__(self, users):
+        self._users = [user for user in users if user is not None]
+
+    def all(self):
+        return self._users
+
+
+class _DerivedCalendarEvent:
+    is_virtual = True
+
+    def __init__(self, *, key, title, project, start_at, end_at, location="", notes="", assignees=None, anchor="execution-loop"):
+        self.pk = f"derived:{key}"
+        self.title = title
+        self.project = project
+        self.task = None
+        self.start_at = start_at
+        self.end_at = end_at
+        self.location = location
+        self.notes = notes
+        self.created_by = None
+        self.assignees = _DerivedCalendarAssignees(assignees or [])
+        self.source_url = (
+            reverse("operations:project-operations", kwargs={"pk": project.pk})
+            + f"#{anchor}"
+            if project is not None
+            else reverse("operations:dashboard")
+        )
+
+
+def _calendar_at(day, hour, minute=0):
+    return timezone.make_aware(datetime.combine(day, time(hour, minute)), CALENDAR_TIME_ZONE)
+
+
+def _execution_calendar_events(projects):
+    """Project-linked, read-only calendar signals for the execution pilot."""
+    project_ids = [project.pk for project in projects]
+    project_by_id = {project.pk: project for project in projects}
+    derived = []
+    visits = SiteVisit.objects.filter(
+        project_id__in=project_ids,
+        scheduled_at__isnull=False,
+    ).exclude(status=SiteVisit.Status.CANCELLED).select_related("project", "assigned_to")
+    for visit in visits:
+        project = project_by_id.get(visit.project_id)
+        if project is None:
+            continue
+        start = visit.scheduled_at
+        derived.append(_DerivedCalendarEvent(
+            key=f"site-visit:{visit.pk}",
+            title=f"Site visit: {project.title}",
+            project=project,
+            start_at=start,
+            end_at=start + timedelta(hours=1),
+            location=visit.address or project.location,
+            notes=visit.scope,
+            assignees=[visit.assigned_to or project.project_manager],
+            anchor="site-visits",
+        ))
+    inspections = Inspection.objects.filter(
+        project_id__in=project_ids,
+        scheduled_at__isnull=False,
+    ).exclude(status=Inspection.Status.CANCELLED).select_related("project")
+    for inspection in inspections:
+        project = project_by_id.get(inspection.project_id)
+        if project is None:
+            continue
+        start = inspection.scheduled_at
+        derived.append(_DerivedCalendarEvent(
+            key=f"inspection:{inspection.pk}",
+            title=f"Inspection: {inspection.inspection_type}",
+            project=project,
+            start_at=start,
+            end_at=start + timedelta(hours=1),
+            location=project.location,
+            notes=inspection.corrective_action or inspection.result_notes,
+            assignees=[project.project_manager],
+            anchor="permits",
+        ))
+    tasks = Task.objects.filter(
+        project_id__in=project_ids,
+        due_date__isnull=False,
+    ).exclude(status=Task.Status.COMPLETE).select_related("project", "assigned_to")
+    for task in tasks:
+        project = project_by_id.get(task.project_id)
+        if project is None:
+            continue
+        start = _calendar_at(task.due_date, 9)
+        derived.append(_DerivedCalendarEvent(
+            key=f"task:{task.pk}",
+            title=f"Task: {task.title}",
+            project=project,
+            start_at=start,
+            end_at=start + timedelta(hours=1),
+            location=project.location,
+            notes=task.description,
+            assignees=[task.assigned_to or project.project_manager],
+            anchor="schedule",
+        ))
+    assignments = SubcontractorAssignment.objects.filter(
+        project_id__in=project_ids,
+        start_date__isnull=False,
+    ).exclude(status=SubcontractorAssignment.Status.CANCELLED).select_related("project")
+    for assignment in assignments:
+        project = project_by_id.get(assignment.project_id)
+        if project is None:
+            continue
+        start = _calendar_at(assignment.start_date, 8)
+        finish_day = assignment.end_date or assignment.start_date
+        end = _calendar_at(finish_day, 17)
+        if end <= start:
+            end = start + timedelta(hours=1)
+        derived.append(_DerivedCalendarEvent(
+            key=f"assignment:{assignment.pk}",
+            title=f"Subcontractor: {assignment.work_package}",
+            project=project,
+            start_at=start,
+            end_at=end,
+            location=project.location,
+            notes=assignment.scope,
+            assignees=[project.project_manager],
+            anchor="subcontractors",
+        ))
+    for project in projects:
+        if project.target_date and project.status != Project.Status.COMPLETE:
+            start = _calendar_at(project.target_date, 16)
+            derived.append(_DerivedCalendarEvent(
+                key=f"deadline:{project.pk}",
+                title=f"Project deadline: {project.title}",
+                project=project,
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                location=project.location,
+                notes=project.next_step,
+                assignees=[project.project_manager],
+                anchor="schedule",
+            ))
+    return derived
+
+
+def _calendar_conflicts(events, overrides):
+    conflicts = []
+    for index, event in enumerate(events):
+        event_assignees = {str(user.pk) for user in event.assignees.all()}
+        event_project_id = getattr(getattr(event, "project", None), "pk", None)
+        for other in events[index + 1:]:
+            if event.end_at <= other.start_at or other.end_at <= event.start_at:
+                continue
+            other_assignees = {str(user.pk) for user in other.assignees.all()}
+            other_project_id = getattr(getattr(other, "project", None), "pk", None)
+            if event_assignees & other_assignees:
+                reason = "Assigned person has overlapping events."
+            elif event_project_id and event_project_id == other_project_id:
+                reason = "Project has overlapping scheduled work."
+            else:
+                continue
+            conflicts.append({"event": event, "other": other, "reason": reason})
+    for event in events:
+        local_start = timezone.localtime(event.start_at, CALENDAR_TIME_ZONE)
+        local_end = timezone.localtime(event.end_at, CALENDAR_TIME_ZONE)
+        override = overrides.get(local_start.date())
+        if override is None:
+            continue
+        if override.status == CalendarDayOverride.Status.CLOSED:
+            conflicts.append({"event": event, "other": None, "reason": "This event falls on a closed company day."})
+        elif override.status == CalendarDayOverride.Status.SHORT:
+            if (
+                override.short_start
+                and local_start.time() < override.short_start
+                or override.short_end
+                and local_end.time() > override.short_end
+            ):
+                conflicts.append({"event": event, "other": None, "reason": "This event falls outside the short-day hours."})
+    return conflicts
 
 
 def _workspace_context(request, section, team_mode=False, form_overrides=None):
@@ -937,6 +1198,10 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
 
     schedule_queryset = _visible_team_schedule_for_user(request.user) if team_mode else _visible_schedule_for_user(request.user)
     events = list(schedule_queryset.select_related("project", "task", "created_by").prefetch_related("assignees"))
+    derived_calendar_events = []
+    if section == "calendar" and execution_loop_enabled_for(request.user):
+        derived_calendar_events = _execution_calendar_events(projects)
+        events.extend(derived_calendar_events)
     today = timezone.localtime(timezone.now(), CALENDAR_TIME_ZONE).date()
     requested_month = request.GET.get("month", "")
     try:
@@ -959,6 +1224,11 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
             date__range=(calendar_dates[0], calendar_dates[-1]),
         )
     }
+    calendar_conflicts = (
+        _calendar_conflicts(events, overrides_by_day)
+        if derived_calendar_events
+        else []
+    )
     calendar_weeks = []
     calendar_day_map = {}
     for week in month_calendar:
@@ -1133,7 +1403,13 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     selected_day_events = selected_day["events"] if selected_day else []
     selected_day_override = selected_day["override"] if selected_day else None
     event_id = request.GET.get("event")
-    selected_event = next((event for event in events if str(event.pk) == event_id), None) if event_id else None
+    selected_event = next(
+        (
+            event for event in events
+            if str(event.pk) == event_id and not getattr(event, "is_virtual", False)
+        ),
+        None,
+    ) if event_id else None
     selected_task_id = request.GET.get("task")
     selected_task = next((task for task in tasks if str(task.pk) == selected_task_id), None) if selected_task_id else (tasks[0] if tasks else None)
 
@@ -1193,6 +1469,9 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         )
     event_form = ScheduleEventForm(
         instance=selected_event if request.GET.get("edit") == "event" else None,
+        initial={
+            "project": selected_project_id,
+        } if request.GET.get("new") == "event" and selected_project_id else {},
         staff_queryset=_staff_users(),
         project_queryset=projects_qs,
         # Keep the editor's task choices independent from the currently active
@@ -1238,7 +1517,12 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     invite_form = form_overrides.get("invite_form", invite_form)
     selected_messages = []
     if selected_client:
-        selected_messages = list(ClientMessage.objects.filter(client=selected_client).select_related("project", "sent_by")[:25])
+        selected_messages = list(
+            ClientMessage.objects.filter(client=selected_client)
+            .select_related("project", "sent_by")
+            .order_by("-created_at")[:25]
+        )
+        selected_messages.sort(key=lambda message: message.created_at)
     selected_project_messages = []
     if team_mode and selected_project:
         selected_project_messages = list(ClientMessage.objects.filter(project=selected_project).select_related("client", "sent_by")[:25])
@@ -1250,6 +1534,15 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
             expires_at__gt=timezone.now(),
         ).exists()
     )
+    selected_client_invite_email_status = ''
+    if selected_client:
+        latest_invite = selected_client.invites.order_by('-created_at').first()
+        if latest_invite:
+            latest_email = EmailOutbox.objects.filter(
+                idempotency_key=f'client-portal-invite:{latest_invite.pk}'
+            ).first()
+            if latest_email:
+                selected_client_invite_email_status = latest_email.status
     unread_messages_count = ClientMessage.objects.filter(is_read=False, sent_by__is_staff=False).count()
     if team_mode:
         unread_messages_count = 0
@@ -1284,12 +1577,15 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "clients": clients,
         "selected_client": selected_client,
         "selected_client_portal_pending": selected_client_portal_pending,
+        "selected_client_invite_email_status": selected_client_invite_email_status,
         "documents": documents,
         "media_assets": media_assets,
         "media_visibility": media_visibility,
         "media_visibility_choices": MediaAsset.Visibility.choices,
         "events": calendar_preview_events,
         "calendar_preview_events": calendar_preview_events,
+        "calendar_conflicts": calendar_conflicts,
+        "derived_calendar_event_count": len(derived_calendar_events),
         "calendar_weeks": calendar_weeks,
         "calendar_month_days": calendar_month_days,
         "calendar_month_label": month_anchor.strftime("%B %Y"),
@@ -1343,8 +1639,14 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "can_edit_selected_task": can_edit_selected_task,
         "last_employee_invite_url": request.session.pop("last_employee_invite_url", ""),
         "last_reset_url": request.session.pop("last_reset_url", ""),
+        "last_invite_url": request.session.pop("last_invite_url", ""),
+        "last_invite_email_status": request.session.pop("last_invite_email_status", ""),
+        "last_invite_recipient": request.session.pop("last_invite_recipient", ""),
         "employee_notifications": list(
-            EmployeeNotification.objects.filter(employee=request.user)[:100]
+            EmployeeNotification.objects.filter(
+                employee=request.user,
+                dismissed_at__isnull=True,
+            )[:100]
         ),
     }
 
@@ -1481,9 +1783,14 @@ def client_create_invite(request, pk):
         messages.info(request, "This client already has portal access.")
     else:
         invite, raw_token = create_client_invite(client, actor=request.user)
-        request.session["last_invite_url"] = request.build_absolute_uri(reverse("operations:client-invite", kwargs={"token": raw_token}))
+        _prepare_client_invite_delivery(
+            request,
+            client=client,
+            invite=invite,
+            raw_token=raw_token,
+            actor=request.user,
+        )
         record_activity("Client portal invite created", client.name, actor=request.user)
-        messages.success(request, "A one-time client invite link is ready to copy.")
     return _workspace_redirect(request, "clients", client=client.pk)
 
 
@@ -2387,7 +2694,51 @@ def dashboard_notifications_mark_all_read(request):
     EmployeeNotification.objects.filter(
         employee=request.user,
         read_at__isnull=True,
+        dismissed_at__isnull=True,
     ).update(read_at=timezone.now(), updated_at=timezone.now())
+    return _workspace_redirect(request, "notifications")
+
+
+@require_POST
+@staff_required
+def dashboard_notification_clear(request, pk):
+    now = timezone.now()
+    with transaction.atomic():
+        notification = get_object_or_404(
+            EmployeeNotification.objects.select_for_update(),
+            pk=pk,
+            employee=request.user,
+        )
+        update_fields = ["dismissed_at", "updated_at"]
+        notification.dismissed_at = notification.dismissed_at or now
+        if notification.read_at is None:
+            notification.read_at = now
+            update_fields.append("read_at")
+        notification.save(update_fields=update_fields)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse({"ok": True, "cleared": True})
+    return _workspace_redirect(request, "notifications")
+
+
+@require_POST
+@staff_required
+def dashboard_notifications_clear_all(request):
+    now = timezone.now()
+    notifications = EmployeeNotification.objects.filter(
+        employee=request.user,
+        dismissed_at__isnull=True,
+    )
+    with transaction.atomic():
+        notifications.filter(read_at__isnull=True).update(
+            read_at=now,
+            updated_at=now,
+        )
+        cleared = notifications.update(
+            dismissed_at=now,
+            updated_at=now,
+        )
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse({"ok": True, "cleared": cleared})
     return _workspace_redirect(request, "notifications")
 
 
@@ -2408,17 +2759,56 @@ def employee_notification_mark_read(request, pk):
     if notification.read_at is None:
         notification.read_at = timezone.now()
         notification.save(update_fields=['read_at', 'updated_at'])
-    return JsonResponse({'ok': True, 'unread': EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True).count()})
+    return JsonResponse({'ok': True, 'unread': EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True, dismissed_at__isnull=True).count()})
 
 
 @require_POST
 @team_required
 def employee_notifications_mark_all_read(request):
-    updated = EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True).update(
+    updated = EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True, dismissed_at__isnull=True).update(
         read_at=timezone.now(),
         updated_at=timezone.now(),
     )
     return JsonResponse({'ok': True, 'marked_read': updated})
+
+
+@require_POST
+@team_required
+def employee_notification_clear(request, pk):
+    now = timezone.now()
+    with transaction.atomic():
+        notification = get_object_or_404(
+            EmployeeNotification.objects.select_for_update(),
+            pk=pk,
+            employee=request.user,
+        )
+        update_fields = ["dismissed_at", "updated_at"]
+        notification.dismissed_at = notification.dismissed_at or now
+        if notification.read_at is None:
+            notification.read_at = now
+            update_fields.append("read_at")
+        notification.save(update_fields=update_fields)
+    return JsonResponse({'ok': True, 'cleared': True, 'unread': EmployeeNotification.objects.filter(employee=request.user, read_at__isnull=True, dismissed_at__isnull=True).count()})
+
+
+@require_POST
+@team_required
+def employee_notifications_clear_all(request):
+    now = timezone.now()
+    notifications = EmployeeNotification.objects.filter(
+        employee=request.user,
+        dismissed_at__isnull=True,
+    )
+    with transaction.atomic():
+        notifications.filter(read_at__isnull=True).update(
+            read_at=now,
+            updated_at=now,
+        )
+        cleared = notifications.update(
+            dismissed_at=now,
+            updated_at=now,
+        )
+    return JsonResponse({'ok': True, 'cleared': cleared})
 
 
 @require_POST
@@ -2898,9 +3288,59 @@ def _estimate_from_form(form, request):
     return estimate
 
 
+def _external_estimate_from_form(form, request):
+    """Create only the GCC recipient/link record for an external estimate."""
+    client = form.cleaned_data["client"]
+    lead = (
+        Lead.objects.filter(
+            client=client,
+            deleted_at__isnull=True,
+        )
+        .exclude(status=Lead.Status.LOST)
+        .order_by("-created_at")
+        .first()
+    )
+    estimate = Estimate.objects.create(
+        client=client,
+        lead=lead,
+        title=f"Estimate for {client.name}",
+        created_by=request.user,
+        external_url=form.cleaned_data["external_url"],
+        external_status=Estimate.ExternalEstimateStatus.NOT_STARTED,
+    )
+    if lead and lead.status not in {Lead.Status.WON, Lead.Status.LOST}:
+        lead.status = Lead.Status.QUOTED
+        lead.save(update_fields=["status", "updated_at"])
+    return estimate
+
+
 @require_POST
 @staff_required
 def estimate_create(request):
+    if external_estimate_enabled_for(request.user):
+        form = ExternalEstimateCreateForm(
+            request.POST,
+            client_queryset=Client.objects.all(),
+        )
+        if form.is_valid():
+            with transaction.atomic():
+                estimate = _external_estimate_from_form(form, request)
+                record_activity(
+                    f"Estimate #{estimate.number} created",
+                    f"{estimate.client or 'Unassigned client'} - external link recorded",
+                    actor=request.user,
+                    lead=estimate.lead,
+                    estimate=estimate,
+                )
+            messages.success(request, f"Estimate #{estimate.number} created.")
+            return _dashboard_redirect("estimates", estimate=estimate.pk)
+        messages.error(request, "Please choose a client and provide a secure estimate link.")
+        return _render_dashboard_form_error(
+            request,
+            "estimates",
+            {"estimate_create_form": form},
+            new="estimate",
+        )
     form = EstimateCreateForm(
         request.POST,
         lead_queryset=Lead.objects.filter(deleted_at__isnull=True).exclude(status=Lead.Status.LOST),
@@ -2925,6 +3365,67 @@ def estimate_create(request):
         {"estimate_create_form": form},
         new="estimate",
     )
+
+
+@require_POST
+@staff_required
+def external_estimate_send(request, pk):
+    """Optionally email the saved estimate link through the GCC outbox."""
+    if not feature_enabled("external_estimate", default=False):
+        raise Http404
+    estimate = get_object_or_404(
+        Estimate.objects.select_related("client"),
+        pk=pk,
+    )
+    if not can_manage_external_estimate(request.user, estimate=estimate):
+        raise PermissionDenied
+    client = estimate.client
+    if not estimate.external_url or not client or not client.email:
+        messages.error(request, "Add an estimate link and a client email before sending.")
+        return _dashboard_redirect("estimates", estimate=estimate.pk)
+
+    idempotency_key = str(request.POST.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        idempotency_key = f"external-estimate-email:{estimate.pk}:{uuid.uuid4().hex}"
+    idempotency_key = idempotency_key[:100]
+    with transaction.atomic():
+        locked = Estimate.objects.select_for_update().select_related("client").get(pk=estimate.pk)
+        if locked.external_status == Estimate.ExternalEstimateStatus.NOT_STARTED:
+            locked, _created = record_external_estimate_status(
+                locked,
+                actor=request.user,
+                status=Estimate.ExternalEstimateStatus.SENT,
+                external_url=locked.external_url,
+                external_client_visible=locked.external_client_visible,
+                idempotency_key=f"{idempotency_key}:status",
+            )
+        outbox = queue_email(
+            recipient=client.email,
+            subject="Your Grand Coast estimate is ready",
+            body=(
+                f"Hello {client.name},\n\n"
+                "Your Grand Coast Construction estimate is ready to review. "
+                "Open it here:\n\n"
+                f"{locked.external_url}\n\n"
+                "You may continue using this link from your usual email or text conversation. "
+                "If the team has published it, the same estimate is also available in your Grand Coast client portal.\n\n"
+                "Grand Coast Construction"
+            ),
+            actor=request.user,
+            client=client,
+            idempotency_key=idempotency_key,
+        )
+    outbox = deliver_email_outbox(outbox)
+    if outbox and outbox.status == EmailOutbox.Status.SENT:
+        messages.success(request, f"Estimate link emailed to {client.email}.")
+    elif outbox and outbox.status == EmailOutbox.Status.FAILED:
+        messages.warning(
+            request,
+            "The estimate was saved, but email delivery failed. You can continue sending the link manually.",
+        )
+    else:
+        messages.info(request, "Estimate link queued for email delivery.")
+    return _dashboard_redirect("estimates", estimate=estimate.pk)
 
 
 def _estimate_formset_total(formset):
@@ -3285,14 +3786,13 @@ def project_update(request, pk):
 @staff_required
 def milestone_toggle(request, pk):
     milestone = get_object_or_404(Milestone.objects.select_related("project"), pk=pk)
-    milestone.is_complete = request.POST.get("is_complete") == "on"
-    milestone.completed_at = timezone.now() if milestone.is_complete else None
-    milestone.save(update_fields=["is_complete", "completed_at"])
-    record_activity(
-        f"{milestone.project.title}: {milestone.title}",
-        "Milestone complete" if milestone.is_complete else "Milestone reopened",
+    set_milestone_status(
+        milestone,
         actor=request.user,
-        project=milestone.project,
+        is_complete=request.POST.get("is_complete") == "on",
+        idempotency_key=request.POST.get("idempotency_key") or (
+            f"milestone-toggle:{milestone.pk}:{request.POST.get('is_complete') == 'on'}:{milestone.completed_at or ''}"
+        ),
     )
     messages.success(request, "Milestone updated.")
     return _dashboard_redirect("projects", project=milestone.project.pk)
@@ -3312,12 +3812,38 @@ def project_add_update(request, pk):
         update = form.save(commit=False)
         if team_mode:
             update.visibility = ProjectUpdate.Visibility.INTERNAL
-        update.project = project
-        update.created_by = request.user
-        update.save()
-        if not team_mode:
-            project.next_step = update.title
-            project.save(update_fields=["next_step", "updated_at"])
+        idempotency_key = str(request.POST.get("idempotency_key") or "").strip()
+        event_key = f"project-update:{idempotency_key}"[:100] if idempotency_key else None
+        with transaction.atomic():
+            locked_project = Project.objects.select_for_update().get(pk=project.pk)
+            if event_key:
+                existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+                if existing_event:
+                    if existing_event.project_id != locked_project.pk:
+                        raise PermissionDenied
+                    messages.info(request, "That project update was already published.")
+                    return _workspace_redirect(request, "projects", project=locked_project.pk)
+            update.project = locked_project
+            update.created_by = request.user
+            update.save()
+            project = locked_project
+            if not team_mode:
+                project.next_step = update.title
+                project.save(update_fields=["next_step", "updated_at"])
+            if event_key:
+                WorkflowEvent.objects.create(
+                    idempotency_key=event_key,
+                    event_type="project_update_created",
+                    source="team" if team_mode else "web",
+                    actor=request.user,
+                    project=project,
+                    related_model="ProjectUpdate",
+                    related_id=str(update.pk),
+                    after_state={
+                        "title": update.title,
+                        "visibility": update.visibility,
+                    },
+                )
         record_activity(
             "Project update added",
             f"{project.title} · {update.get_visibility_display()}",
@@ -3353,10 +3879,14 @@ def project_create_invite(request, pk):
         messages.error(request, "This project needs a client contact before an invite can be created.")
         return _dashboard_redirect("projects", project=project.pk)
     invite, raw_token = create_client_invite(project.client, actor=request.user)
-    invite_url = request.build_absolute_uri(reverse("operations:client-invite", kwargs={"token": raw_token}))
-    request.session["last_invite_url"] = invite_url
+    _prepare_client_invite_delivery(
+        request,
+        client=project.client,
+        invite=invite,
+        raw_token=raw_token,
+        actor=request.user,
+    )
     record_activity("Client portal invite created", project.client.name, actor=request.user, project=project)
-    messages.success(request, "A one-time client invite link is ready to copy.")
     return _dashboard_redirect("projects", project=project.pk)
 
 
@@ -3562,6 +4092,52 @@ def _portal_client(request):
     return getattr(request.user, "client_record", None)
 
 
+@never_cache
+@require_GET
+@login_required
+def external_estimate_link(request, pk):
+    """Permission-checked redirect to a manually published estimate."""
+    if not feature_enabled("external_estimate", default=False):
+        raise Http404
+    estimate = get_object_or_404(Estimate.objects.select_related("client"), pk=pk)
+    is_linked_client = bool(
+        is_client(request.user)
+        and estimate.client_id
+        and estimate.client.user_id == request.user.pk
+        and estimate.external_client_visible
+    )
+    if not is_linked_client and not can_manage_external_estimate(request.user, estimate=estimate):
+        raise Http404
+    if not estimate.external_url:
+        raise Http404
+    # Do not copy the URL into logs or an intermediate page.
+    return redirect(estimate.external_url)
+
+
+@never_cache
+@require_GET
+@login_required
+def external_invoice_link(request, pk):
+    """Permission-checked redirect to a manually published Invoice."""
+    if not feature_enabled("external_estimate", default=False):
+        raise Http404
+    schedule = get_object_or_404(
+        PaymentSchedule.objects.select_related("project", "project__client"),
+        pk=pk,
+    )
+    is_linked_client = bool(
+        is_client(request.user)
+        and schedule.project.client_id
+        and schedule.project.client.user_id == request.user.pk
+        and schedule.external_client_visible
+    )
+    if not is_linked_client and not can_manage_external_estimate(request.user, project=schedule.project):
+        raise Http404
+    if not schedule.external_invoice_url:
+        raise Http404
+    return redirect(schedule.external_invoice_url)
+
+
 @client_required
 def portal(request):
     client = _portal_client(request)
@@ -3581,12 +4157,15 @@ def portal(request):
             "payment_schedules",
         )
     )
-    portal_estimates = list(
+    portal_estimate_queryset = (
         Estimate.objects.filter(client=client)
         .exclude(status=Estimate.Status.DRAFT)
         .select_related("lead")
-        .prefetch_related("line_items", "projects")
+        .prefetch_related("projects")
     )
+    if not feature_enabled("external_estimate", default=False):
+        portal_estimate_queryset = portal_estimate_queryset.prefetch_related("line_items")
+    portal_estimates = list(portal_estimate_queryset)
     for estimate in portal_estimates:
         estimate.portal_project = estimate.projects.order_by("-created_at").first()
     requested_estimate = next(
@@ -3635,10 +4214,24 @@ def portal(request):
     portal_payment_schedules = list(
         selected_project.payment_schedules.prefetch_related("payments").all()
     ) if selected_project else []
+    external_estimate_portal_enabled = bool(
+        feature_enabled("external_estimate", default=False)
+        and (
+            external_estimate_enabled_for(request.user, project=selected_project)
+            or (
+                portal_estimate is not None
+                and external_estimate_enabled_for(request.user, estimate=portal_estimate)
+            )
+        )
+    )
+    external_estimate_feature_enabled = feature_enabled("external_estimate", default=False)
     # Conversations are client-wide, with an optional project relationship.
     # This keeps general questions and pre-project estimate discussions visible
     # to the same client without duplicating messages in the portal.
-    portal_messages = list(client.messages.select_related("project", "sent_by")[:30])
+    portal_messages = list(
+        client.messages.select_related("project", "sent_by").order_by("-created_at")[:30]
+    )
+    portal_messages.sort(key=lambda message: message.created_at)
     client_notifications = list(client.notifications.all()[:30])
     client_unread_notifications_count = client.notifications.filter(read_at__isnull=True).count()
     if not request.user.is_staff:
@@ -3649,6 +4242,8 @@ def portal(request):
         "portal_estimates": portal_estimates,
         "portal_project": selected_project,
         "portal_estimate": portal_estimate,
+        "external_estimate_portal_enabled": external_estimate_portal_enabled,
+        "external_estimate_feature_enabled": external_estimate_feature_enabled,
         "portal_updates": updates,
         "portal_latest_update": updates[0] if updates else None,
         "portal_media": media,

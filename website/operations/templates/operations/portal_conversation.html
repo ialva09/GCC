@@ -1,0 +1,40 @@
+<section class="conversation-chat portal-chat" id="conversation" aria-labelledby="portal-conversation-title">
+    <div class="conversation-chat-header">
+        <div>
+            <span class="section-kicker">Messages</span>
+            <h2 id="portal-conversation-title">Messages with Grand Coast</h2>
+            <p>One clear thread for questions, updates, and replies.</p>
+        </div>
+        <span class="conversation-chat-count">{{ portal_messages|length }} message{{ portal_messages|length|pluralize }}</span>
+    </div>
+    <div class="conversation-chat-thread" role="log" aria-live="polite">
+        {% for message in portal_messages %}
+            <article class="conversation-chat-message {% if message.sent_by and message.sent_by.is_staff %}is-staff{% else %}is-client{% endif %}">
+                <div class="conversation-chat-bubble">
+                    <div class="conversation-chat-meta">
+                        <strong>{% if message.sent_by and message.sent_by.is_staff %}Grand Coast{% else %}{{ portal_client.name }}{% endif %}</strong>
+                        <time datetime="{{ message.created_at|date:'c' }}">{{ message.created_at|date:'M j, Y' }} &middot; {{ message.created_at|date:'g:i A' }}</time>
+                    </div>
+                    <p>{{ message.body }}</p>
+                </div>
+            </article>
+        {% empty %}
+            <div class="conversation-chat-empty">Your conversation will appear here.</div>
+        {% endfor %}
+    </div>
+    {% if not request.user.is_staff %}
+        <form class="conversation-chat-composer" method="post" action="{% url 'operations:portal-message' %}">
+            {% csrf_token %}
+            {% if portal_project %}<input type="hidden" name="project" value="{{ portal_project.pk }}">{% endif %}
+            {% if portal_estimate %}<input type="hidden" name="estimate" value="{{ portal_estimate.pk }}">{% endif %}
+            <label class="sr-only" for="id_body">Message</label>
+            {{ portal_message_form.body }}
+            <div class="conversation-chat-compose-actions">
+                <span class="conversation-chat-hint">Replies stay connected to your Grand Coast workspace.</span>
+                <button class="button button-primary" type="submit">Send message <span aria-hidden="true">&rarr;</span></button>
+            </div>
+        </form>
+    {% else %}
+        <p class="conversation-chat-note">Staff preview: use the Operations client workspace to send a message.</p>
+    {% endif %}
+</section>

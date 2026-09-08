@@ -8,6 +8,16 @@
         </div>
         <a class='text-link-button' href='?month={{ calendar_next }}'>Next &rarr;</a>
     </div>
+    {% if calendar_conflicts %}
+        <section class='calendar-conflict-panel' aria-label='Scheduling conflicts'>
+            <div class='admin-section-heading compact'><div><span class='section-kicker'>Coordination watch</span><h3>{{ calendar_conflicts|length }} scheduling conflict{% if calendar_conflicts|length != 1 %}s{% endif %}</h3></div><span class='status-badge red'>Review</span></div>
+            <div class='construction-list'>
+                {% for conflict in calendar_conflicts|slice:':8' %}
+                    <a class='construction-list-row' href='{{ conflict.event.source_url }}'><span class='status-badge red'>Conflict</span><span><strong>{{ conflict.event.title }}</strong><small>{{ conflict.reason }}{% if conflict.other %} · {{ conflict.other.title }}{% endif %}</small></span></a>
+                {% endfor %}
+            </div>
+        </section>
+    {% endif %}
     <div class='calendar-weekdays' aria-hidden='true'>
         <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span>
     </div>
@@ -116,7 +126,9 @@
                             <h4>{{ event.title }}</h4>
                             <p>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}{% if event.location %} &middot; {{ event.location }}{% endif %}</p>
                         </div>
-                        {% if can_manage_schedule %}
+                        {% if event.is_virtual %}
+                            <a class='text-link-button' href='{{ event.source_url }}'>Open project work area &rarr;</a>
+                        {% elif can_manage_schedule %}
                             <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ selected_day.date|date:"Y-m-d" }}&amp;event={{ event.pk }}&amp;edit=event#calendar-editor'>Edit event &rarr;</a>
                         {% else %}
                             <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ selected_day.date|date:"Y-m-d" }}&amp;event={{ event.pk }}#calendar-day-details'>View details &rarr;</a>

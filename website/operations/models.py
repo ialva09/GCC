@@ -375,6 +375,13 @@ class Estimate(TimeStampedModel):
         PRELIMINARY = "preliminary", "Preliminary budget"
         FINAL = "final", "Final estimate"
 
+    class ExternalEstimateStatus(models.TextChoices):
+        NOT_STARTED = "not_started", "Not started"
+        SENT = "sent", "Sent"
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     number = models.PositiveIntegerField(unique=True)
     lead = models.ForeignKey(Lead, null=True, blank=True, on_delete=models.SET_NULL, related_name="estimates")
@@ -397,6 +404,28 @@ class Estimate(TimeStampedModel):
     timeline_summary = models.CharField(max_length=220, blank=True)
     warranty_terms = models.TextField(blank=True)
     payment_schedule = models.JSONField(default=list, blank=True)
+    # These fields are deliberately a small external-status layer. Detailed
+    # estimate content, signatures, invoices, and payment collection remain
+    # in the selected third-party estimate service and are not copied here.
+    external_url = models.URLField(max_length=500, blank=True)
+    external_reference = models.CharField(max_length=120, blank=True)
+    external_total = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    external_deposit_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    external_status = models.CharField(
+        max_length=16,
+        choices=ExternalEstimateStatus.choices,
+        default=ExternalEstimateStatus.NOT_STARTED,
+    )
+    external_status_at = models.DateTimeField(null=True, blank=True)
+    external_status_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="confirmed_external_estimate_statuses",
+    )
+    external_status_note = models.TextField(blank=True)
+    external_client_visible = models.BooleanField(default=False)
     locked_at = models.DateTimeField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
@@ -706,6 +735,14 @@ class MediaAsset(models.Model):
         PHOTO = "photo", "Photo"
         VIDEO = "video", "Video"
 
+    class Context(models.TextChoices):
+        PROGRESS = "progress", "Progress"
+        EXISTING_CONDITION = "existing_condition", "Existing condition"
+        SITE_VISIT = "site_visit", "Site visit"
+        DAILY_REPORT = "daily_report", "Daily report"
+        PROBLEM_REPORT = "problem_report", "Problem report"
+        CHANGE_ORDER = "change_order", "Change order"
+
     class Visibility(models.TextChoices):
         PUBLIC = "public", "Public"
         CLIENT = "client", "Client-only"
@@ -713,9 +750,17 @@ class MediaAsset(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, null=True, blank=True, on_delete=models.CASCADE, related_name="media_assets")
+    site_visit = models.ForeignKey(
+        "SiteVisit",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="media_assets",
+    )
     title = models.CharField(max_length=180)
     file = models.FileField(upload_to="projects/media/%Y/%m/", blank=True, validators=[validate_uploaded_media])
     media_type = models.CharField(max_length=10, choices=MediaType.choices, default=MediaType.PHOTO)
+    context = models.CharField(max_length=24, choices=Context.choices, default=Context.PROGRESS)
     visibility = models.CharField(max_length=20, choices=Visibility.choices, default=Visibility.INTERNAL)
     caption = models.TextField(blank=True)
     fallback_image = models.CharField(max_length=255, blank=True)
@@ -1184,6 +1229,7 @@ class EmployeeNotification(TimeStampedModel):
     destination_url = models.CharField(max_length=500, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     read_at = models.DateTimeField(null=True, blank=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -1196,6 +1242,7 @@ class EmployeeNotification(TimeStampedModel):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['employee', 'read_at', 'created_at']),
+            models.Index(fields=['employee', 'dismissed_at', 'created_at']),
         ]
 
     @property
@@ -1920,6 +1967,66 @@ class Blocker(TimeStampedModel):
         return self.title
 
 
+class NativeUploadGrant(TimeStampedModel):
+    """Short-lived, one-use capability for a native WebView upload."""
+
+    class Target(models.TextChoices):
+        PROJECT_MEDIA = "project_media", "Project media"
+        PROJECT_DOCUMENT = "project_document", "Project document"
+        SITE_VISIT_MEDIA = "site_visit_media", "Site visit media"
+        DAILY_REPORT_MEDIA = "daily_report_media", "Daily report media"
+        PROBLEM_MEDIA = "problem_media", "Problem report media"
+        CHANGE_ORDER_MEDIA = "change_order_media", "Change order media"
+        EXISTING_CONDITION = "existing_condition", "Existing condition"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    token_hash = models.CharField(max_length=64, unique=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="native_upload_grants",
+    )
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="native_upload_grants")
+    target = models.CharField(max_length=32, choices=Target.choices)
+    target_object_id = models.CharField(max_length=64, blank=True)
+    visibility = models.CharField(max_length=20, default=MediaAsset.Visibility.INTERNAL)
+    context = models.CharField(max_length=24, default=MediaAsset.Context.PROGRESS)
+    idempotency_key = models.CharField(max_length=100, unique=True)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    file_size = models.PositiveBigIntegerField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    media_asset = models.ForeignKey(
+        MediaAsset,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="native_upload_grants",
+    )
+    project_document = models.ForeignKey(
+        ProjectDocument,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="native_upload_grants",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["actor", "expires_at"]),
+            models.Index(fields=["project", "target", "expires_at"]),
+        ]
+
+    @property
+    def is_usable(self):
+        return self.used_at is None and self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.get_target_display()} for {self.project_id}"
+
+
 class Permit(TimeStampedModel):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -2168,6 +2275,13 @@ class PaymentSchedule(TimeStampedModel):
         OVERDUE = "overdue", "Overdue"
         WAIVED = "waived", "Waived"
 
+    class ExternalInvoiceStatus(models.TextChoices):
+        NOT_STARTED = "not_started", "Not started"
+        SENT = "sent", "Sent"
+        PENDING = "pending", "Pending"
+        PAID = "paid", "Paid"
+        OVERDUE = "overdue", "Overdue"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="payment_schedules")
     milestone = models.ForeignKey(Milestone, null=True, blank=True, on_delete=models.SET_NULL, related_name="payment_schedules")
@@ -2176,6 +2290,26 @@ class PaymentSchedule(TimeStampedModel):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     due_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    # Invoice tracking is manual and intentionally does not create or
+    # replace a Grand Coast PaymentRecord.  Staff record the internal payment
+    # separately after confirming the external payment.
+    external_invoice_url = models.URLField(max_length=500, blank=True)
+    external_invoice_reference = models.CharField(max_length=120, blank=True)
+    external_invoice_status = models.CharField(
+        max_length=16,
+        choices=ExternalInvoiceStatus.choices,
+        default=ExternalInvoiceStatus.NOT_STARTED,
+    )
+    external_invoice_status_at = models.DateTimeField(null=True, blank=True)
+    external_invoice_status_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="confirmed_external_invoice_statuses",
+    )
+    external_invoice_status_note = models.TextField(blank=True)
+    external_client_visible = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -2582,6 +2716,7 @@ class ChangeOrder(TimeStampedModel):
     approved_snapshot = models.JSONField(default=dict, blank=True)
     locked_at = models.DateTimeField(null=True, blank=True)
     supporting_documents = models.ManyToManyField(ProjectDocument, blank=True, related_name="change_orders")
+    supporting_media = models.ManyToManyField(MediaAsset, blank=True, related_name="change_orders")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -2731,6 +2866,7 @@ class DailyReport(TimeStampedModel):
         on_delete=models.SET_NULL,
         related_name="approved_daily_reports",
     )
+    media_assets = models.ManyToManyField(MediaAsset, blank=True, related_name="daily_reports")
 
     class Meta:
         ordering = ["-report_date", "-created_at"]

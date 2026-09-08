@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 import os
+import re
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -47,7 +49,35 @@ GCC_OPERATING_SYSTEM_ENABLED = _env_flag("GCC_OPERATING_SYSTEM_ENABLED", True)
 GCC_OWNER_COMMAND_CENTER_ENABLED = _env_flag("GCC_OWNER_COMMAND_CENTER_ENABLED", True)
 GCC_AI_ENABLED = _env_flag("GCC_AI_ENABLED", False)
 GCC_NATIVE_FIELD_ENABLED = _env_flag("GCC_NATIVE_FIELD_ENABLED", False)
+GCC_NATIVE_MEDIA_ENABLED = _env_flag("GCC_NATIVE_MEDIA_ENABLED", False)
+# Simulation mode is separate from the execution-loop pilot. It is only valid
+# against generated database/media paths beneath the system temporary folder.
+GCC_SIMULATION_MODE = _env_flag("GCC_SIMULATION_MODE", False)
+# The execution loop is released independently so one production project and
+# its selected staff/client users can pilot the actionable project workspace.
+GCC_EXECUTION_LOOP_ENABLED = _env_flag("GCC_EXECUTION_LOOP_ENABLED", False)
+GCC_EXECUTION_LOOP_PROJECT_IDS = os.getenv("GCC_EXECUTION_LOOP_PROJECT_IDS", "")
+GCC_EXECUTION_LOOP_USER_IDS = os.getenv("GCC_EXECUTION_LOOP_USER_IDS", "")
+# Estimate details remain in the third-party estimate service selected by the
+# business. Grand Coast stores only a manually confirmed status and optional,
+# permission-checked links; it never stores provider credentials or syncs data.
+GCC_EXTERNAL_ESTIMATE_ENABLED = _env_flag("GCC_EXTERNAL_ESTIMATE_ENABLED", False)
+GCC_EXTERNAL_ESTIMATE_PROJECT_IDS = os.getenv("GCC_EXTERNAL_ESTIMATE_PROJECT_IDS", "")
+GCC_EXTERNAL_ESTIMATE_USER_IDS = os.getenv("GCC_EXTERNAL_ESTIMATE_USER_IDS", "")
 GCC_EMAIL_DELIVERY_ENABLED = _env_flag("GCC_EMAIL_DELIVERY_ENABLED", False)
+GCC_STORAGE_SMOKE_ENABLED = _env_flag("GCC_STORAGE_SMOKE_ENABLED", False)
+GCC_STORAGE_PREFIX = os.getenv("GCC_STORAGE_PREFIX", "").strip().strip("/")
+if GCC_STORAGE_PREFIX:
+    if not (GCC_SIMULATION_MODE or GCC_STORAGE_SMOKE_ENABLED):
+        raise ImproperlyConfigured(
+            "GCC_STORAGE_PREFIX is only valid for isolated simulation/storage smoke runs."
+        )
+    if (
+        "\\" in GCC_STORAGE_PREFIX
+        or any(part in {"", ".", ".."} for part in GCC_STORAGE_PREFIX.split("/"))
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,180}", GCC_STORAGE_PREFIX)
+    ):
+        raise ImproperlyConfigured("GCC_STORAGE_PREFIX contains an unsafe object prefix.")
 # The legacy WebView marker is a development convenience only.  Production
 # mobile requests must complete the same anti-automation challenge as web.
 GCC_MOBILE_TURNSTILE_BYPASS_ENABLED = bool(
@@ -127,10 +157,39 @@ WSGI_APPLICATION = 'backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+_configured_database_path = os.getenv("GCC_DATABASE_PATH", "").strip()
+_configured_media_root = os.getenv("GCC_MEDIA_ROOT", "").strip()
+if GCC_SIMULATION_MODE:
+    if not DEBUG:
+        raise ImproperlyConfigured(
+            "GCC_SIMULATION_MODE is only available with DJANGO_DEBUG enabled."
+        )
+    if not _configured_database_path or not _configured_media_root:
+        raise ImproperlyConfigured(
+            "GCC_SIMULATION_MODE requires GCC_DATABASE_PATH and GCC_MEDIA_ROOT."
+        )
+    _simulation_root = Path(tempfile.gettempdir()).resolve()
+    _simulation_database_path = Path(_configured_database_path).expanduser().resolve()
+    _simulation_media_root = Path(_configured_media_root).expanduser().resolve()
+    if (
+        _simulation_database_path == (BASE_DIR / "db.sqlite3").resolve()
+        or _simulation_media_root == (BASE_DIR / "media").resolve()
+        or _simulation_root not in _simulation_database_path.parents
+        or _simulation_root not in _simulation_media_root.parents
+    ):
+        raise ImproperlyConfigured(
+            "Simulation database and media must be separate paths beneath the system temporary directory."
+        )
+else:
+    _simulation_database_path = None
+    _simulation_media_root = None
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': _simulation_database_path or Path(
+            _configured_database_path or (BASE_DIR / 'db.sqlite3')
+        ).expanduser(),
     }
 }
 
@@ -175,7 +234,9 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # User uploads are local during development. Production can opt into the
 # Supabase S3-compatible backend without changing application code.
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = _simulation_media_root or Path(
+    _configured_media_root or (BASE_DIR / 'media')
+).expanduser()
 USE_SUPABASE_STORAGE = os.getenv('USE_SUPABASE_STORAGE', '').lower() in {'1', 'true', 'yes'}
 USE_SUPABASE_CONTACT_STORAGE = os.getenv('USE_SUPABASE_CONTACT_STORAGE', '').lower() in {'1', 'true', 'yes'}
 
@@ -202,6 +263,7 @@ SUPABASE_STORAGE_OPTIONS = {
     'file_overwrite': False,
     'default_acl': None,
     'querystring_auth': True,
+    'location': GCC_STORAGE_PREFIX,
 }
 
 STORAGES = {
@@ -225,6 +287,7 @@ if USE_SUPABASE_CONTACT_STORAGE:
 if USE_SUPABASE_STORAGE:
     STORAGES['default'] = {
         'BACKEND': 'storages.backends.s3.S3Storage',
+        'OPTIONS': SUPABASE_STORAGE_OPTIONS,
     }
     AWS_S3_ENDPOINT_URL = os.getenv('SUPABASE_S3_ENDPOINT')
     AWS_ACCESS_KEY_ID = os.getenv('SUPABASE_S3_ACCESS_KEY')

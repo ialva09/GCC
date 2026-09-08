@@ -40,6 +40,7 @@ from .models import (
     Client as ClientRecord,
     ClientMessage,
     EmployeeInvite,
+    EmployeeNotification,
     EmployeeProfile,
     Estimate,
     EstimateLineItem,
@@ -356,6 +357,84 @@ class PlatformWorkflowTests(TestCase):
             .count(),
         )
         self.assertEqual(response.context['operations_nav_counts']['leads'], 0)
+
+    def test_owner_can_clear_one_notification_without_deleting_history(self):
+        first = EmployeeNotification.objects.create(
+            employee=self.owner,
+            kind='test',
+            title='First test alert',
+            body='Dismiss this one.',
+            created_by=self.owner,
+        )
+        second = EmployeeNotification.objects.create(
+            employee=self.owner,
+            kind='test',
+            title='Second test alert',
+            body='Keep this one visible.',
+            created_by=self.owner,
+        )
+        self.login(self.owner)
+        inbox_url = reverse('operations:dashboard-section', kwargs={'section': 'notifications'})
+        response = self.browser.get(inbox_url)
+        self.assertContains(response, first.title)
+        self.assertContains(response, second.title)
+
+        response = self.browser.post(
+            reverse('operations:dashboard-notification-clear', kwargs={'pk': first.pk}),
+        )
+        self.assertEqual(response.status_code, 302)
+        first.refresh_from_db()
+        self.assertIsNotNone(first.dismissed_at)
+        self.assertIsNotNone(first.read_at)
+        self.assertTrue(EmployeeNotification.objects.filter(pk=first.pk).exists())
+
+        response = self.browser.get(inbox_url)
+        self.assertNotContains(response, first.title)
+        self.assertContains(response, second.title)
+
+    def test_owner_can_clear_all_notifications_for_their_inbox(self):
+        notifications = [
+            EmployeeNotification.objects.create(
+                employee=self.owner,
+                kind='test',
+                title=f'Bulk test alert {index}',
+                body='Dismiss this alert.',
+                created_by=self.owner,
+            )
+            for index in (1, 2)
+        ]
+        self.login(self.owner)
+        response = self.browser.post(
+            reverse('operations:dashboard-notifications-clear-all'),
+        )
+        self.assertEqual(response.status_code, 302)
+        for notification in notifications:
+            notification.refresh_from_db()
+            self.assertIsNotNone(notification.dismissed_at)
+            self.assertIsNotNone(notification.read_at)
+        response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'notifications'}),
+        )
+        self.assertContains(response, "all caught up.", html=False)
+        for notification in notifications:
+            self.assertNotContains(response, notification.title)
+
+    def test_owner_cannot_clear_another_users_notification(self):
+        notification = EmployeeNotification.objects.create(
+            employee=self.manager,
+            kind='test',
+            title='Manager-only test alert',
+            body='This must remain private.',
+            created_by=self.manager,
+        )
+        self.login(self.owner)
+        response = self.browser.post(
+            reverse('operations:dashboard-notification-clear', kwargs={'pk': notification.pk}),
+        )
+        self.assertEqual(response.status_code, 404)
+        notification.refresh_from_db()
+        self.assertIsNone(notification.dismissed_at)
+        self.assertIsNone(notification.read_at)
 
     def test_assignment_selectors_show_staff_full_names(self):
         staff_queryset = get_user_model().objects.filter(pk=self.manager.pk)
@@ -1752,6 +1831,49 @@ class PlatformWorkflowTests(TestCase):
         detail_response = self.browser.get(reverse('operations:project-detail', kwargs={'pk': self.project.pk}))
         self.assertContains(detail_response, self.public_media.title)
         self.assertNotContains(detail_response, self.internal_media.title)
+
+    def test_conversation_surfaces_render_as_one_chat_thread(self):
+        ClientMessage.objects.create(
+            client=self.client_record,
+            project=self.project,
+            body='First client question',
+            sent_by=self.client_user,
+        )
+        ClientMessage.objects.create(
+            client=self.client_record,
+            project=self.project,
+            body='Grand Coast response',
+            sent_by=self.owner,
+        )
+
+        self.login(self.owner)
+        admin_response = self.browser.get(
+            reverse('operations:dashboard-section', kwargs={'section': 'clients'})
+            + f'?client={self.client_record.pk}'
+        )
+        self.assertEqual(admin_response.status_code, 200)
+        self.assertContains(admin_response, 'class="conversation-chat workspace-chat"')
+        self.assertContains(admin_response, 'Messages with')
+        self.assertContains(admin_response, 'Write a message to the client...')
+        self.assertContains(admin_response, '<textarea')
+        self.assertContains(admin_response, 'Send message')
+        self.assertNotContains(admin_response, 'workspace-messages')
+        self.assertNotContains(admin_response, 'Reply to the client...')
+        admin_markup = admin_response.content.decode()
+        self.assertLess(admin_markup.index('First client question'), admin_markup.index('Grand Coast response'))
+
+        self.login(self.client_user)
+        portal_response = self.browser.get(reverse('operations:portal'))
+        self.assertEqual(portal_response.status_code, 200)
+        self.assertContains(portal_response, 'class="conversation-chat portal-chat"')
+        self.assertContains(portal_response, 'Messages with Grand Coast')
+        self.assertContains(portal_response, 'Write a message to Grand Coast...')
+        self.assertContains(portal_response, '<textarea')
+        self.assertContains(portal_response, 'Send message')
+        self.assertNotContains(portal_response, 'Conversation history')
+        self.assertNotContains(portal_response, 'portal-message-history')
+        portal_markup = portal_response.content.decode()
+        self.assertLess(portal_markup.index('First client question'), portal_markup.index('Grand Coast response'))
 
     def test_client_cannot_mutate_portal_acceptance_as_staff_preview(self):
         self.login(self.owner)

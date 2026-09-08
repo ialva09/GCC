@@ -1,0 +1,133 @@
+<div class="admin-heading-row">
+    <div>
+        <span class="section-kicker">Estimate tracking</span>
+        <h2>Estimates</h2>
+        <p class="admin-intro">Grand Coast stores who the estimate is for, the estimate link, and a simple status. The detailed estimate stays in the third-party estimate service selected by your team.</p>
+    </div>
+    <a class="button button-primary" href="?new=estimate">+ Add estimate</a>
+</div>
+
+{% if new_type == 'estimate' %}
+    <form class="record-detail inline-create" method="post" action="{% url 'operations:estimate-create' %}">
+        {% csrf_token %}
+        <input type="hidden" name="idempotency_key" value="{{ external_email_idempotency_key }}">
+        <div class="detail-header">
+            <div>
+                <span class="section-kicker">New estimate</span>
+                <h3>Add an estimate link</h3>
+            </div>
+        </div>
+        <div class="detail-columns">
+            <div>
+                {% for field in estimate_create_form %}
+                    <label class="form-field">{{ field.label }}{{ field }}{{ field.errors }}</label>
+                {% endfor %}
+            </div>
+            <div>
+                <p class="detail-value">Choose the client and paste the secure estimate link. You can send it from your usual email or text app, send it from Grand Coast, or publish it to the client portal.</p>
+                <div class="detail-actions">
+                    <button class="button button-primary" type="submit">Save estimate</button>
+                    <a class="button button-quiet" href="{% url 'operations:dashboard-section' section='estimates' %}">Cancel</a>
+                </div>
+            </div>
+        </div>
+    </form>
+{% endif %}
+
+<div class="admin-split estimates-split">
+    <div class="record-list estimate-list">
+        <div class="record-list-header"><span>Client</span><span>Status</span><span>Link</span></div>
+        {% for estimate in estimates %}
+            <a class="record-row {% if selected_estimate.pk == estimate.pk %}is-selected{% endif %}" href="?estimate={{ estimate.pk }}">
+                <span class="record-row-grid">
+                    <span><strong>#{{ estimate.number }} - {{ estimate.title }}</strong><small>{{ estimate.client.name|default:'Unassigned client' }} - {{ estimate.created_at|date:'M d, Y' }}</small></span>
+                    <span><span class="status-badge {% if estimate.external_status == 'approved' %}green{% elif estimate.external_status == 'rejected' %}red{% elif estimate.external_status == 'sent' or estimate.external_status == 'pending' %}gold{% endif %}">{{ estimate.get_external_status_display }}</span></span>
+                    <span class="record-date">{% if estimate.external_url %}Saved{% else %}Missing{% endif %}</span>
+                </span>
+            </a>
+        {% empty %}
+            <div class="empty-detail">No estimates yet.</div>
+        {% endfor %}
+    </div>
+
+    <section class="record-detail estimate-editor">
+        {% if selected_estimate %}
+            <div class="detail-header">
+                <div>
+                    <span class="section-kicker">Estimate #{{ selected_estimate.number }}</span>
+                    <h3>{{ selected_estimate.title }}</h3>
+                    <p>{{ selected_estimate.client.name|default:'Unassigned client' }}{% if selected_estimate.lead %} - {{ selected_estimate.lead.location }}{% endif %}</p>
+                </div>
+                <span class="status-badge {% if selected_estimate.external_status == 'approved' %}green{% elif selected_estimate.external_status == 'rejected' %}red{% elif selected_estimate.external_status == 'sent' or selected_estimate.external_status == 'pending' %}gold{% endif %}">{{ selected_estimate.get_external_status_display }}</span>
+            </div>
+
+            <div class="detail-columns">
+                <div>
+                    <span class="detail-label">Client</span>
+                    <span class="detail-value">{{ selected_estimate.client.name|default:'Unassigned client' }}</span>
+                    <span class="detail-label">Estimate link</span>
+                    <span class="detail-value">{% if selected_estimate.external_url %}Saved securely{% else %}Not provided{% endif %}</span>
+                </div>
+                <div>
+                    <span class="detail-label">Last status update</span>
+                    <span class="detail-value">{% if selected_estimate.external_status_at %}{{ selected_estimate.external_status_at|date:'M d, Y g:i A' }}{% else %}Not updated{% endif %}</span>
+                    {% if selected_estimate.external_url and can_manage_external_estimate_status %}
+                        <a class="button button-outline button-small" href="{% url 'operations:external-estimate-link' pk=selected_estimate.pk %}">Open estimate</a>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if external_estimate_status_form %}
+                <form class="estimate-editor-form" method="post" action="{% url 'operations:external-estimate-status' pk=selected_estimate.pk %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="expected_updated_at" value="{{ selected_estimate.updated_at|date:'U' }}">
+                    <input type="hidden" name="idempotency_key" value="{{ external_status_idempotency_key }}">
+                    <div class="admin-section-heading compact">
+                        <div><span class="section-kicker">Owner / Manager / Office</span><h4 style="margin:0;color:var(--brand-navy);">Update estimate</h4></div>
+                        <span class="detail-value">Record what happened after checking the estimate service.</span>
+                    </div>
+                    <label class="form-field">{{ external_estimate_status_form.external_url.label }}{{ external_estimate_status_form.external_url }}{{ external_estimate_status_form.external_url.errors }}</label>
+                    <div class="detail-columns">
+                        <label class="form-field">{{ external_estimate_status_form.external_status.label }}{{ external_estimate_status_form.external_status }}{{ external_estimate_status_form.external_status.errors }}</label>
+                        <label class="form-check">{{ external_estimate_status_form.external_client_visible }} {{ external_estimate_status_form.external_client_visible.label }}</label>
+                    </div>
+                    <div class="estimate-editor-footer">
+                        <span class="detail-value">Grand Coast does not store third-party credentials or detailed estimate contents.</span>
+                        <button class="button button-primary" type="submit">Save estimate status</button>
+                    </div>
+                </form>
+            {% endif %}
+
+            {% if selected_estimate.external_url and selected_estimate.client.email and can_manage_external_estimate_status %}
+                <div class="estimate-editor-footer">
+                    <div>
+                        <span class="section-kicker">Optional GCC delivery</span>
+                        <p class="detail-value">Send the saved link to {{ selected_estimate.client.email }}, or keep sending it yourself by email or text.</p>
+                    </div>
+                    <form method="post" action="{% url 'operations:external-estimate-send' pk=selected_estimate.pk %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="idempotency_key" value="{{ external_email_idempotency_key }}">
+                        <button class="button button-outline" type="submit">Send link to client</button>
+                    </form>
+                </div>
+            {% endif %}
+
+            {% if selected_estimate.external_status == 'approved' and selected_estimate.status == 'accepted' %}
+                {% if selected_estimate.project %}
+                    <a class="button button-primary" href="{% url 'operations:project-operations' pk=selected_estimate.project.pk %}">Open project operations</a>
+                {% else %}
+                    <form method="post" action="{% url 'operations:estimate-project' pk=selected_estimate.pk %}">
+                        {% csrf_token %}
+                        <button class="button button-primary" type="submit">Continue to project creation</button>
+                    </form>
+                {% endif %}
+            {% elif selected_estimate.external_status == 'rejected' %}
+                <p class="detail-value">This estimate is closed in Grand Coast. Create a new estimate if the scope changes.</p>
+            {% else %}
+                <p class="detail-value">When the client responds, update the estimate status here. An approved estimate can continue into the agreement, deposit, and project workflow.</p>
+            {% endif %}
+        {% else %}
+            <div class="empty-detail">Select an estimate to view its status and delivery options.</div>
+        {% endif %}
+    </section>
+</div>

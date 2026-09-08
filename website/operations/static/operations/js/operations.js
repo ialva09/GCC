@@ -754,10 +754,190 @@
 
     function csrfToken() {
         var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
-        return match ? decodeURIComponent(match[1]) : "";
+        if (match) {
+            return decodeURIComponent(match[1]);
+        }
+        var hidden = document.querySelector("input[name='csrfmiddlewaretoken']");
+        return hidden ? hidden.value : "";
+    }
+
+    function initNativeMediaBridge() {
+        if (!window.ReactNativeWebView || window.__grandCoastNativeMediaBound) {
+            return;
+        }
+        window.__grandCoastNativeMediaBound = true;
+        document.body.classList.add("native-media-enabled");
+        var requestControls = {};
+
+        function post(message) {
+            window.ReactNativeWebView.postMessage(JSON.stringify(message));
+        }
+
+        function setStatus(requestId, text, isError) {
+            var control = requestControls[requestId];
+            var status = control && control.querySelector("[data-native-media-status]");
+            if (!status) {
+                status = document.querySelector("[data-native-media-status]");
+            }
+            if (status) {
+                status.textContent = text;
+                status.classList.toggle("is-error", Boolean(isError));
+            }
+        }
+
+        function prepareGrant(file) {
+            return fetch("/api/v1/native-upload-grants/", {
+                method: "POST",
+                credentials: "same-origin",
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-CSRFToken": csrfToken(),
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                body: JSON.stringify({
+                    target: file.target,
+                    project_id: file.project_id,
+                    target_id: file.target_id,
+                    visibility: file.visibility,
+                    context: file.context,
+                    file_name: file.name,
+                    file_size: file.size,
+                    content_type: file.type,
+                }),
+            }).then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (payload) {
+                    if (!response.ok) {
+                        throw new Error(payload.error || "The server rejected this upload.");
+                    }
+                    payload.file_id = file.file_id;
+                    return payload;
+                });
+            });
+        }
+
+        function prepareAndSend(requestId, files) {
+            if (!files || !files.length) {
+                setStatus(requestId, "No files were selected.", true);
+                return;
+            }
+            setStatus(requestId, "Preparing protected upload...", false);
+            var grantsByRequest = {};
+            var failures = [];
+            var work = files.map(function (file) {
+                return prepareGrant(file).then(function (grant) {
+                    grant.file_id = file.file_id;
+                    grant.request_id = file.request_id || requestId;
+                    var group = grant.request_id;
+                    grantsByRequest[group] = grantsByRequest[group] || [];
+                    grantsByRequest[group].push(grant);
+                }).catch(function (error) {
+                    failures.push(error);
+                });
+            });
+            Promise.all(work).then(function () {
+                var grantCount = Object.keys(grantsByRequest).reduce(function (total, key) {
+                    return total + grantsByRequest[key].length;
+                }, 0);
+                if (failures.length || grantCount !== files.length) {
+                    setStatus(requestId, failures[0] ? failures[0].message : "One or more files could not be prepared.", true);
+                    return;
+                }
+                Object.keys(grantsByRequest).forEach(function (group) {
+                    post({
+                        type: "native-media-upload-grants",
+                        request_id: group,
+                        grants: grantsByRequest[group],
+                    });
+                    setStatus(group, "Uploading securely...", false);
+                });
+            });
+        }
+
+        window.__grandCoastReceiveNativeMedia = function (message) {
+            if (!message || !message.type) {
+                return;
+            }
+            if (message.type === "native-media-selected" || message.type === "native-media-queue-pending") {
+                prepareAndSend(message.request_id || (message.files[0] && message.files[0].request_id), message.files || []);
+                return;
+            }
+            if (message.type === "native-media-upload-progress") {
+                setStatus(message.request_id, "Uploading " + (Number(message.progress) || 0) + "%...", false);
+                return;
+            }
+            if (message.type === "native-media-uploaded") {
+                setStatus(message.request_id, "Upload complete.", false);
+                var control = requestControls[message.request_id];
+                if (control) {
+                    control.querySelectorAll("[data-native-media-action]").forEach(function (button) {
+                        button.disabled = false;
+                    });
+                }
+                document.dispatchEvent(new CustomEvent("grand-coast-native-media-uploaded", {detail: message}));
+                return;
+            }
+            if (message.type === "native-media-canceled") {
+                setStatus(message.request_id, "Capture canceled.", false);
+                var canceledControl = requestControls[message.request_id];
+                if (canceledControl) {
+                    canceledControl.querySelectorAll("[data-native-media-action]").forEach(function (button) {
+                        button.disabled = false;
+                    });
+                }
+                return;
+            }
+            if (message.type === "native-media-upload-error" || message.type === "native-media-error") {
+                setStatus(message.request_id, message.message || "The native action could not be completed.", true);
+                var errorControl = requestControls[message.request_id];
+                if (errorControl) {
+                    errorControl.querySelectorAll("[data-native-media-action]").forEach(function (button) {
+                        button.disabled = false;
+                    });
+                }
+                return;
+            }
+        };
+
+        each("[data-native-media-action]", function (button) {
+            button.addEventListener("click", function (event) {
+                event.preventDefault();
+                var control = button.closest("[data-native-media-control]") || button.parentElement;
+                var requestId = "web-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+                requestControls[requestId] = control;
+                control.querySelectorAll("[data-native-media-action]").forEach(function (item) {
+                    item.disabled = true;
+                });
+                setStatus(requestId, "Opening device picker...", false);
+                post({
+                    type: "native-media-request",
+                    request_id: requestId,
+                    action: button.dataset.nativeMediaAction,
+                    target: button.dataset.nativeMediaTarget || "project_media",
+                    project_id: button.dataset.nativeMediaProject || "",
+                    target_id: button.dataset.nativeMediaTargetId || "",
+                    visibility: button.dataset.nativeMediaVisibility || "internal",
+                    context: button.dataset.nativeMediaContext || "progress",
+                    allow_multiple: button.dataset.nativeMediaMultiple !== "false",
+                    mime_types: button.dataset.nativeMediaMimeTypes || "*/*",
+                });
+            });
+        });
+
+        post({type: "native-media-page-ready"});
     }
 
     function initNotificationActions() {
+        function showNotificationEmptyState() {
+            var inbox = document.querySelector(".notification-inbox");
+            if (!inbox || inbox.querySelector(".notification-card")) {
+                return;
+            }
+            var empty = document.createElement("div");
+            empty.className = "empty-detail";
+            empty.textContent = "You're all caught up. New assignments and workflow alerts will appear here.";
+            inbox.appendChild(empty);
+        }
+
         each("[data-notification-read]", function (form) {
             form.addEventListener("submit", function (event) {
                 event.preventDefault();
@@ -779,6 +959,49 @@
                 });
             });
         });
+
+        each("[data-notification-clear]", function (form) {
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                fetch(form.action, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest"},
+                }).then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Unable to clear notification");
+                    }
+                    var card = form.closest("[data-notification-id]");
+                    if (card) {
+                        card.remove();
+                    }
+                    showNotificationEmptyState();
+                }).catch(function () {
+                    form.submit();
+                });
+            });
+        });
+        each("[data-notification-clear-all]", function (form) {
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                fetch(form.action, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: {"X-CSRFToken": csrfToken(), "X-Requested-With": "XMLHttpRequest"},
+                }).then(function (response) {
+                    if (!response.ok) {
+                        throw new Error("Unable to clear notifications");
+                    }
+                    each(".notification-card", function (card) {
+                        card.remove();
+                    });
+                    showNotificationEmptyState();
+                }).catch(function () {
+                    form.submit();
+                });
+            });
+        });
+
         each("[data-notification-read-all]", function (form) {
             form.addEventListener("submit", function (event) {
                 event.preventDefault();
@@ -997,6 +1220,7 @@
         initEstimateEditors();
         initModal();
         initToastDismissal();
+        initNativeMediaBridge();
     }
 
     if (document.readyState === "loading") {

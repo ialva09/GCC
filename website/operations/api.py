@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
-from datetime import date
+import secrets
+import uuid
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
+from pathlib import Path
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
@@ -17,6 +21,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .construction_policies import (
@@ -33,8 +38,11 @@ from .construction_policies import (
     can_view_project,
     can_view_project_document,
     can_view_subcontractor_assignment,
+    can_submit_field_work,
     is_client,
     is_field,
+    is_manager,
+    is_owner,
     is_subcontractor,
     is_staff_user,
     visible_leads,
@@ -71,6 +79,10 @@ from .construction_services import (
 )
 from .models import (
     Agreement,
+    Activity,
+    ALLOWED_DOCUMENT_EXTENSIONS,
+    ALLOWED_UPLOAD_EXTENSIONS,
+    MAX_UPLOAD_SIZE,
     Blocker,
     ChangeOrder,
     CloseoutItem,
@@ -83,6 +95,7 @@ from .models import (
     Lead,
     MaterialRequest,
     MediaAsset,
+    NativeUploadGrant,
     PaymentSchedule,
     Permit,
     PreconstructionItem,
@@ -94,6 +107,10 @@ from .models import (
     SiteVisit,
     Task,
     WarrantyItem,
+    WorkflowEvent,
+    sanitize_uploaded_name,
+    validate_construction_document,
+    validate_contact_upload,
 )
 
 
@@ -181,6 +198,363 @@ def _decimal(value, *, required=True, minimum=None):
     return result.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+NATIVE_UPLOAD_GRANT_TTL = timedelta(minutes=15)
+NATIVE_MEDIA_TARGETS = {
+    NativeUploadGrant.Target.PROJECT_MEDIA,
+    NativeUploadGrant.Target.SITE_VISIT_MEDIA,
+    NativeUploadGrant.Target.DAILY_REPORT_MEDIA,
+    NativeUploadGrant.Target.PROBLEM_MEDIA,
+    NativeUploadGrant.Target.CHANGE_ORDER_MEDIA,
+    NativeUploadGrant.Target.EXISTING_CONDITION,
+}
+
+
+def _native_token_hash(token):
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _native_upload_target(user, payload):
+    target = str(payload.get("target") or "").strip()
+    if target not in set(NativeUploadGrant.Target.values):
+        raise ValidationError("Unsupported native upload target.")
+    project_id = str(payload.get("project_id") or "").strip()
+    if not project_id:
+        raise ValidationError("A project is required for native uploads.")
+    project = get_object_or_404(visible_projects(user), pk=project_id)
+    target_id = str(payload.get("target_id") or "").strip()
+
+    if target in NATIVE_MEDIA_TARGETS:
+        if not can_submit_field_work(user, project):
+            raise PermissionDenied("You cannot upload field media for this project.")
+    elif target == NativeUploadGrant.Target.PROJECT_DOCUMENT:
+        if not is_staff_user(user) or not can_view_project(user, project):
+            raise PermissionDenied("You cannot upload project documents.")
+
+    related = None
+    if target in {
+        NativeUploadGrant.Target.SITE_VISIT_MEDIA,
+        NativeUploadGrant.Target.EXISTING_CONDITION,
+    }:
+        if not target_id:
+            raise ValidationError("A site visit is required for this upload.")
+        related = get_object_or_404(
+            SiteVisit.objects.filter(project=project),
+            pk=target_id,
+        )
+    elif target == NativeUploadGrant.Target.DAILY_REPORT_MEDIA:
+        if not target_id:
+            raise ValidationError("A daily report is required for this upload.")
+        related = get_object_or_404(
+            DailyReport.objects.filter(project=project),
+            pk=target_id,
+        )
+    elif target == NativeUploadGrant.Target.PROBLEM_MEDIA:
+        if not target_id:
+            raise ValidationError("A problem report is required for this upload.")
+        related = get_object_or_404(
+            ProblemReport.objects.filter(project=project),
+            pk=target_id,
+        )
+    elif target == NativeUploadGrant.Target.CHANGE_ORDER_MEDIA:
+        if not target_id:
+            raise ValidationError("A change order is required for this upload.")
+        related = get_object_or_404(
+            ChangeOrder.objects.filter(project=project),
+            pk=target_id,
+        )
+        if related.status == ChangeOrder.Status.DRAFT and not can_manage_construction(user, project):
+            raise PermissionDenied("Draft change orders are restricted.")
+    elif target not in {
+        NativeUploadGrant.Target.PROJECT_MEDIA,
+        NativeUploadGrant.Target.PROJECT_DOCUMENT,
+    }:
+        raise ValidationError("A related construction record is required.")
+
+    filename = sanitize_uploaded_name(payload.get("file_name"))
+    extension = Path(filename).suffix.lower()
+    document_target = target == NativeUploadGrant.Target.PROJECT_DOCUMENT
+    allowed_extensions = ALLOWED_DOCUMENT_EXTENSIONS if document_target else ALLOWED_UPLOAD_EXTENSIONS
+    if extension not in allowed_extensions:
+        raise ValidationError("This file type is not supported for the selected upload target.")
+    try:
+        file_size = int(payload.get("file_size"))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("A valid file size is required.") from exc
+    if file_size < 1 or file_size > MAX_UPLOAD_SIZE:
+        raise ValidationError("Files must be 50 MB or smaller.")
+
+    requested_visibility = str(payload.get("visibility") or MediaAsset.Visibility.INTERNAL)
+    allowed_visibility = {
+        MediaAsset.Visibility.PUBLIC,
+        MediaAsset.Visibility.CLIENT,
+        MediaAsset.Visibility.INTERNAL,
+    }
+    if requested_visibility not in allowed_visibility:
+        requested_visibility = MediaAsset.Visibility.INTERNAL
+    if document_target and requested_visibility == MediaAsset.Visibility.PUBLIC:
+        requested_visibility = MediaAsset.Visibility.CLIENT
+    if not (is_owner(user) or is_manager(user)):
+        requested_visibility = MediaAsset.Visibility.INTERNAL
+
+    context_by_target = {
+        NativeUploadGrant.Target.EXISTING_CONDITION: MediaAsset.Context.EXISTING_CONDITION,
+        NativeUploadGrant.Target.SITE_VISIT_MEDIA: MediaAsset.Context.SITE_VISIT,
+        NativeUploadGrant.Target.DAILY_REPORT_MEDIA: MediaAsset.Context.DAILY_REPORT,
+        NativeUploadGrant.Target.PROBLEM_MEDIA: MediaAsset.Context.PROBLEM_REPORT,
+        NativeUploadGrant.Target.CHANGE_ORDER_MEDIA: MediaAsset.Context.CHANGE_ORDER,
+    }
+    context = context_by_target.get(
+        target,
+        str(payload.get("context") or MediaAsset.Context.PROGRESS),
+    )
+    if context not in set(MediaAsset.Context.values):
+        context = MediaAsset.Context.PROGRESS
+    return {
+        "project": project,
+        "target": target,
+        "target_id": target_id,
+        "related": related,
+        "visibility": (
+            requested_visibility
+            if document_target
+            else requested_visibility
+        ),
+        "context": context,
+        "file_name": filename[:255],
+        "content_type": str(payload.get("content_type") or "")[:120],
+        "file_size": file_size,
+    }
+
+
+def _native_upload_result(grant, *, replay=False):
+    if grant.media_asset_id:
+        asset = grant.media_asset
+        return {
+            "uploaded": True,
+            "replayed": replay,
+            "kind": "media",
+            "id": str(asset.pk),
+            "project_id": str(grant.project_id),
+            "url": reverse("operations:media-file", kwargs={"pk": asset.pk}),
+            "visibility": asset.visibility,
+        }
+    if grant.project_document_id:
+        document = grant.project_document
+        return {
+            "uploaded": True,
+            "replayed": replay,
+            "kind": "document",
+            "id": str(document.pk),
+            "project_id": str(grant.project_id),
+            "url": reverse("operations:document-file", kwargs={"pk": document.pk}),
+            "visibility": document.visibility,
+        }
+    return {"uploaded": False, "replayed": replay}
+
+
+@never_cache
+@require_POST
+@_api_access
+def api_v1_native_upload_grant(request):
+    if not feature_enabled("native_media"):
+        return _error("Native media uploads are disabled.", 404)
+    try:
+        payload = _body(request)
+        target = _native_upload_target(request.user, payload)
+        raw_token = secrets.token_urlsafe(32)
+        grant = NativeUploadGrant.objects.create(
+            token_hash=_native_token_hash(raw_token),
+            actor=request.user,
+            project=target["project"],
+            target=target["target"],
+            target_object_id=target["target_id"],
+            visibility=target["visibility"],
+            context=target["context"],
+            idempotency_key=str(uuid.uuid4()),
+            original_name=target["file_name"],
+            content_type=target["content_type"],
+            file_size=target["file_size"],
+            expires_at=timezone.now() + NATIVE_UPLOAD_GRANT_TTL,
+        )
+        return JsonResponse({
+            "grant_token": raw_token,
+            "grant_id": str(grant.pk),
+            "idempotency_key": grant.idempotency_key,
+            "upload_url": request.build_absolute_uri(
+                reverse("operations-api:native-upload-complete")
+            ),
+            "expires_at": grant.expires_at.isoformat(),
+            "file_name": grant.original_name,
+            "file_size": grant.file_size,
+            "target": grant.target,
+        }, status=201)
+    except PermissionDenied as exc:
+        return _error(exc, 403)
+    except ValidationError as exc:
+        return _error(exc, 400)
+
+
+def _native_related_record(grant):
+    if grant.target in {
+        NativeUploadGrant.Target.SITE_VISIT_MEDIA,
+        NativeUploadGrant.Target.EXISTING_CONDITION,
+    }:
+        return SiteVisit.objects.select_for_update().filter(
+            pk=grant.target_object_id,
+            project=grant.project,
+        ).first()
+    if grant.target == NativeUploadGrant.Target.DAILY_REPORT_MEDIA:
+        return DailyReport.objects.select_for_update().filter(
+            pk=grant.target_object_id,
+            project=grant.project,
+        ).first()
+    if grant.target == NativeUploadGrant.Target.PROBLEM_MEDIA:
+        return ProblemReport.objects.select_for_update().filter(
+            pk=grant.target_object_id,
+            project=grant.project,
+        ).first()
+    if grant.target == NativeUploadGrant.Target.CHANGE_ORDER_MEDIA:
+        return ChangeOrder.objects.select_for_update().filter(
+            pk=grant.target_object_id,
+            project=grant.project,
+        ).first()
+    return None
+
+
+@csrf_exempt
+@never_cache
+@require_POST
+def api_v1_native_upload_complete(request):
+    raw_token = (
+        request.headers.get("X-Grand-Coast-Upload-Token")
+        or request.POST.get("grant_token")
+        or ""
+    ).strip()
+    if len(raw_token) < 20 or len(raw_token) > 200:
+        return _error("Upload grant is invalid or expired.", 401)
+    grant = NativeUploadGrant.objects.filter(
+        token_hash=_native_token_hash(raw_token),
+    ).select_related("project", "actor", "media_asset", "project_document").first()
+    if grant is None:
+        return _error("Upload grant is invalid or expired.", 401)
+
+    with transaction.atomic():
+        grant = NativeUploadGrant.objects.select_for_update().select_related(
+            "project",
+            "actor",
+            "media_asset",
+            "project_document",
+        ).get(pk=grant.pk)
+        if grant.used_at:
+            return JsonResponse(_native_upload_result(grant, replay=True))
+        if not grant.actor.is_active or grant.expires_at <= timezone.now():
+            return _error("Upload grant is invalid or expired.", 410)
+        upload = request.FILES.get("file")
+        if upload is None:
+            return _error("A file is required.", 400)
+        if upload.size < 1 or upload.size > MAX_UPLOAD_SIZE:
+            return _error("Files must be 50 MB or smaller.", 400)
+        if grant.file_size and upload.size != grant.file_size:
+            return _error("The upload size does not match the prepared file.", 400)
+        upload.name = sanitize_uploaded_name(upload.name)
+        extension = Path(upload.name).suffix.lower()
+        prepared_extension = Path(grant.original_name).suffix.lower()
+        if not prepared_extension or extension != prepared_extension:
+            return _error("The upload does not match the prepared file type.", 400)
+        try:
+            if grant.target == NativeUploadGrant.Target.PROJECT_DOCUMENT:
+                validate_construction_document(upload)
+            else:
+                if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+                    raise ValidationError("This media file type is not supported.")
+                validate_contact_upload(upload)
+        except ValidationError as exc:
+            return _error(exc, 400)
+
+        related = _native_related_record(grant)
+        if grant.target in {
+            NativeUploadGrant.Target.SITE_VISIT_MEDIA,
+            NativeUploadGrant.Target.EXISTING_CONDITION,
+            NativeUploadGrant.Target.DAILY_REPORT_MEDIA,
+            NativeUploadGrant.Target.PROBLEM_MEDIA,
+            NativeUploadGrant.Target.CHANGE_ORDER_MEDIA,
+        } and related is None:
+            return _error("The related construction record no longer exists.", 404)
+
+        if grant.target == NativeUploadGrant.Target.PROJECT_DOCUMENT:
+            document = ProjectDocument.objects.create(
+                project=grant.project,
+                title=Path(grant.original_name).stem[:180] or "Project document",
+                category="Field upload",
+                description="Uploaded from the Grand Coast mobile workspace.",
+                file=upload,
+                visibility=grant.visibility if grant.visibility in {
+                    ProjectDocument.Visibility.CLIENT,
+                    ProjectDocument.Visibility.INTERNAL,
+                } else ProjectDocument.Visibility.INTERNAL,
+                uploaded_by=grant.actor,
+            )
+            grant.project_document = document
+            result_kind = "document"
+            result_id = document.pk
+        else:
+            media_type = (
+                MediaAsset.MediaType.VIDEO
+                if extension in {".mp4", ".mov", ".webm"}
+                else MediaAsset.MediaType.PHOTO
+            )
+            asset = MediaAsset.objects.create(
+                project=grant.project,
+                site_visit=(
+                    related
+                    if grant.target in {
+                        NativeUploadGrant.Target.SITE_VISIT_MEDIA,
+                        NativeUploadGrant.Target.EXISTING_CONDITION,
+                    }
+                    else None
+                ),
+                title=Path(grant.original_name).stem[:180] or "Project media",
+                file=upload,
+                media_type=media_type,
+                context=grant.context,
+                visibility=grant.visibility,
+                uploaded_by=grant.actor,
+            )
+            if grant.target == NativeUploadGrant.Target.DAILY_REPORT_MEDIA:
+                related.media_assets.add(asset)
+            elif grant.target == NativeUploadGrant.Target.PROBLEM_MEDIA:
+                related.supporting_media.add(asset)
+            elif grant.target == NativeUploadGrant.Target.CHANGE_ORDER_MEDIA:
+                related.supporting_media.add(asset)
+            grant.media_asset = asset
+            result_kind = "media"
+            result_id = asset.pk
+
+        grant.used_at = timezone.now()
+        grant.save(update_fields=["media_asset", "project_document", "used_at", "updated_at"])
+        WorkflowEvent.objects.create(
+            idempotency_key=f"native-upload:{grant.idempotency_key}",
+            event_type="native_media_uploaded",
+            source="native",
+            actor=grant.actor,
+            project=grant.project,
+            related_model="MediaAsset" if result_kind == "media" else "ProjectDocument",
+            related_id=str(result_id),
+            after_state={
+                "target": grant.target,
+                "file_name": grant.original_name,
+                "visibility": grant.visibility,
+            },
+        )
+        Activity.objects.create(
+            message="Native project file uploaded",
+            detail=f"{grant.original_name} · {grant.get_target_display()}",
+            actor=grant.actor,
+            project=grant.project,
+        )
+        return JsonResponse(_native_upload_result(grant))
+
+
 def _date(value, *, required=False):
     if value in (None, "") and not required:
         return None
@@ -219,6 +593,13 @@ def _lead_data(lead, *, include_detail=False):
         "referral_source": lead.source,
         "budget": lead.budget,
         "description": lead.note,
+        "address": {
+            "line1": lead.address_line1,
+            "line2": lead.address_line2,
+            "city": lead.city,
+            "state": lead.state,
+            "postal_code": lead.postal_code,
+        },
     }
     if include_detail:
         data["site_visits"] = [
@@ -249,6 +630,9 @@ def api_v1_leads(request):
         try:
             payload = _body(request)
             key = _required_idempotency_key(request, payload)
+            address_payload = payload.get("address")
+            if not isinstance(address_payload, dict):
+                address_payload = {}
             assigned_to = None
             if payload.get("assigned_to_id") not in (None, ""):
                 from django.contrib.auth import get_user_model
@@ -274,6 +658,11 @@ def api_v1_leads(request):
                 source=payload.get("source"),
                 note=payload.get("note") or payload.get("description"),
                 assigned_to=assigned_to,
+                address_line1=payload.get("address_line1") or address_payload.get("line1"),
+                address_line2=payload.get("address_line2") or address_payload.get("line2"),
+                city=payload.get("city") or address_payload.get("city"),
+                state=payload.get("state") or address_payload.get("state"),
+                postal_code=payload.get("postal_code") or address_payload.get("postal_code"),
                 idempotency_key=key,
             )
             return JsonResponse(
@@ -601,6 +990,8 @@ def _project_data(project, user, *, include_detail=False):
             "id": str(asset.pk),
             "title": asset.title,
             "media_type": asset.media_type,
+            "context": asset.context,
+            "site_visit_id": str(asset.site_visit_id) if asset.site_visit_id else None,
             "visibility": asset.visibility,
             "caption": asset.caption,
             "created_at": asset.created_at.isoformat(),
@@ -1053,6 +1444,8 @@ def api_v1_project_media(request, pk):
                 "id": str(asset.pk),
                 "title": asset.title,
                 "media_type": asset.media_type,
+                "context": asset.context,
+                "site_visit_id": str(asset.site_visit_id) if asset.site_visit_id else None,
                 "visibility": asset.visibility,
                 "caption": asset.caption,
                 "created_at": asset.created_at.isoformat(),

@@ -134,7 +134,12 @@ def require_project_access(user, project, *, mutate=False):
 
 def can_view_financials(user, project):
     """Financials are limited to the owner and the assigned manager."""
-    if not can_view_project(user, project) or not is_active_user(user):
+    if not is_active_user(user):
+        return False
+    # Django superusers are the canonical Grand Coast Owner account.
+    if getattr(user, 'is_superuser', False):
+        return True
+    if not can_view_project(user, project):
         return False
     return bool(is_owner(user) or (is_manager(user) and (
         project.project_manager_id == user.pk or project.assigned_staff.filter(pk=user.pk).exists()
@@ -174,6 +179,99 @@ def can_manage_construction(user, project=None):
     return bool(can_mutate_project(user, project))
 
 
+def can_manage_project_operations(user, project=None):
+    """Allow non-financial project execution work for authorized staff."""
+    if project is not None and not can_view_project(user, project):
+        return False
+    return bool(is_owner(user) or is_manager(user) or is_office(user))
+
+
+def _execution_loop_allowlist(setting_name):
+    raw = str(getattr(settings, setting_name, "") or "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def execution_loop_enabled_for(user, project=None):
+    """Return the server-side pilot gate for the enhanced project workspace."""
+    if (
+        not feature_enabled("operating_system", default=True)
+        or not feature_enabled("execution_loop", default=False)
+    ):
+        return False
+    if not is_active_user(user):
+        return False
+    user_ids = _execution_loop_allowlist("GCC_EXECUTION_LOOP_USER_IDS")
+    if user_ids and str(user.pk) not in user_ids:
+        return False
+    project_ids = _execution_loop_allowlist("GCC_EXECUTION_LOOP_PROJECT_IDS")
+    if project is not None and project_ids and str(project.pk) not in project_ids:
+        return False
+    return True
+
+
+def external_estimate_enabled_for(user, *, project=None, estimate=None):
+    """Return the independent estimate-link pilot gate for this actor/object."""
+    if (
+        not feature_enabled("operating_system", default=True)
+        or not feature_enabled("external_estimate", default=False)
+        or not is_active_user(user)
+    ):
+        return False
+    user_ids = _execution_loop_allowlist("GCC_EXTERNAL_ESTIMATE_USER_IDS")
+    if user_ids and str(user.pk) not in user_ids:
+        return False
+    project_ids = _execution_loop_allowlist("GCC_EXTERNAL_ESTIMATE_PROJECT_IDS")
+    if project is not None and project_ids and str(project.pk) not in project_ids:
+        return False
+    if estimate is not None and project_ids:
+        linked_project_ids = {
+            str(project_id)
+            for project_id in estimate.projects.values_list("pk", flat=True)
+        }
+        if linked_project_ids:
+            if not linked_project_ids.intersection(project_ids):
+                return False
+        elif not user_ids:
+            # A project allowlist cannot identify a pre-project estimate. Keep
+            # that surface closed unless the pilot also names its users.
+            return False
+    elif project_ids and project is None and estimate is None and not user_ids:
+        # Do not replace the global dashboard with the pilot surface when the
+        # pilot is scoped only to selected projects.
+        return False
+    return True
+
+
+def can_manage_external_estimate(user, *, project=None, estimate=None):
+    """Only Owner, Manager, and Office can manually record estimate and invoice status."""
+    if not external_estimate_enabled_for(user, project=project, estimate=estimate):
+        return False
+    if not (is_owner(user) or is_manager(user) or is_office(user)):
+        return False
+    if project is not None:
+        return can_view_project(user, project)
+    if estimate is not None:
+        if can_view_estimate(user, estimate):
+            return True
+        linked_project = estimate.projects.order_by("-created_at").first()
+        return bool(linked_project and can_view_project(user, linked_project))
+    return True
+
+
+def can_view_external_estimate(user, *, project=None, estimate=None):
+    """View only the small status surface, never provider credentials or details."""
+    if not external_estimate_enabled_for(user, project=project, estimate=estimate):
+        return False
+    if project is not None:
+        return can_view_project(user, project)
+    if estimate is not None:
+        if can_view_estimate(user, estimate):
+            return True
+        linked_project = estimate.projects.order_by("-created_at").first()
+        return bool(linked_project and can_view_project(user, linked_project))
+    return False
+
+
 def visible_estimates(user):
     if is_client(user):
         return Estimate.objects.filter(
@@ -199,7 +297,7 @@ def can_view_estimate(user, estimate):
 def can_submit_field_work(user, project):
     return bool(
         can_view_project(user, project)
-        and (is_owner(user) or is_manager(user) or is_field(user) or is_subcontractor(user))
+        and (is_owner(user) or is_manager(user) or is_office(user) or is_field(user) or is_subcontractor(user))
     )
 
 

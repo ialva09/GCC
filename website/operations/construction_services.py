@@ -11,7 +11,8 @@ import hashlib
 import json
 import uuid
 from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from urllib.parse import urlparse
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.validators import validate_email
@@ -20,17 +21,21 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .construction_policies import (
-    can_manage_construction,
+    can_manage_project_operations,
+    can_manage_external_estimate,
     can_manage_sales,
     can_submit_field_work,
     can_view_financials,
     can_view_estimate,
     can_view_lead,
     can_view_project,
+    feature_enabled,
     is_staff_user,
+    is_field,
     is_client,
     is_manager,
     is_owner,
+    visible_estimates,
     visible_leads,
     visible_projects,
 )
@@ -50,17 +55,22 @@ from .models import (
     Inspection,
     Lead,
     MaterialRequest,
+    Milestone,
     PaymentRecord,
     PaymentSchedule,
     Permit,
     ProblemReport,
     PreconstructionItem,
     Project,
+    ProjectDocument,
     Selection,
     SiteVisit,
+    Subcontractor,
+    SubcontractorAssignment,
     Task,
     WarrantyItem,
     WorkflowEvent,
+    validate_construction_document,
 )
 from .services import get_or_create_client_for_lead, record_activity
 
@@ -133,6 +143,7 @@ def record_workflow_event(
     after_state=None,
     metadata=None,
     idempotency_key=None,
+    event_key_override=None,
 ):
     """Record a non-secret before/after event, returning an existing retry."""
     project = _related_project(related, project)
@@ -143,7 +154,8 @@ def record_workflow_event(
     related_model = related.__class__.__name__ if related is not None else ""
     related_id = str(related.pk) if related is not None and getattr(related, "pk", None) else ""
     event_key = (
-        _workflow_event_key(event_type, related, idempotency_key)
+        event_key_override
+        or _workflow_event_key(event_type, related, idempotency_key)
         if idempotency_key
         else str(uuid.uuid4())
     )
@@ -175,7 +187,7 @@ def record_workflow_event(
 
 
 def initialize_readiness(project, *, actor=None):
-    if actor is not None and not can_manage_construction(actor, project):
+    if actor is not None and not can_manage_project_operations(actor, project):
         raise PermissionDenied("You cannot initialize readiness for this project.")
     created = []
     for key, category, label in READINESS_TEMPLATE:
@@ -194,7 +206,7 @@ def initialize_readiness(project, *, actor=None):
 
 
 def initialize_closeout(project, *, actor=None):
-    if actor is not None and not can_manage_construction(actor, project):
+    if actor is not None and not can_manage_project_operations(actor, project):
         raise PermissionDenied("You cannot initialize closeout for this project.")
     created = []
     for key, category, label in CLOSEOUT_TEMPLATE:
@@ -210,6 +222,23 @@ def initialize_closeout(project, *, actor=None):
         if was_created:
             created.append(item)
     return created
+
+
+def initialize_warranty(project, *, actor=None):
+    if actor is not None and not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot initialize warranty for this project.")
+    warranty_until = timezone.localdate() + timedelta(days=365)
+    item, created = WarrantyItem.objects.get_or_create(
+        project=project,
+        title="Post-closeout warranty coverage",
+        defaults={
+            "description": "Track warranty requests and resolutions after closeout.",
+            "status": WarrantyItem.Status.OPEN,
+            "assigned_to": project.project_manager,
+            "warranty_until": warranty_until,
+        },
+    )
+    return item, created
 
 
 @transaction.atomic
@@ -272,6 +301,11 @@ def create_lead(
     source="",
     note="",
     assigned_to=None,
+    address_line1="",
+    address_line2="",
+    city="",
+    state="",
+    postal_code="",
     idempotency_key=None,
 ):
     if not can_manage_sales(actor):
@@ -318,6 +352,11 @@ def create_lead(
         source=str(source or "").strip()[:120] or "Operations",
         note=str(note or "").strip()[:20000],
         assigned_to=assigned_to,
+        address_line1=str(address_line1 or "").strip()[:180],
+        address_line2=str(address_line2 or "").strip()[:180],
+        city=str(city or "").strip()[:100],
+        state=str(state or "").strip()[:40],
+        postal_code=str(postal_code or "").strip()[:20],
         created_by=actor,
         workflow_stage=Lead.WorkflowStage.NEW,
     )
@@ -342,33 +381,49 @@ def create_site_visit(
     lead,
     *,
     actor,
+    project=None,
     assigned_to=None,
     scheduled_at=None,
     address="",
     scope="",
+    measurements="",
+    client_requests="",
+    existing_conditions="",
+    potential_additional_work="",
     notes="",
     idempotency_key=None,
 ):
-    if not can_manage_sales(actor):
+    if project is not None:
+        if not can_manage_project_operations(actor, project):
+            raise PermissionDenied("You cannot create site visits for this project.")
+    elif not can_manage_sales(actor):
         raise PermissionDenied("You cannot create site visits.")
     locked_lead = Lead.objects.select_for_update().get(pk=lead.pk)
-    if not visible_leads(actor).filter(pk=locked_lead.pk).exists():
+    if project is not None:
+        if locked_lead.pk != project.lead_id:
+            raise ValidationError("The site visit lead must belong to this project.")
+    elif not visible_leads(actor).filter(pk=locked_lead.pk).exists():
         raise PermissionDenied("You cannot access this lead.")
     if idempotency_key:
         existing = SiteVisit.objects.filter(idempotency_key=str(idempotency_key)).first()
         if existing:
-            if existing.lead_id != locked_lead.pk:
-                raise ValidationError("Idempotency key is already used for another lead.")
+            if existing.lead_id != locked_lead.pk or existing.project_id != getattr(project, "pk", None):
+                raise ValidationError("Idempotency key is already used for another site visit.")
             return existing, False
     if assigned_to is not None and not is_staff_user(assigned_to):
         raise ValidationError("Site visits may only be assigned to active staff.")
     visit = SiteVisit.objects.create(
         idempotency_key=str(idempotency_key) if idempotency_key else None,
         lead=locked_lead,
+        project=project,
         assigned_to=assigned_to,
         scheduled_at=scheduled_at,
         address=str(address or "").strip()[:240],
         scope=str(scope or "").strip()[:10000],
+        measurements=str(measurements or "").strip()[:10000],
+        client_requests=str(client_requests or "").strip()[:10000],
+        existing_conditions=str(existing_conditions or "").strip()[:10000],
+        potential_additional_work=str(potential_additional_work or "").strip()[:10000],
         notes=str(notes or "").strip()[:10000],
         created_by=actor,
     )
@@ -443,6 +498,81 @@ def complete_site_visit(site_visit, *, actor, updates=None, idempotency_key=None
     )
     record_activity("Site visit completed", visit.lead.name, actor=actor, lead=visit.lead, project=visit.project)
     return visit
+
+
+@transaction.atomic
+def update_site_visit(site_visit, *, actor, updates=None, complete=False, idempotency_key=None):
+    """Update field notes from the project hub and optionally complete the visit."""
+    locked = SiteVisit.objects.select_for_update().select_related("lead", "project").get(pk=site_visit.pk)
+    if not (
+        can_manage_sales(actor)
+        or can_manage_project_operations(actor, locked.project)
+        or locked.assigned_to_id == getattr(actor, "pk", None)
+    ):
+        raise PermissionDenied("You cannot update this site visit.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("site_visit_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    before = state_snapshot(
+        locked,
+        ["status", "scheduled_at", "address", "scope", "measurements", "client_requests", "existing_conditions", "potential_additional_work", "notes"],
+    )
+    for field, value in (updates or {}).items():
+        if field in {
+            "scheduled_at",
+            "assigned_to",
+            "address",
+            "scope",
+            "measurements",
+            "client_requests",
+            "existing_conditions",
+            "potential_additional_work",
+            "notes",
+        }:
+            if field == "assigned_to":
+                if value is not None and not is_staff_user(value):
+                    raise ValidationError("Site visits may only be assigned to active staff.")
+                if is_field(actor) and value is not None and value.pk != actor.pk:
+                    raise PermissionDenied("Field users cannot reassign a site visit.")
+                setattr(locked, field, value)
+            else:
+                setattr(locked, field, value if field == "scheduled_at" else str(value or "").strip())
+    if complete:
+        locked.status = SiteVisit.Status.COMPLETED
+        locked.completed_at = timezone.now()
+        if locked.lead.workflow_stage in {
+            Lead.WorkflowStage.NEW,
+            Lead.WorkflowStage.CONTACTED,
+            Lead.WorkflowStage.SITE_VISIT,
+        }:
+            locked.lead.workflow_stage = Lead.WorkflowStage.ESTIMATING
+            locked.lead.next_action = "Build estimate"
+            locked.lead.next_action_due = None
+            locked.lead.save(update_fields=["workflow_stage", "next_action", "next_action_due", "updated_at"])
+    locked.save()
+    record_workflow_event(
+        "site_visit_updated",
+        actor=actor,
+        related=locked,
+        lead=locked.lead,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(
+            locked,
+            ["status", "scheduled_at", "address", "scope", "measurements", "client_requests", "existing_conditions", "potential_additional_work", "notes"],
+        ),
+        source="field" if locked.assigned_to_id == getattr(actor, "pk", None) else "web",
+        idempotency_key=idempotency_key,
+    )
+    record_activity(
+        "Site visit completed" if complete else "Site visit updated",
+        locked.lead.name,
+        actor=actor,
+        lead=locked.lead,
+        project=locked.project,
+    )
+    return locked
 
 
 @transaction.atomic
@@ -531,6 +661,304 @@ def accept_estimate(estimate, *, actor, request=None, idempotency_key=None):
         idempotency_key=idempotency_key,
     )
     record_activity("Estimate accepted by client", f"Estimate #{locked.number}", actor=actor, estimate=locked)
+    return locked, True
+
+
+def _external_url(value, field_name):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    parsed = urlparse(value)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValidationError({field_name: "Links must use HTTPS."})
+    if parsed.username or parsed.password:
+        raise ValidationError({field_name: "Links cannot contain embedded credentials."})
+    if len(value) > 500:
+        raise ValidationError({field_name: "The link is too long."})
+    return value
+
+
+def _external_money(value, field_name):
+    if value in (None, ""):
+        return None
+    try:
+        result = Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValidationError({field_name: "Enter a valid amount."}) from exc
+    if not result.is_finite() or result < 0 or result > Decimal("9999999999.99"):
+        raise ValidationError({field_name: "Enter a non-negative amount within the supported range."})
+    return result
+
+
+def _assert_fresh_record(record, expected_updated_at):
+    if expected_updated_at in (None, ""):
+        return
+    try:
+        expected = int(str(expected_updated_at))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("This form is stale. Refresh and try again.") from exc
+    if int(record.updated_at.timestamp()) != expected:
+        raise ValidationError("This record changed in another tab. Refresh and try again.")
+
+
+@transaction.atomic
+def record_external_estimate_status(
+    estimate,
+    *,
+    actor,
+    status,
+    external_url=None,
+    external_reference=None,
+    external_total=None,
+    external_deposit_amount=None,
+    external_status_note="",
+    external_client_visible=None,
+    expected_updated_at=None,
+    idempotency_key=None,
+):
+    """Record an estimate status without importing its details."""
+    locked = Estimate.objects.select_for_update().select_related("lead", "client").get(pk=estimate.pk)
+    if not can_manage_external_estimate(actor, estimate=locked):
+        raise PermissionDenied("You cannot update this external estimate status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("external_estimate_status_changed", locked, idempotency_key),
+    ).exists():
+        return locked, False
+    _assert_fresh_record(locked, expected_updated_at)
+    valid_statuses = dict(Estimate.ExternalEstimateStatus.choices)
+    status = str(status or "").strip()
+    if status not in valid_statuses:
+        raise ValidationError("Choose a valid estimate status.")
+    current = locked.external_status
+    allowed = {
+        Estimate.ExternalEstimateStatus.NOT_STARTED: {Estimate.ExternalEstimateStatus.NOT_STARTED, Estimate.ExternalEstimateStatus.SENT},
+        Estimate.ExternalEstimateStatus.SENT: {
+            Estimate.ExternalEstimateStatus.SENT,
+            Estimate.ExternalEstimateStatus.PENDING,
+            Estimate.ExternalEstimateStatus.APPROVED,
+            Estimate.ExternalEstimateStatus.REJECTED,
+        },
+        Estimate.ExternalEstimateStatus.PENDING: {
+            Estimate.ExternalEstimateStatus.PENDING,
+            Estimate.ExternalEstimateStatus.APPROVED,
+            Estimate.ExternalEstimateStatus.REJECTED,
+        },
+        Estimate.ExternalEstimateStatus.APPROVED: {Estimate.ExternalEstimateStatus.APPROVED},
+        Estimate.ExternalEstimateStatus.REJECTED: {Estimate.ExternalEstimateStatus.REJECTED},
+    }
+    if status not in allowed.get(current, set()):
+        raise ValidationError(f"An estimate cannot move from {valid_statuses.get(current, current)} to {valid_statuses[status]}.")
+    if current == Estimate.ExternalEstimateStatus.APPROVED and status == Estimate.ExternalEstimateStatus.APPROVED:
+        if external_total not in (None, "") and _external_money(external_total, "external_total") != locked.external_total:
+            raise ValidationError("An approved estimate amount is immutable; create a new revision.")
+        if external_deposit_amount not in (None, "") and _external_money(external_deposit_amount, "external_deposit_amount") != locked.external_deposit_amount:
+            raise ValidationError("An approved estimate deposit is immutable; create a new revision.")
+    if locked.status == Estimate.Status.ACCEPTED and status != Estimate.ExternalEstimateStatus.APPROVED:
+        raise ValidationError("An accepted estimate cannot be moved back to a pending estimate status.")
+    if status == Estimate.ExternalEstimateStatus.REJECTED and locked.status == Estimate.Status.ACCEPTED:
+        raise ValidationError("An accepted estimate cannot be rejected; create a revision instead.")
+
+    before = {
+        "external_status": locked.external_status,
+        "estimate_status": locked.status,
+        "external_total": str(locked.external_total) if locked.external_total is not None else None,
+        "external_deposit_amount": str(locked.external_deposit_amount) if locked.external_deposit_amount is not None else None,
+        "external_url_present": bool(locked.external_url),
+    }
+    new_total = _external_money(external_total, "external_total") if external_total not in (None, "") else locked.external_total
+    new_deposit = (
+        _external_money(external_deposit_amount, "external_deposit_amount")
+        if external_deposit_amount not in (None, "")
+        else locked.external_deposit_amount
+    )
+    new_url = _external_url(external_url if external_url is not None else locked.external_url, "external_url")
+    if status != Estimate.ExternalEstimateStatus.NOT_STARTED and not new_url:
+        raise ValidationError({"external_url": "Add the estimate link before recording this status."})
+    now = timezone.now()
+    locked.external_url = new_url
+    locked.external_reference = str(external_reference if external_reference is not None else locked.external_reference or "").strip()[:120]
+    locked.external_total = new_total
+    locked.external_deposit_amount = new_deposit
+    locked.external_status = status
+    locked.external_status_at = now
+    locked.external_status_by = actor
+    locked.external_status_note = str(external_status_note or "").strip()
+    if external_client_visible is not None:
+        locked.external_client_visible = bool(external_client_visible)
+
+    update_fields = [
+        "external_url",
+        "external_reference",
+        "external_total",
+        "external_deposit_amount",
+        "external_status",
+        "external_status_at",
+        "external_status_by",
+        "external_status_note",
+        "external_client_visible",
+        "updated_at",
+    ]
+    if status in {Estimate.ExternalEstimateStatus.SENT, Estimate.ExternalEstimateStatus.PENDING}:
+        if locked.status == Estimate.Status.DRAFT:
+            locked.status = Estimate.Status.SENT
+            locked.sent_at = locked.sent_at or now
+            update_fields.extend(["status", "sent_at"])
+    elif status == Estimate.ExternalEstimateStatus.APPROVED:
+        if locked.status != Estimate.Status.ACCEPTED:
+            locked.status = Estimate.Status.ACCEPTED
+            locked.accepted_at = locked.accepted_at or now
+            locked.accepted_by = locked.accepted_by or actor
+            locked.locked_at = locked.locked_at or now
+            update_fields.extend(["status", "accepted_at", "accepted_by", "locked_at"])
+        if locked.lead_id:
+            locked.lead.workflow_stage = Lead.WorkflowStage.APPROVED
+            locked.lead.next_action = "Prepare agreement and project"
+            locked.lead.save(update_fields=["workflow_stage", "next_action", "updated_at"])
+    elif status == Estimate.ExternalEstimateStatus.REJECTED:
+        if locked.status != Estimate.Status.DECLINED:
+            locked.status = Estimate.Status.DECLINED
+            locked.declined_at = now
+            update_fields.extend(["status", "declined_at"])
+    locked.save(update_fields=update_fields)
+    after = {
+        "external_status": locked.external_status,
+        "estimate_status": locked.status,
+        "external_total": str(locked.external_total) if locked.external_total is not None else None,
+        "external_deposit_amount": str(locked.external_deposit_amount) if locked.external_deposit_amount is not None else None,
+        "external_url_present": bool(locked.external_url),
+    }
+    record_workflow_event(
+        "external_estimate_status_changed",
+        actor=actor,
+        related=locked,
+        estimate=locked,
+        lead=locked.lead,
+        before_state=before,
+        after_state=after,
+        metadata={"confirmation_note": locked.external_status_note},
+        idempotency_key=idempotency_key,
+    )
+    record_activity(
+        f"Estimate marked {valid_statuses[status].lower()}",
+        f"Estimate #{locked.number}",
+        actor=actor,
+        estimate=locked,
+        lead=locked.lead,
+    )
+    return locked, True
+
+
+@transaction.atomic
+def record_external_invoice_status(
+    schedule,
+    *,
+    actor,
+    status,
+    external_invoice_url=None,
+    external_invoice_reference=None,
+    external_invoice_status_note="",
+    external_client_visible=None,
+    expected_updated_at=None,
+    idempotency_key=None,
+):
+    """Record an invoice event; never create a payment record."""
+    locked = PaymentSchedule.objects.select_for_update().select_related("project").get(pk=schedule.pk)
+    if not can_manage_external_estimate(actor, project=locked.project):
+        raise PermissionDenied("You cannot update this external invoice status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("external_invoice_status_changed", locked, idempotency_key),
+    ).exists():
+        return locked, False
+    _assert_fresh_record(locked, expected_updated_at)
+    valid_statuses = dict(PaymentSchedule.ExternalInvoiceStatus.choices)
+    status = str(status or "").strip()
+    if status not in valid_statuses:
+        raise ValidationError("Choose a valid invoice status.")
+    current = locked.external_invoice_status
+    allowed = {
+        PaymentSchedule.ExternalInvoiceStatus.NOT_STARTED: {
+            PaymentSchedule.ExternalInvoiceStatus.NOT_STARTED,
+            PaymentSchedule.ExternalInvoiceStatus.SENT,
+            PaymentSchedule.ExternalInvoiceStatus.PENDING,
+            PaymentSchedule.ExternalInvoiceStatus.PAID,
+            PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+        },
+        PaymentSchedule.ExternalInvoiceStatus.SENT: {
+            PaymentSchedule.ExternalInvoiceStatus.SENT,
+            PaymentSchedule.ExternalInvoiceStatus.PENDING,
+            PaymentSchedule.ExternalInvoiceStatus.PAID,
+            PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+        },
+        PaymentSchedule.ExternalInvoiceStatus.PENDING: {
+            PaymentSchedule.ExternalInvoiceStatus.PENDING,
+            PaymentSchedule.ExternalInvoiceStatus.PAID,
+            PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+        },
+        PaymentSchedule.ExternalInvoiceStatus.OVERDUE: {
+            PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+            PaymentSchedule.ExternalInvoiceStatus.PAID,
+        },
+        PaymentSchedule.ExternalInvoiceStatus.PAID: {PaymentSchedule.ExternalInvoiceStatus.PAID},
+    }
+    if status not in allowed.get(current, set()):
+        raise ValidationError(f"An invoice cannot move from {valid_statuses.get(current, current)} to {valid_statuses[status]}.")
+    before = {
+        "external_invoice_status": locked.external_invoice_status,
+        "grand_coast_status": locked.status,
+        "external_url_present": bool(locked.external_invoice_url),
+    }
+    locked.external_invoice_url = _external_url(
+        external_invoice_url if external_invoice_url is not None else locked.external_invoice_url,
+        "external_invoice_url",
+    )
+    locked.external_invoice_reference = str(
+        external_invoice_reference if external_invoice_reference is not None else locked.external_invoice_reference or ""
+    ).strip()[:120]
+    locked.external_invoice_status = status
+    locked.external_invoice_status_at = timezone.now()
+    locked.external_invoice_status_by = actor
+    locked.external_invoice_status_note = str(external_invoice_status_note or "").strip()
+    if external_client_visible is not None:
+        locked.external_client_visible = bool(external_client_visible)
+    if status == PaymentSchedule.ExternalInvoiceStatus.SENT and locked.status in {
+        PaymentSchedule.Status.PENDING,
+        PaymentSchedule.Status.READY,
+    }:
+        locked.status = PaymentSchedule.Status.INVOICED
+    elif status == PaymentSchedule.ExternalInvoiceStatus.OVERDUE and locked.status != PaymentSchedule.Status.PAID:
+        locked.status = PaymentSchedule.Status.OVERDUE
+    locked.save(update_fields=[
+        "external_invoice_url",
+        "external_invoice_reference",
+        "external_invoice_status",
+        "external_invoice_status_at",
+        "external_invoice_status_by",
+        "external_invoice_status_note",
+        "external_client_visible",
+        "status",
+        "updated_at",
+    ])
+    after = {
+        "external_invoice_status": locked.external_invoice_status,
+        "grand_coast_status": locked.status,
+        "external_url_present": bool(locked.external_invoice_url),
+    }
+    record_workflow_event(
+        "external_invoice_status_changed",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=after,
+        metadata={"confirmation_note": locked.external_invoice_status_note},
+        idempotency_key=idempotency_key,
+    )
+    record_activity(
+        f"Invoice marked {valid_statuses[status].lower()}",
+        locked.description,
+        actor=actor,
+        project=locked.project,
+    )
     return locked, True
 
 
@@ -649,19 +1077,27 @@ def create_project_from_estimate(estimate, *, actor, idempotency_key=None):
         fallback_image="operations/images/progress-kitchen.png",
     )
     _ensure_milestones(project)
+    # Carry the completed discovery record into the canonical project hub so
+    # the site-visit notes, measurements, and media remain attached to the
+    # same project without a second data-entry step.
+    if lead is not None:
+        SiteVisit.objects.filter(lead=lead, project__isnull=True).update(
+            project=project,
+            updated_at=timezone.now(),
+        )
     agreement, _ = Agreement.objects.get_or_create(
         project=project,
         defaults={
             "estimate": locked,
             "status": Agreement.Status.ISSUED,
-            "contract_value": locked.total,
-            "deposit_amount": locked.deposit_amount,
+            "contract_value": locked.external_total if locked.external_total is not None else locked.total,
+            "deposit_amount": locked.external_deposit_amount if locked.external_deposit_amount is not None else locked.deposit_amount,
             "issued_at": timezone.now(),
             "content_snapshot": {
                 "estimate_id": str(locked.pk),
                 "estimate_number": locked.number,
-                "contract_value": str(locked.total),
-                "deposit_amount": str(locked.deposit_amount),
+                "contract_value": str(locked.external_total if locked.external_total is not None else locked.total),
+                "deposit_amount": str(locked.external_deposit_amount if locked.external_deposit_amount is not None else locked.deposit_amount),
                 "title": locked.title,
             },
             "created_by": actor,
@@ -680,13 +1116,14 @@ def create_project_from_estimate(estimate, *, actor, idempotency_key=None):
                 "created_by": actor,
             },
         )
-    if locked.deposit_amount > 0:
+    deposit_value = locked.external_deposit_amount if locked.external_deposit_amount is not None else locked.deposit_amount
+    if deposit_value > 0:
         PaymentSchedule.objects.get_or_create(
             project=project,
             sequence=1,
             defaults={
                 "description": "Initial deposit",
-                "amount": locked.deposit_amount,
+                "amount": deposit_value,
                 "status": PaymentSchedule.Status.READY,
                 "created_by": actor,
             },
@@ -707,6 +1144,7 @@ def create_project_from_estimate(estimate, *, actor, idempotency_key=None):
             defaults={
                 "description": str(row.get("description") or f"Progress payment {next_sequence}")[:180],
                 "amount": amount,
+                "milestone": project.milestones.filter(sort_order=next_sequence + 1).first(),
                 "status": PaymentSchedule.Status.PENDING,
                 "created_by": actor,
             },
@@ -742,7 +1180,7 @@ def create_project_from_estimate(estimate, *, actor, idempotency_key=None):
 @transaction.atomic
 def complete_readiness_item(item, *, actor, idempotency_key=None, notes=None):
     locked = PreconstructionItem.objects.select_for_update().select_related("project").get(pk=item.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot update this readiness item.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("readiness_item_completed", locked, idempotency_key),
@@ -761,8 +1199,20 @@ def complete_readiness_item(item, *, actor, idempotency_key=None, notes=None):
         required=True,
     ).exclude(status__in=[PreconstructionItem.Status.COMPLETE, PreconstructionItem.Status.SKIPPED]).exists():
         locked.project.construction_ready_at = timezone.now()
+        locked.project.operational_phase = Project.OperationalPhase.CONSTRUCTION
+        locked.project.status = Project.Status.CONSTRUCTION
         locked.project.next_step = "Schedule construction start"
-        locked.project.save(update_fields=["construction_ready_at", "next_step", "updated_at"])
+        locked.project.start_date = locked.project.start_date or timezone.localdate()
+        locked.project.save(
+            update_fields=[
+                "construction_ready_at",
+                "operational_phase",
+                "status",
+                "next_step",
+                "start_date",
+                "updated_at",
+            ]
+        )
     record_workflow_event(
         "readiness_item_completed",
         actor=actor,
@@ -771,6 +1221,52 @@ def complete_readiness_item(item, *, actor, idempotency_key=None, notes=None):
         before_state=before,
         after_state=state_snapshot(locked, ["status", "completed_at", "completed_by_id", "notes"]),
         idempotency_key=idempotency_key,
+    )
+    return locked
+
+
+@transaction.atomic
+def update_readiness_item(
+    item,
+    *,
+    actor,
+    owner=None,
+    due_date=None,
+    notes="",
+    idempotency_key=None,
+):
+    """Update readiness ownership and planning details from the project hub."""
+    locked = PreconstructionItem.objects.select_for_update().select_related("project").get(pk=item.pk)
+    if not can_manage_project_operations(actor, locked.project):
+        raise PermissionDenied("You cannot update this readiness item.")
+    event_key = (
+        _workflow_event_key("readiness_item_updated", locked, idempotency_key)
+        if idempotency_key
+        else None
+    )
+    if event_key and WorkflowEvent.objects.filter(idempotency_key=event_key).exists():
+        return locked
+    if owner is not None and not is_staff_user(owner):
+        raise ValidationError("Readiness owners must be active staff members.")
+    before = state_snapshot(locked, ["owner_id", "due_date", "notes"])
+    locked.owner = owner
+    locked.due_date = due_date
+    locked.notes = str(notes or "").strip()[:20000]
+    locked.save(update_fields=["owner", "due_date", "notes", "updated_at"])
+    record_workflow_event(
+        "readiness_item_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(locked, ["owner_id", "due_date", "notes"]),
+        idempotency_key=idempotency_key,
+    )
+    record_activity(
+        "Readiness item updated",
+        locked.label,
+        actor=actor,
+        project=locked.project,
     )
     return locked
 
@@ -787,7 +1283,7 @@ def create_change_order(
     status=ChangeOrder.Status.DRAFT,
     idempotency_key=None,
 ):
-    if not can_manage_construction(actor, project):
+    if not can_manage_project_operations(actor, project):
         raise PermissionDenied("You cannot create a change order for this project.")
     if idempotency_key:
         existing = ChangeOrder.objects.filter(idempotency_key=str(idempotency_key)).first()
@@ -1075,6 +1571,111 @@ def record_cost(
 
 
 @transaction.atomic
+def create_commitment(
+    project,
+    *,
+    actor,
+    description,
+    amount,
+    subcontractor=None,
+    budget_line=None,
+    status=Commitment.Status.PLANNED,
+    due_date=None,
+    idempotency_key=None,
+):
+    """Create a forecast commitment and keep its budget line synchronized."""
+    if not can_view_financials(actor, project):
+        raise PermissionDenied("You cannot record commitments for this project.")
+    if idempotency_key:
+        existing = Commitment.objects.filter(idempotency_key=str(idempotency_key)).first()
+        if existing:
+            if existing.project_id != project.pk:
+                raise PermissionDenied("You cannot access the commitment for this idempotency key.")
+            return existing, False
+    description = str(description or "").strip()
+    if not description or len(description) > 180:
+        raise ValidationError("A commitment description of 180 characters or fewer is required.")
+    try:
+        amount = Decimal(str(amount)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise ValidationError("Commitment amount must be a valid amount.") from exc
+    if not amount.is_finite() or amount <= 0 or amount > Decimal("9999999999.99"):
+        raise ValidationError("Commitment amount must be greater than zero.")
+    if status not in {Commitment.Status.PLANNED, Commitment.Status.COMMITTED}:
+        raise ValidationError("New commitments must be planned or committed.")
+    if budget_line is not None:
+        budget_line = BudgetLine.objects.select_for_update().get(pk=budget_line.pk)
+        if budget_line.project_id != project.pk:
+            raise ValidationError("The budget line must belong to this project.")
+    if subcontractor is not None and subcontractor.status != Subcontractor.Status.ACTIVE:
+        raise ValidationError("Only active subcontractors can receive commitments.")
+    commitment = Commitment.objects.create(
+        idempotency_key=str(idempotency_key) if idempotency_key else None,
+        project=project,
+        subcontractor=subcontractor,
+        budget_line=budget_line,
+        description=description,
+        amount=amount,
+        status=status,
+        due_date=due_date,
+        created_by=actor,
+    )
+    if budget_line is not None:
+        budget_line.committed = (budget_line.committed + amount).quantize(Decimal("0.01"))
+        budget_line.save(update_fields=["committed", "updated_at"])
+    record_workflow_event(
+        "commitment_created",
+        actor=actor,
+        related=commitment,
+        project=project,
+        after_state=state_snapshot(
+            commitment,
+            ["description", "amount", "status", "due_date", "budget_line_id", "subcontractor_id"],
+        ),
+        idempotency_key=f"commitment-event:{commitment.pk}",
+    )
+    record_activity("Commitment recorded", f"${commitment.amount:.2f} - {commitment.description}", actor=actor, project=project)
+    return commitment, True
+
+
+@transaction.atomic
+def record_commitment_status(commitment, *, actor, status, idempotency_key=None):
+    locked = Commitment.objects.select_for_update().select_related("project", "budget_line").get(pk=commitment.pk)
+    if not can_view_financials(actor, locked.project):
+        raise PermissionDenied("You cannot update commitments for this project.")
+    if status not in {value for value, _label in Commitment.Status.choices}:
+        raise ValidationError("Choose a valid commitment status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("commitment_status_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    if locked.status == status:
+        return locked
+    before = state_snapshot(locked, ["status"])
+    was_active = locked.status in {Commitment.Status.PLANNED, Commitment.Status.COMMITTED}
+    will_be_cancelled = status == Commitment.Status.CANCELLED
+    locked.status = status
+    locked.save(update_fields=["status", "updated_at"])
+    if was_active and will_be_cancelled and locked.budget_line_id:
+        budget_line = BudgetLine.objects.select_for_update().get(pk=locked.budget_line_id)
+        budget_line.committed = max(
+            (budget_line.committed - locked.amount).quantize(Decimal("0.01")),
+            Decimal("0.00"),
+        )
+        budget_line.save(update_fields=["committed", "updated_at"])
+    record_workflow_event(
+        "commitment_status_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(locked, ["status"]),
+        idempotency_key=idempotency_key,
+    )
+    return locked
+
+
+@transaction.atomic
 def void_cost_entry(entry, *, actor, idempotency_key=None):
     locked = CostEntry.objects.select_for_update().select_related("project").get(pk=entry.pk)
     if not can_view_financials(actor, locked.project):
@@ -1188,7 +1789,7 @@ def create_permit(
     notes="",
     idempotency_key=None,
 ):
-    if not can_manage_construction(actor, project):
+    if not can_manage_project_operations(actor, project):
         raise PermissionDenied("You cannot create permits for this project.")
     if idempotency_key:
         existing = Permit.objects.filter(idempotency_key=str(idempotency_key)).first()
@@ -1230,6 +1831,267 @@ def create_permit(
 
 
 @transaction.atomic
+def create_selection(
+    project,
+    *,
+    actor,
+    category,
+    item_name,
+    description="",
+    vendor="",
+    allowance=Decimal("0.00"),
+    client_choice="",
+    due_date=None,
+    notes="",
+    idempotency_key=None,
+):
+    if not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot create selections for this project.")
+    if idempotency_key:
+        event_key = _workflow_event_key("selection_created", project, idempotency_key)
+        existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+        if existing_event:
+            return Selection.objects.get(pk=existing_event.related_id), False
+    category = str(category or "").strip()
+    item_name = str(item_name or "").strip()
+    if not category or len(category) > 100:
+        raise ValidationError("A selection category of 100 characters or fewer is required.")
+    if not item_name or len(item_name) > 180:
+        raise ValidationError("A selection item name of 180 characters or fewer is required.")
+    try:
+        allowance = Decimal(str(allowance or "0")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (TypeError, ValueError, ArithmeticError) as exc:
+        raise ValidationError("Selection allowance must be a valid amount.") from exc
+    if not allowance.is_finite() or allowance < 0 or allowance > Decimal("9999999999.99"):
+        raise ValidationError("Selection allowance is outside the supported range.")
+    selection = Selection(
+        project=project,
+        category=category,
+        item_name=item_name,
+        description=str(description or "").strip()[:20000],
+        vendor=str(vendor or "").strip()[:160],
+        allowance=allowance,
+        client_choice=str(client_choice or "").strip()[:20000],
+        due_date=due_date,
+        notes=str(notes or "").strip()[:20000],
+        created_by=actor,
+    )
+    selection.full_clean()
+    selection.save()
+    record_workflow_event(
+        "selection_created",
+        actor=actor,
+        related=selection,
+        project=project,
+        after_state=state_snapshot(selection, ["category", "item_name", "status", "allowance", "due_date"]),
+        idempotency_key=idempotency_key,
+        event_key_override=(
+            _workflow_event_key("selection_created", project, idempotency_key)
+            if idempotency_key
+            else None
+        ),
+    )
+    record_activity("Selection added", selection.item_name, actor=actor, project=project)
+    return selection, True
+
+
+@transaction.atomic
+def create_project_task(
+    project,
+    *,
+    actor,
+    title,
+    description="",
+    milestone=None,
+    assigned_to=None,
+    status=Task.Status.OPEN,
+    priority=Task.Priority.NORMAL,
+    due_date=None,
+    idempotency_key=None,
+):
+    if not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot create tasks for this project.")
+    event_key = (
+        _workflow_event_key("project_task_created", project, idempotency_key)
+        if idempotency_key
+        else None
+    )
+    if event_key:
+        existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+        if existing_event:
+            return Task.objects.get(pk=existing_event.related_id), False
+    title = str(title or "").strip()
+    if not title or len(title) > 180:
+        raise ValidationError("A task title of 180 characters or fewer is required.")
+    if milestone is not None:
+        milestone = Milestone.objects.get(pk=milestone.pk)
+        if milestone.project_id != project.pk:
+            raise ValidationError("The selected milestone must belong to this project.")
+    if assigned_to is not None and not is_staff_user(assigned_to):
+        raise ValidationError("Tasks may only be assigned to active staff.")
+    if status not in {value for value, _label in Task.Status.choices}:
+        raise ValidationError("Choose a valid task status.")
+    if priority not in {value for value, _label in Task.Priority.choices}:
+        raise ValidationError("Choose a valid task priority.")
+    task = Task(
+        project=project,
+        title=title,
+        description=str(description or "").strip()[:20000],
+        milestone=milestone,
+        assigned_to=assigned_to,
+        status=status,
+        priority=priority,
+        due_date=due_date,
+        completed_at=timezone.now() if status == Task.Status.COMPLETE else None,
+        created_by=actor,
+    )
+    task.full_clean()
+    task.save()
+    record_workflow_event(
+        "project_task_created",
+        actor=actor,
+        related=task,
+        project=project,
+        after_state=state_snapshot(task, ["title", "status", "priority", "due_date", "assigned_to_id", "milestone_id"]),
+        idempotency_key=idempotency_key,
+        event_key_override=event_key,
+    )
+    record_activity("Project task created", task.title, actor=actor, project=project)
+    return task, True
+
+
+@transaction.atomic
+def record_project_task_status(task, *, actor, status, idempotency_key=None):
+    locked = Task.objects.select_for_update().select_related("project", "lead").get(pk=task.pk)
+    if not (
+        can_manage_project_operations(actor, locked.project)
+        or (is_field(actor) and locked.assigned_to_id == actor.pk)
+    ):
+        raise PermissionDenied("You cannot update tasks for this project.")
+    if status not in {value for value, _label in Task.Status.choices}:
+        raise ValidationError("Choose a valid task status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("project_task_status_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    before = state_snapshot(locked, ["status", "completed_at"])
+    locked.status = status
+    locked.completed_at = timezone.now() if status == Task.Status.COMPLETE else None
+    locked.save(update_fields=["status", "completed_at", "updated_at"])
+    record_workflow_event(
+        "project_task_status_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        lead=locked.lead,
+        before_state=before,
+        after_state=state_snapshot(locked, ["status", "completed_at"]),
+        idempotency_key=idempotency_key,
+    )
+    record_activity("Project task status updated", locked.title, actor=actor, project=locked.project)
+    return locked
+
+
+@transaction.atomic
+def create_project_document(
+    project,
+    *,
+    actor,
+    title,
+    category="Project document",
+    description="",
+    file,
+    visibility=ProjectDocument.Visibility.INTERNAL,
+    idempotency_key=None,
+):
+    """Create a protected project document through the execution command layer."""
+    if not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot upload documents for this project.")
+    event_key = (
+        _workflow_event_key("project_document_created", project, idempotency_key)
+        if idempotency_key
+        else None
+    )
+    if event_key:
+        existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+        if existing_event:
+            return ProjectDocument.objects.get(pk=existing_event.related_id), False
+    document = ProjectDocument(
+        project=project,
+        title=str(title or "").strip(),
+        category=str(category or "Project document").strip(),
+        description=str(description or "").strip(),
+        file=file,
+        visibility=visibility,
+        uploaded_by=actor,
+    )
+    validate_construction_document(file)
+    document.full_clean()
+    document.save()
+    record_workflow_event(
+        "project_document_created",
+        actor=actor,
+        related=document,
+        project=project,
+        after_state=state_snapshot(document, ["title", "category", "visibility"]),
+        idempotency_key=idempotency_key,
+        event_key_override=event_key,
+    )
+    record_activity("Project document uploaded", document.title, actor=actor, project=project)
+    return document, True
+
+
+@transaction.atomic
+def create_inspection(
+    project,
+    *,
+    actor,
+    inspection_type,
+    permit=None,
+    scheduled_at=None,
+    idempotency_key=None,
+):
+    if not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot schedule inspections for this project.")
+    if idempotency_key:
+        event_key = _workflow_event_key("inspection_created", project, idempotency_key)
+        existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+        if existing_event:
+            return Inspection.objects.get(pk=existing_event.related_id), False
+    inspection_type = str(inspection_type or "").strip()
+    if not inspection_type or len(inspection_type) > 140:
+        raise ValidationError("An inspection type of 140 characters or fewer is required.")
+    if permit is not None:
+        permit = Permit.objects.get(pk=permit.pk)
+        if permit.project_id != project.pk:
+            raise ValidationError("The selected permit must belong to this project.")
+    inspection = Inspection(
+        project=project,
+        permit=permit,
+        inspection_type=inspection_type,
+        scheduled_at=scheduled_at,
+        created_by=actor,
+    )
+    inspection.full_clean()
+    inspection.save()
+    record_workflow_event(
+        "inspection_created",
+        actor=actor,
+        related=inspection,
+        project=project,
+        after_state=state_snapshot(inspection, ["inspection_type", "permit_id", "scheduled_at", "status"]),
+        idempotency_key=idempotency_key,
+        event_key_override=(
+            _workflow_event_key("inspection_created", project, idempotency_key)
+            if idempotency_key
+            else None
+        ),
+    )
+    record_activity("Inspection scheduled", inspection.inspection_type, actor=actor, project=project)
+    return inspection, True
+
+
+@transaction.atomic
 def record_permit_status(
     permit,
     *,
@@ -1241,7 +2103,7 @@ def record_permit_status(
     idempotency_key=None,
 ):
     locked = Permit.objects.select_for_update().select_related("project").get(pk=permit.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot update permits for this project.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("permit_status_recorded", locked, idempotency_key),
@@ -1395,6 +2257,47 @@ def request_material(
 
 
 @transaction.atomic
+def record_material_request_status(material_request, *, actor, status, idempotency_key=None):
+    locked = MaterialRequest.objects.select_for_update().select_related("project").get(pk=material_request.pk)
+    if not can_manage_project_operations(actor, locked.project):
+        raise PermissionDenied("You cannot update materials for this project.")
+    if status not in {value for value, _label in MaterialRequest.Status.choices}:
+        raise ValidationError("Choose a valid material request status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("material_request_status_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    if locked.status == status:
+        return locked
+    sequence = [
+        MaterialRequest.Status.REQUESTED,
+        MaterialRequest.Status.APPROVED,
+        MaterialRequest.Status.ORDERED,
+        MaterialRequest.Status.RECEIVED,
+    ]
+    if status != MaterialRequest.Status.REJECTED:
+        if status not in sequence or sequence.index(status) < sequence.index(locked.status):
+            raise ValidationError("Material requests can only move forward through fulfillment.")
+    before = state_snapshot(locked, ["status", "approved_at", "approved_by_id"])
+    locked.status = status
+    if status == MaterialRequest.Status.APPROVED:
+        locked.approved_at = timezone.now()
+        locked.approved_by = actor
+    locked.save(update_fields=["status", "approved_at", "approved_by", "updated_at"])
+    record_workflow_event(
+        "material_request_status_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(locked, ["status", "approved_at", "approved_by_id"]),
+        idempotency_key=idempotency_key,
+    )
+    record_activity("Material request updated", f"{locked.description} - {locked.get_status_display()}", actor=actor, project=locked.project)
+    return locked
+
+
+@transaction.atomic
 def submit_problem_report(
     project,
     *,
@@ -1465,7 +2368,7 @@ def resolve_problem_report(
     idempotency_key=None,
 ):
     locked = ProblemReport.objects.select_for_update().select_related("project").get(pk=report.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot resolve this construction problem.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("problem_report_resolved", locked, idempotency_key),
@@ -1497,7 +2400,7 @@ def resolve_problem_report(
 @transaction.atomic
 def complete_closeout_item(item, *, actor, status=CloseoutItem.Status.COMPLETE, notes=None, idempotency_key=None):
     locked = CloseoutItem.objects.select_for_update().select_related("project").get(pk=item.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot update closeout for this project.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("closeout_item_completed", locked, idempotency_key),
@@ -1521,6 +2424,7 @@ def complete_closeout_item(item, *, actor, status=CloseoutItem.Status.COMPLETE, 
         locked.project.status = Project.Status.COMPLETE
         locked.project.next_step = "Warranty support"
         locked.project.save(update_fields=["operational_phase", "status", "next_step", "updated_at"])
+        initialize_warranty(locked.project, actor=actor)
     record_workflow_event(
         "closeout_item_completed",
         actor=actor,
@@ -1542,7 +2446,7 @@ def advance_selection(selection, *, actor, status, client_choice=None, idempoten
             raise PermissionDenied("Clients may only submit their own selection choices.")
         if not str(client_choice or "").strip():
             raise ValidationError("A selection choice is required.")
-    elif not can_manage_construction(actor, project):
+    elif not can_manage_project_operations(actor, project):
         raise PermissionDenied("Only assigned management may advance selections.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("selection_advanced", locked, idempotency_key),
@@ -1585,6 +2489,18 @@ def advance_selection(selection, *, actor, status, client_choice=None, idempoten
     if status == Selection.Status.APPROVED:
         locked.approved_by = actor
     locked.save()
+    if status == Selection.Status.APPROVED:
+        Task.objects.get_or_create(
+            project=project,
+            title=f"Order selection: {locked.item_name}"[:180],
+            defaults={
+                "description": f"Procure the approved {locked.category.lower()} selection.",
+                "due_date": locked.due_date,
+                "status": Task.Status.OPEN,
+                "priority": Task.Priority.HIGH,
+                "created_by": actor,
+            },
+        )
     record_workflow_event(
         "selection_advanced",
         actor=actor,
@@ -1612,7 +2528,7 @@ def record_inspection_result(
     idempotency_key=None,
 ):
     locked = Inspection.objects.select_for_update().select_related("project").get(pk=inspection.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot record an inspection result.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("inspection_result_recorded", locked, idempotency_key),
@@ -1643,6 +2559,18 @@ def record_inspection_result(
                 "created_by": actor,
             },
         )
+    elif status == Inspection.Status.PASSED:
+        Blocker.objects.filter(
+            project=locked.project,
+            category=Blocker.Category.INSPECTION,
+            title=f"Failed inspection: {locked.inspection_type}",
+            status=Blocker.Status.OPEN,
+        ).update(
+            status=Blocker.Status.RESOLVED,
+            resolved_at=timezone.now(),
+            resolved_by=actor,
+            updated_at=timezone.now(),
+        )
     record_workflow_event(
         "inspection_result_recorded",
         actor=actor,
@@ -1659,6 +2587,147 @@ def record_inspection_result(
 
 
 @transaction.atomic
+def set_milestone_status(milestone, *, actor, is_complete, idempotency_key=None):
+    """Complete a milestone and release any payment draw linked to it."""
+    locked = Milestone.objects.select_for_update().select_related("project").get(pk=milestone.pk)
+    if not can_manage_project_operations(actor, locked.project):
+        raise PermissionDenied("You cannot update this project milestone.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("milestone_status_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    complete = bool(is_complete)
+    before = state_snapshot(locked, ["is_complete", "completed_at"])
+    locked.is_complete = complete
+    locked.completed_at = timezone.now() if complete else None
+    locked.save(update_fields=["is_complete", "completed_at"])
+    released_draws = []
+    if complete:
+        schedules = PaymentSchedule.objects.select_for_update().filter(
+            milestone=locked,
+            status=PaymentSchedule.Status.PENDING,
+        )
+        for schedule in schedules:
+            schedule.status = PaymentSchedule.Status.READY
+            schedule.save(update_fields=["status", "updated_at"])
+            released_draws.append(str(schedule.pk))
+            record_workflow_event(
+                "payment_draw_ready",
+                actor=actor,
+                related=schedule,
+                project=locked.project,
+                after_state={"status": schedule.status, "milestone_id": str(locked.pk)},
+                source="workflow",
+                idempotency_key=f"milestone-draw:{locked.pk}:{schedule.pk}:{idempotency_key or locked.updated_at.isoformat()}",
+            )
+    record_workflow_event(
+        "milestone_status_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(locked, ["is_complete", "completed_at"]),
+        metadata={"released_draw_ids": released_draws},
+        idempotency_key=idempotency_key,
+    )
+    record_activity(
+        "Milestone completed" if complete else "Milestone reopened",
+        locked.title,
+        actor=actor,
+        project=locked.project,
+    )
+    return locked
+
+
+@transaction.atomic
+def create_subcontractor_assignment(
+    project,
+    *,
+    actor,
+    subcontractor,
+    task=None,
+    work_package,
+    scope="",
+    start_date=None,
+    end_date=None,
+    status=SubcontractorAssignment.Status.PROPOSED,
+    notes="",
+    idempotency_key=None,
+):
+    if not can_manage_project_operations(actor, project):
+        raise PermissionDenied("You cannot assign subcontractor work for this project.")
+    if subcontractor is None:
+        raise ValidationError("Invalid subcontractor.")
+    if subcontractor.status != Subcontractor.Status.ACTIVE:
+        raise ValidationError("Only active subcontractors can receive work assignments.")
+    if task is not None and task.project_id != project.pk:
+        raise ValidationError("The selected task must belong to this project.")
+    if status not in {value for value, _label in SubcontractorAssignment.Status.choices}:
+        raise ValidationError("Choose a valid subcontractor assignment status.")
+    if idempotency_key:
+        event_key = _workflow_event_key("subcontractor_assignment_created", project, idempotency_key)
+        existing_event = WorkflowEvent.objects.filter(idempotency_key=event_key).first()
+        if existing_event:
+            existing = SubcontractorAssignment.objects.get(pk=existing_event.related_id)
+            return existing, False
+    assignment = SubcontractorAssignment(
+        project=project,
+        subcontractor=subcontractor,
+        task=task,
+        work_package=str(work_package or "").strip(),
+        scope=str(scope or "").strip()[:20000],
+        start_date=start_date,
+        end_date=end_date,
+        status=status,
+        notes=str(notes or "").strip()[:20000],
+        assigned_by=actor,
+    )
+    assignment.full_clean()
+    assignment.save()
+    record_workflow_event(
+        "subcontractor_assignment_created",
+        actor=actor,
+        related=assignment,
+        project=project,
+        after_state=state_snapshot(assignment, ["subcontractor_id", "task_id", "work_package", "start_date", "end_date", "status"]),
+        idempotency_key=idempotency_key,
+        event_key_override=(
+            _workflow_event_key("subcontractor_assignment_created", project, idempotency_key)
+            if idempotency_key
+            else None
+        ),
+    )
+    record_activity("Subcontractor work assigned", assignment.work_package, actor=actor, project=project)
+    return assignment, True
+
+
+@transaction.atomic
+def record_subcontractor_assignment_status(assignment, *, actor, status, idempotency_key=None):
+    locked = SubcontractorAssignment.objects.select_for_update().select_related("project").get(pk=assignment.pk)
+    if not can_manage_project_operations(actor, locked.project):
+        raise PermissionDenied("You cannot update subcontractor work for this project.")
+    if status not in {value for value, _label in SubcontractorAssignment.Status.choices}:
+        raise ValidationError("Choose a valid subcontractor assignment status.")
+    if idempotency_key and WorkflowEvent.objects.filter(
+        idempotency_key=_workflow_event_key("subcontractor_assignment_status_updated", locked, idempotency_key),
+    ).exists():
+        return locked
+    before = state_snapshot(locked, ["status"])
+    locked.status = status
+    locked.save(update_fields=["status", "updated_at"])
+    record_workflow_event(
+        "subcontractor_assignment_status_updated",
+        actor=actor,
+        related=locked,
+        project=locked.project,
+        before_state=before,
+        after_state=state_snapshot(locked, ["status"]),
+        idempotency_key=idempotency_key,
+    )
+    return locked
+
+
+@transaction.atomic
 def resolve_warranty_item(
     item,
     *,
@@ -1668,7 +2737,7 @@ def resolve_warranty_item(
     idempotency_key=None,
 ):
     locked = WarrantyItem.objects.select_for_update().select_related("project").get(pk=item.pk)
-    if not can_manage_construction(actor, locked.project):
+    if not can_manage_project_operations(actor, locked.project):
         raise PermissionDenied("You cannot resolve this warranty item.")
     if idempotency_key and WorkflowEvent.objects.filter(
         idempotency_key=_workflow_event_key("warranty_item_resolved", locked, idempotency_key),
@@ -1777,6 +2846,7 @@ def _attention_item(
     due_at=None,
     project=None,
     lead=None,
+    estimate=None,
     source="",
 ):
     return {
@@ -1787,6 +2857,7 @@ def _attention_item(
         "due_at": due_at,
         "project": project,
         "lead": lead,
+        "estimate": estimate,
         "source": source,
     }
 
@@ -1896,6 +2967,40 @@ def attention_feed(user, *, limit=80):
             project=schedule.project,
             source="Payment schedule",
         ))
+    if feature_enabled("external_estimate", default=False):
+        for schedule in PaymentSchedule.objects.filter(
+            project_id__in=financial_project_ids,
+            external_invoice_status__in=[
+                PaymentSchedule.ExternalInvoiceStatus.PENDING,
+                PaymentSchedule.ExternalInvoiceStatus.OVERDUE,
+                PaymentSchedule.ExternalInvoiceStatus.PAID,
+            ],
+        ).select_related("project"):
+            if not external_estimate_enabled_for(user, project=schedule.project):
+                continue
+            if schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.PENDING:
+                title = f"{schedule.project.title}: Invoice needs confirmation"
+                description = "Check the invoice service and record the invoice event."
+                priority = "normal"
+            elif schedule.external_invoice_status == PaymentSchedule.ExternalInvoiceStatus.OVERDUE:
+                title = f"{schedule.project.title}: Invoice overdue"
+                description = "Follow up in the invoice service and update the Grand Coast payment record when confirmed."
+                priority = "high"
+            elif schedule.payments.filter(voided_at__isnull=True).exists():
+                continue
+            else:
+                title = f"{schedule.project.title}: Record payment"
+                description = "Payment was manually confirmed; record the internal payment in Grand Coast."
+                priority = "high"
+            items.append(_attention_item(
+                kind="external_invoice",
+                title=title,
+                description=description,
+                priority=priority,
+                due_at=schedule.due_date,
+                project=schedule.project,
+                source="Invoice",
+            ))
     for selection in Selection.objects.filter(
         project_id__in=project_ids,
         status__in=[Selection.Status.SUBMITTED, Selection.Status.PENDING],
@@ -1925,6 +3030,45 @@ def attention_feed(user, *, limit=80):
             project=task.project,
             source="Task",
         ))
+    for problem in ProblemReport.objects.filter(
+        project_id__in=project_ids,
+        status__in=[
+            ProblemReport.Status.OPEN,
+            ProblemReport.Status.ACKNOWLEDGED,
+            ProblemReport.Status.IN_PROGRESS,
+        ],
+    ).select_related("project", "reported_by", "assigned_to"):
+        items.append(_attention_item(
+            kind="problem",
+            title=f"{problem.project.title}: {problem.title}",
+            description=problem.description,
+            priority=(
+                "urgent" if problem.severity == ProblemReport.Severity.CRITICAL
+                else "high" if problem.severity == ProblemReport.Severity.HIGH
+                else "normal"
+            ),
+            due_at=problem.created_at,
+            project=problem.project,
+            source="Field problem report",
+        ))
+    for project in projects.filter(
+        status__in=[
+            Project.Status.PLANNING,
+            Project.Status.SELECTIONS,
+            Project.Status.CONSTRUCTION,
+            Project.Status.FINAL,
+        ],
+        target_date__lt=today,
+    ):
+        items.append(_attention_item(
+            kind="schedule_risk",
+            title=f"{project.title}: Target completion is past due",
+            description=project.next_step or "Review the schedule and reset the next action.",
+            priority="high",
+            due_at=project.target_date,
+            project=project,
+            source="Schedule risk",
+        ))
 
     if can_manage_sales(user):
         leads = visible_leads(user).select_related("assigned_to", "client")
@@ -1951,6 +3095,45 @@ def attention_feed(user, *, limit=80):
                 lead=estimate.lead,
                 source="Estimate",
             ))
+        if feature_enabled("external_estimate", default=False):
+            for external_estimate in visible_estimates(user).filter(
+                external_status__in=[
+                    Estimate.ExternalEstimateStatus.PENDING,
+                    Estimate.ExternalEstimateStatus.REJECTED,
+                    Estimate.ExternalEstimateStatus.APPROVED,
+                ],
+            ).select_related("lead", "client")[:80]:
+                if not external_estimate_enabled_for(user, estimate=external_estimate):
+                    continue
+                linked_project = external_estimate.projects.order_by("-created_at").first()
+                if external_estimate.external_status == Estimate.ExternalEstimateStatus.PENDING:
+                    title = f"Estimate #{external_estimate.number}: Confirm estimate response"
+                    description = "Check the estimate service and record whether the estimate was approved or rejected."
+                    priority = "high"
+                elif external_estimate.external_status == Estimate.ExternalEstimateStatus.REJECTED:
+                    title = f"Estimate #{external_estimate.number}: Estimate rejected"
+                    description = external_estimate.external_status_note or "Follow up or create a new revision."
+                    priority = "high"
+                elif linked_project is None or not Agreement.objects.filter(
+                    project=linked_project,
+                    status=Agreement.Status.ACCEPTED,
+                ).exists():
+                    title = f"Estimate #{external_estimate.number}: Approved, agreement or deposit incomplete"
+                    description = "Continue the Grand Coast agreement, deposit, and project workflow."
+                    priority = "high"
+                else:
+                    continue
+                items.append(_attention_item(
+                    kind="external_estimate",
+                    title=title,
+                    description=description,
+                    priority=priority,
+                    due_at=external_estimate.external_status_at or external_estimate.updated_at,
+                    project=linked_project,
+                    lead=external_estimate.lead,
+                    estimate=external_estimate,
+                    source="Estimate status",
+                ))
     if is_owner(user) or is_manager(user):
         for outbox in EmailOutbox.objects.filter(
             status=EmailOutbox.Status.FAILED,
@@ -1964,6 +3147,28 @@ def attention_feed(user, *, limit=80):
                 project=outbox.project,
                 source="Email outbox",
             ))
+        financial_projects = [
+            project for project in projects
+            if project.status != Project.Status.COMPLETE and can_view_financials(user, project)
+        ]
+        for project in financial_projects:
+            summary = project_financial_summary(project)
+            if (
+                summary["budget_remaining"] < 0
+                or (
+                    summary["budget_total"] > 0
+                    and summary["budget_remaining"] <= 0
+                )
+            ):
+                items.append(_attention_item(
+                    kind="budget_risk",
+                    title=f"{project.title}: Budget needs review",
+                    description=f"Remaining budget {summary['budget_remaining']:.2f} after costs and commitments.",
+                    priority="urgent" if summary["budget_remaining"] < 0 else "high",
+                    due_at=project.updated_at,
+                    project=project,
+                    source="Budget risk",
+                ))
     priority_order = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
     items.sort(
         key=lambda item: (
@@ -1997,6 +3202,9 @@ def weekly_project_review(user, *, week_of=None):
             "priority": item["priority"],
             "due_at": item["due_at"].isoformat() if hasattr(item["due_at"], "isoformat") else None,
             "source": item["source"],
+            "project_id": str(project.pk) if project is not None else None,
+            "lead_id": str(item["lead"].pk) if item.get("lead") is not None else None,
+            "estimate_id": str(item["estimate"].pk) if item.get("estimate") is not None else None,
         }
         if project is not None:
             actions_by_project.setdefault(project.pk, []).append(safe_action)
@@ -2054,12 +3262,66 @@ def weekly_project_review(user, *, week_of=None):
 
 def company_metrics(user):
     projects = list(visible_projects(user).select_related("estimate"))
+    today = timezone.localdate()
+    active_projects = [
+        project for project in projects
+        if project.status != Project.Status.COMPLETE
+    ]
     summaries = [
         project_financial_summary(project)
         for project in projects
         if can_view_financials(user, project)
     ]
     leads = visible_leads(user) if can_manage_sales(user) else Lead.objects.none()
+    won_leads = leads.filter(status=Lead.Status.WON).count()
+    closed_leads = leads.filter(status__in=[Lead.Status.WON, Lead.Status.LOST]).count()
+    conversion_rate = (
+        (Decimal(won_leads) / Decimal(closed_leads) * Decimal("100")).quantize(Decimal("0.1"))
+        if closed_leads
+        else Decimal("0.0")
+    )
+    financial_projects = [
+        project for project in projects
+        if can_view_financials(user, project)
+    ]
+    cash_projection = {
+        30: Decimal("0.00"),
+        60: Decimal("0.00"),
+        90: Decimal("0.00"),
+    }
+    schedule_risk_projects = 0
+    budget_risk_projects = 0
+    for project in active_projects:
+        overdue_task = project.tasks.filter(
+            status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS, Task.Status.BLOCKED],
+            due_date__lt=today,
+        ).exists()
+        if (
+            project.health_status in {Project.HealthStatus.AT_RISK, Project.HealthStatus.BLOCKED}
+            or (project.target_date and project.target_date < today)
+            or overdue_task
+        ):
+            schedule_risk_projects += 1
+    for project, summary in zip(financial_projects, summaries):
+        if (
+            summary["budget_remaining"] < 0
+            or (
+                summary["budget_total"] > 0
+                and summary["budget_remaining"] <= 0
+            )
+        ):
+            budget_risk_projects += 1
+        for schedule in project.payment_schedules.prefetch_related("payments").all():
+            if schedule.status in {
+                PaymentSchedule.Status.PAID,
+                PaymentSchedule.Status.WAIVED,
+            } or not schedule.due_date:
+                continue
+            remaining = schedule.remaining_amount
+            days_until_due = (schedule.due_date - today).days
+            for horizon in cash_projection:
+                if days_until_due <= horizon:
+                    cash_projection[horizon] += remaining
     pipeline_value = (
         leads.exclude(status__in=[Lead.Status.WON, Lead.Status.LOST])
         .aggregate(total=Sum("budget_amount"))["total"]
@@ -2087,10 +3349,15 @@ def company_metrics(user):
             (summary["forecast_profit"] for summary in summaries),
             Decimal("0.00"),
         ).quantize(Decimal("0.01")),
-        "active_projects": len([
-            project for project in projects
-            if project.status != Project.Status.COMPLETE
-        ]),
+        "active_projects": len(active_projects),
+        "won_leads": won_leads,
+        "closed_leads": closed_leads,
+        "conversion_rate": conversion_rate,
+        "schedule_risk_projects": schedule_risk_projects,
+        "budget_risk_projects": budget_risk_projects,
+        "cash_projection_30": cash_projection[30].quantize(Decimal("0.01")),
+        "cash_projection_60": cash_projection[60].quantize(Decimal("0.01")),
+        "cash_projection_90": cash_projection[90].quantize(Decimal("0.01")),
     }
 
 

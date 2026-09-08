@@ -1,4 +1,16 @@
 <section class="estimate-card" id="documents">
+    {% if external_estimate_portal_enabled or external_estimate_feature_enabled %}
+        {% if portal_estimate %}
+            <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">Status</span></div>
+            <h2>{{ portal_estimate.title }}</h2>
+            {% if portal_estimate.portal_project %}<p class="detail-value">{{ portal_estimate.portal_project.title }}</p>{% endif %}
+            <div class="estimate-status"><span class="status-check">{% if portal_estimate.external_status == 'approved' %}✓{% else %}•{% endif %}</span><span>{{ portal_estimate.get_external_status_display }}</span></div>
+            {% if portal_estimate.external_client_visible and portal_estimate.external_url %}<a class="button button-primary full-width" href="{% url 'operations:external-estimate-link' pk=portal_estimate.pk %}">Open estimate →</a>{% endif %}
+            {% if portal_estimate.external_status == 'approved' %}<div class="portal-accepted-note">Grand Coast has recorded the estimate as approved. The team will share the next project step here.</div>{% elif portal_estimate.external_status == 'rejected' %}<div class="portal-accepted-note">This estimate was declined. Contact Grand Coast if you would like to discuss a revision.</div>{% else %}<div class="portal-accepted-note">The detailed estimate and any signature action are handled by the estimate service selected by Grand Coast.</div>{% endif %}
+        {% else %}
+            <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the team records its status.</p>
+        {% endif %}
+    {% else %}
     {% if portal_estimate %}
         <div class="estimate-card-top"><span class="section-kicker">Estimate</span><span class="estimate-number">#{{ portal_estimate.number }}</span></div>
         <h2>{{ portal_estimate.title }}</h2>
@@ -20,5 +32,6 @@
         <div class="deposit-block"><span>Deposit amount</span><strong>${{ portal_estimate.deposit_amount|floatformat:2 }}</strong><small>Informational only · Contact Grand Coast for next steps</small></div>
     {% else %}
         <span class="section-kicker">Estimate</span><h2>Your scope is taking shape.</h2><p class="detail-value">An estimate will appear here when the project scope is ready to review.</p>
+    {% endif %}
     {% endif %}
 </section>

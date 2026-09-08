@@ -1,8 +1,10 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client as HttpClient
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -11,15 +13,24 @@ from django.utils import timezone
 from .construction_services import (
     approve_change_order,
     advance_selection,
+    complete_closeout_item,
+    complete_readiness_item,
+    create_inspection,
     create_lead,
     create_change_order,
+    create_site_visit,
+    create_selection,
+    create_subcontractor_assignment,
     create_project_from_estimate,
     project_financial_summary,
     record_deposit,
     record_payment,
+    resolve_warranty_item,
+    set_milestone_status,
     send_estimate,
     submit_problem_report,
 )
+from .construction_forms import InspectionForm
 from .models import (
     Agreement,
     BudgetLine,
@@ -28,19 +39,27 @@ from .models import (
     CloseoutItem,
     Commitment,
     CostEntry,
+    DailyReport,
     Estimate,
     EstimateLineItem,
     Inspection,
     Lead,
+    MaterialRequest,
+    MediaAsset,
+    Milestone,
+    NativeUploadGrant,
     PaymentRecord,
     PaymentSchedule,
     Permit,
     PreconstructionItem,
     ProblemReport,
     Project,
+    ProjectDocument,
     Selection,
     Subcontractor,
     SubcontractorAssignment,
+    Task,
+    WarrantyItem,
     WorkflowEvent,
 )
 
@@ -313,11 +332,24 @@ class ConstructionOperatingSystemTests(TestCase):
 
         self.assertEqual(dashboard.status_code, 200)
         self.assertContains(dashboard, "What needs my attention today?")
+        self.assertContains(dashboard, "Upcoming draws")
+        self.assertContains(dashboard, "Active contract value")
         self.assertRedirects(command_center, reverse("operations:dashboard"))
         self.assertEqual(legacy_overview.status_code, 200)
         self.assertContains(legacy_overview, "Here’s the shape of the work today.")
         self.assertEqual(project_view.status_code, 200)
         self.assertContains(project_view, "Ready for construction")
+        self.assertContains(project_view, "Current contract")
+        self.assertContains(project_view, "Gross margin")
+        self.assertNotContains(project_view, "Restricted financial view")
+
+        self.http.force_login(self.field)
+        field_project_view = self.http.get(
+            reverse("operations:project-operations", kwargs={"pk": project.pk})
+        )
+        self.assertEqual(field_project_view.status_code, 200)
+        self.assertContains(field_project_view, "Owner / assigned manager")
+        self.assertNotContains(field_project_view, "Current contract")
 
     @override_settings(
         GCC_OWNER_COMMAND_CENTER_ENABLED=False,
@@ -331,6 +363,109 @@ class ConstructionOperatingSystemTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Here’s the shape of the work today.")
         self.assertNotContains(response, "What needs my attention today?")
+
+    @override_settings(
+        GCC_NATIVE_MEDIA_ENABLED=True,
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_native_upload_grants_are_scoped_validated_and_idempotent(self):
+        project = self._create_project()
+        self.http.force_login(self.field)
+        grant_url = reverse("operations-api:native-upload-grant")
+        complete_url = reverse("operations-api:native-upload-complete")
+        grant_response = self.http.post(
+            grant_url,
+            data=(
+                '{"target":"project_media","project_id":"%s","file_name":"progress.jpg",'
+                '"file_size":3,"content_type":"image/jpeg"}'
+            ) % project.pk,
+            content_type="application/json",
+        )
+        self.assertEqual(grant_response.status_code, 201)
+        grant = grant_response.json()
+        upload = SimpleUploadedFile(
+            "progress.jpg",
+            b"\xff\xd8\xff",
+            content_type="image/jpeg",
+        )
+        uploaded = self.http.post(
+            complete_url,
+            data={"file": upload},
+            HTTP_X_GRAND_COAST_UPLOAD_TOKEN=grant["grant_token"],
+            HTTP_IDEMPOTENCY_KEY=grant["idempotency_key"],
+        )
+        self.assertEqual(uploaded.status_code, 200)
+        self.assertTrue(uploaded.json()["uploaded"])
+        self.assertEqual(MediaAsset.objects.filter(project=project).count(), 1)
+        self.assertEqual(
+            str(NativeUploadGrant.objects.get(pk=grant["grant_id"]).media_asset_id),
+            uploaded.json()["id"],
+        )
+
+        replay = self.http.post(
+            complete_url,
+            data={"file": SimpleUploadedFile("progress.jpg", b"\xff\xd8\xff", content_type="image/jpeg")},
+            HTTP_X_GRAND_COAST_UPLOAD_TOKEN=grant["grant_token"],
+            HTTP_IDEMPOTENCY_KEY=grant["idempotency_key"],
+        )
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()["replayed"])
+        self.assertEqual(MediaAsset.objects.filter(project=project).count(), 1)
+
+        self.http.force_login(self.other_field)
+        denied = self.http.post(
+            grant_url,
+            data=(
+                '{"target":"project_media","project_id":"%s","file_name":"other.jpg",'
+                '"file_size":3,"content_type":"image/jpeg"}'
+            ) % project.pk,
+            content_type="application/json",
+        )
+        self.assertEqual(denied.status_code, 404)
+
+    @override_settings(
+        GCC_NATIVE_MEDIA_ENABLED=True,
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_native_upload_rejects_bad_signature_and_expired_grants(self):
+        project = self._create_project()
+        self.http.force_login(self.field)
+        grant_response = self.http.post(
+            reverse("operations-api:native-upload-grant"),
+            data=(
+                '{"target":"project_media","project_id":"%s","file_name":"progress.jpg",'
+                '"file_size":8,"content_type":"image/jpeg"}'
+            ) % project.pk,
+            content_type="application/json",
+        )
+        self.assertEqual(grant_response.status_code, 201)
+        grant = grant_response.json()
+        rejected = self.http.post(
+            reverse("operations-api:native-upload-complete"),
+            data={"file": SimpleUploadedFile("progress.jpg", b"not-jpeg", content_type="image/jpeg")},
+            HTTP_X_GRAND_COAST_UPLOAD_TOKEN=grant["grant_token"],
+        )
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(MediaAsset.objects.filter(project=project).count(), 0)
+
+        expired_response = self.http.post(
+            reverse("operations-api:native-upload-grant"),
+            data=(
+                '{"target":"project_media","project_id":"%s","file_name":"expired.jpg",'
+                '"file_size":3,"content_type":"image/jpeg"}'
+            ) % project.pk,
+            content_type="application/json",
+        )
+        expired = expired_response.json()
+        NativeUploadGrant.objects.filter(pk=expired["grant_id"]).update(
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        expired_upload = self.http.post(
+            reverse("operations-api:native-upload-complete"),
+            data={"file": SimpleUploadedFile("expired.jpg", b"\xff\xd8\xff", content_type="image/jpeg")},
+            HTTP_X_GRAND_COAST_UPLOAD_TOKEN=expired["grant_token"],
+        )
+        self.assertEqual(expired_upload.status_code, 410)
 
     def test_api_lead_creation_and_conversion_are_idempotent(self):
         self.http.force_login(self.owner)
@@ -542,6 +677,491 @@ class ConstructionOperatingSystemTests(TestCase):
         self.assertEqual(payload["assignments"][0]["id"], str(assignment.pk))
         self.assertEqual(payload["readiness"], [])
         self.assertEqual(payload["selections"], [])
+
+    def test_execution_loop_flag_controls_project_hub_and_weekly_review(self):
+        project = self._create_project()
+        self.http.force_login(self.owner)
+        with self.settings(
+            GCC_EXECUTION_LOOP_ENABLED=False,
+            GCC_OPERATING_SYSTEM_ENABLED=True,
+        ):
+            fallback = self.http.get(
+                reverse("operations:project-operations", kwargs={"pk": project.pk})
+            )
+            self.assertEqual(fallback.status_code, 200)
+            self.assertNotContains(fallback, "Pilot execution loop")
+            self.assertEqual(
+                self.http.get(reverse("operations:weekly-review")).status_code,
+                404,
+            )
+        with self.settings(
+            GCC_EXECUTION_LOOP_ENABLED=True,
+            GCC_EXECUTION_LOOP_PROJECT_IDS=str(project.pk),
+            GCC_EXECUTION_LOOP_USER_IDS=str(self.owner.pk),
+            GCC_OPERATING_SYSTEM_ENABLED=True,
+        ):
+            enabled = self.http.get(
+                reverse("operations:project-operations", kwargs={"pk": project.pk})
+            )
+            self.assertEqual(enabled.status_code, 200)
+            self.assertContains(enabled, "Pilot execution loop")
+            review = self.http.get(reverse("operations:weekly-review"))
+            self.assertEqual(review.status_code, 200)
+            self.assertContains(review, "Weekly action list")
+            self.assertContains(review, project.title)
+
+    @override_settings(
+        GCC_EXECUTION_LOOP_ENABLED=True,
+        GCC_EXECUTION_LOOP_PROJECT_IDS="",
+        GCC_EXECUTION_LOOP_USER_IDS="",
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_project_hub_execution_actions_are_transactional_and_scoped(self):
+        project = self._create_project()
+        self.http.force_login(self.owner)
+        project_url = reverse("operations:project-operations", kwargs={"pk": project.pk})
+
+        response = self.http.post(
+            reverse("operations:project-site-visit-create", kwargs={"pk": project.pk}),
+            data={
+                "assigned_to": self.owner.pk,
+                "scheduled_at": "2030-01-03T10:00",
+                "address": "12 Beachmont Way",
+                "scope": "Walk the kitchen and rear addition.",
+                "measurements": "Kitchen 14 by 18.",
+                "client_requests": "Keep the existing island.",
+                "existing_conditions": "Water damage at the sink wall.",
+                "potential_additional_work": "Review electrical service.",
+                "notes": "Bring laser measure.",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        visit = project.site_visits.get()
+        self.assertEqual(visit.scope, "Walk the kitchen and rear addition.")
+
+        response = self.http.post(
+            reverse("operations:project-permit-create", kwargs={"pk": project.pk}),
+            data={
+                "permit_type": "Building",
+                "jurisdiction": "City of Beachmont",
+                "status": Permit.Status.PENDING,
+                "expires_at": "",
+                "notes": "Submit after engineering review.",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        permit = project.permits.get()
+
+        inspection_form = InspectionForm(
+            {
+                "inspection_type": "Rough framing",
+                "permit": str(permit.pk),
+                "scheduled_at": "2030-01-10T09:00",
+            },
+            project=project,
+            permit_queryset=project.permits.all(),
+        )
+        self.assertTrue(inspection_form.is_valid(), inspection_form.errors)
+        response = self.http.post(
+            reverse("operations:project-inspection-create", kwargs={"pk": project.pk}),
+            data={
+                "inspection_type": "Rough framing",
+                "permit": permit.pk,
+                "scheduled_at": "2030-01-10T09:00",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        inspection = project.inspections.get()
+        response = self.http.post(
+            reverse("operations:project-inspection-result", kwargs={"pk": inspection.pk}),
+            data={
+                "status": Inspection.Status.FAILED,
+                "result_notes": "Blocking fastener spacing is incorrect.",
+                "corrective_action": "Correct framing before reinspection.",
+                "rescheduled_at": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(project.blockers.filter(category="inspection").exists())
+
+        response = self.http.post(
+            reverse("operations:project-selection-create", kwargs={"pk": project.pk}),
+            data={
+                "category": "Cabinets",
+                "item_name": "Walnut cabinets",
+                "description": "Full-height pantry and island.",
+                "vendor": "Trusted Millwork",
+                "allowance": "18000.00",
+                "client_choice": "",
+                "due_date": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        selection = project.selections.get()
+        response = self.http.post(
+            reverse("operations:project-selection-advance", kwargs={"pk": selection.pk}),
+            data={
+                "status": Selection.Status.APPROVED,
+                "client_choice": "Walnut slab fronts.",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        selection.refresh_from_db()
+        self.assertEqual(selection.status, Selection.Status.APPROVED)
+        self.assertTrue(Task.objects.filter(project=project, title__startswith="Order selection:").exists())
+
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-daily-report", kwargs={"pk": project.pk}),
+                data={
+                    "report_date": "2030-01-03",
+                    "summary": "Framing inspection preparation completed.",
+                    "work_completed": "Reviewed framing corrections.",
+                    "labor_count": "2",
+                    "hours_worked": "8.00",
+                    "weather": "Clear",
+                    "equipment": "Laser measure",
+                    "notes": "",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(DailyReport.objects.filter(project=project).exists())
+
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-material-request", kwargs={"pk": project.pk}),
+                data={
+                    "description": "Replacement framing hardware",
+                    "quantity": "2 boxes",
+                    "needed_by": "2030-01-08",
+                    "vendor": "Local supplier",
+                    "notes": "Needed for correction.",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(MaterialRequest.objects.filter(project=project).exists())
+
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-problem-report", kwargs={"pk": project.pk}),
+                data={
+                    "title": "Framing correction",
+                    "description": "Inspection found a framing issue.",
+                    "severity": "high",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(ProblemReport.objects.filter(project=project).exists())
+
+        subcontractor = Subcontractor.objects.create(company="Beachmont Electric", created_by=self.owner)
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-assignment-create", kwargs={"pk": project.pk}),
+                data={
+                    "subcontractor": subcontractor.pk,
+                    "task": "",
+                    "work_package": "Electrical rough-in",
+                    "scope": "Complete rough-in per approved plans.",
+                    "start_date": "2030-01-11",
+                    "end_date": "2030-01-12",
+                    "status": SubcontractorAssignment.Status.ASSIGNED,
+                    "notes": "",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(SubcontractorAssignment.objects.filter(project=project).exists())
+
+        schedule = project.payment_schedules.get(sequence=1)
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-payment-record", kwargs={"pk": project.pk}),
+                data={
+                    "schedule": schedule.pk,
+                    "amount": "1000.00",
+                    "received_on": "2030-01-03",
+                    "method": PaymentRecord.Method.CHECK,
+                    "reference": "CHK-100",
+                    "notes": "",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(PaymentRecord.objects.filter(project=project).exists())
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-cost-record", kwargs={"pk": project.pk}),
+                data={
+                    "budget_line": "",
+                    "description": "Inspection correction materials",
+                    "vendor": "Local supplier",
+                    "amount": "125.00",
+                    "incurred_on": "2030-01-03",
+                    "source": "invoice",
+                },
+            ).status_code,
+            302,
+        )
+        self.assertTrue(CostEntry.objects.filter(project=project).exists())
+
+        self.http.force_login(self.field)
+        self.assertEqual(
+            self.http.get(project_url).status_code,
+            200,
+        )
+        self.assertNotContains(self.http.get(project_url), "Financial ledger")
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-cost-record", kwargs={"pk": project.pk}),
+                data={"description": "Hidden", "amount": "10.00", "incurred_on": "2030-01-03", "source": "manual"},
+            ).status_code,
+            403,
+        )
+        self.http.force_login(self.other_field)
+        self.assertEqual(self.http.get(project_url).status_code, 404)
+        self.http.force_login(self.client_user)
+        self.assertEqual(self.http.get(project_url).status_code, 403)
+
+    @override_settings(
+        GCC_EXECUTION_LOOP_ENABLED=True,
+        GCC_EXECUTION_LOOP_PROJECT_IDS="",
+        GCC_EXECUTION_LOOP_USER_IDS="",
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_project_hub_can_create_tasks_and_protected_documents(self):
+        project = self._create_project()
+        self.http.force_login(self.owner)
+
+        response = self.http.post(
+            reverse("operations:project-task-create", kwargs={"pk": project.pk}),
+            data={
+                "title": "Confirm cabinet delivery",
+                "description": "Confirm the delivery window with the millwork vendor.",
+                "milestone": "",
+                "assigned_to": self.manager.pk,
+                "status": Task.Status.OPEN,
+                "priority": Task.Priority.HIGH,
+                "due_date": "2030-01-15",
+            },
+            HTTP_IDEMPOTENCY_KEY="project-task-create-1",
+        )
+        self.assertEqual(response.status_code, 302)
+        task = project.tasks.get(title="Confirm cabinet delivery")
+        self.assertEqual(task.assigned_to_id, self.manager.pk)
+
+        response = self.http.post(
+            reverse("operations:project-task-status", kwargs={"pk": task.pk}),
+            data={"status": Task.Status.COMPLETE},
+            HTTP_IDEMPOTENCY_KEY="project-task-status-1",
+        )
+        self.assertEqual(response.status_code, 302)
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.COMPLETE)
+
+        field_task = Task.objects.create(
+            project=project,
+            title="Photograph cabinet delivery",
+            assigned_to=self.field,
+            created_by=self.owner,
+        )
+        self.http.force_login(self.field)
+        response = self.http.post(
+            reverse("operations:project-task-status", kwargs={"pk": field_task.pk}),
+            data={"status": Task.Status.IN_PROGRESS},
+            HTTP_IDEMPOTENCY_KEY="field-project-task-status-1",
+        )
+        self.assertEqual(response.status_code, 302)
+        field_task.refresh_from_db()
+        self.assertEqual(field_task.status, Task.Status.IN_PROGRESS)
+        self.http.force_login(self.owner)
+
+        upload = SimpleUploadedFile("cabinet-scope.txt", b"Approved cabinet scope", content_type="text/plain")
+        response = self.http.post(
+            reverse("operations:project-document-upload", kwargs={"pk": project.pk}),
+            data={
+                "project": project.pk,
+                "title": "Cabinet scope",
+                "category": "Plans",
+                "description": "Approved cabinet scope for the job file.",
+                "visibility": ProjectDocument.Visibility.INTERNAL,
+                "file": upload,
+            },
+            HTTP_IDEMPOTENCY_KEY="project-document-upload-1",
+        )
+        self.assertEqual(response.status_code, 302)
+        document = project.documents.get(title="Cabinet scope")
+        self.assertEqual(document.visibility, ProjectDocument.Visibility.INTERNAL)
+
+        replay = self.http.post(
+            reverse("operations:project-document-upload", kwargs={"pk": project.pk}),
+            data={
+                "project": project.pk,
+                "title": "Cabinet scope",
+                "category": "Plans",
+                "description": "Different retry payload must not duplicate the record.",
+                "visibility": ProjectDocument.Visibility.INTERNAL,
+                "file": SimpleUploadedFile("cabinet-scope.txt", b"different retry", content_type="text/plain"),
+            },
+            HTTP_IDEMPOTENCY_KEY="project-document-upload-1",
+        )
+        self.assertEqual(replay.status_code, 302)
+        self.assertEqual(project.documents.filter(title="Cabinet scope").count(), 1)
+
+        self.http.force_login(self.other_field)
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-task-create", kwargs={"pk": project.pk}),
+                data={"title": "Unauthorized task"},
+            ).status_code,
+            404,
+        )
+        self.http.force_login(self.client_user)
+        self.assertEqual(
+            self.http.post(
+                reverse("operations:project-document-upload", kwargs={"pk": project.pk}),
+                data={"project": project.pk, "title": "Client upload"},
+            ).status_code,
+            403,
+        )
+
+    @override_settings(
+        GCC_EXECUTION_LOOP_ENABLED=True,
+        GCC_EXECUTION_LOOP_PROJECT_IDS="",
+        GCC_EXECUTION_LOOP_USER_IDS="",
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_execution_transitions_release_draw_and_finish_warranty(self):
+        project = self._create_project()
+        milestone = project.milestones.get(sort_order=3)
+        draw = PaymentSchedule.objects.create(
+            project=project,
+            milestone=milestone,
+            sequence=2,
+            description="Selections draw",
+            amount=Decimal("15000.00"),
+        )
+        set_milestone_status(milestone, actor=self.owner, is_complete=True, idempotency_key="milestone-draw-1")
+        draw.refresh_from_db()
+        self.assertEqual(draw.status, PaymentSchedule.Status.READY)
+        for index, item in enumerate(project.readiness_items.all(), start=1):
+            complete_readiness_item(item, actor=self.owner, idempotency_key=f"readiness-{index}")
+        project.refresh_from_db()
+        self.assertIsNotNone(project.construction_ready_at)
+        for index, item in enumerate(project.closeout_items.all(), start=1):
+            complete_closeout_item(
+                item,
+                actor=self.owner,
+                idempotency_key=f"closeout-{index}",
+            )
+        project.refresh_from_db()
+        self.assertEqual(project.operational_phase, Project.OperationalPhase.WARRANTY)
+        self.assertEqual(project.status, Project.Status.COMPLETE)
+        warranty = WarrantyItem.objects.create(project=project, title="Touch-up warranty item")
+        resolve_warranty_item(
+            warranty,
+            actor=self.owner,
+            resolution="Touch-up completed and documented.",
+            idempotency_key="warranty-1",
+        )
+        warranty.refresh_from_db()
+        self.assertEqual(warranty.status, WarrantyItem.Status.RESOLVED)
+
+    def test_execution_creation_commands_are_idempotent_on_retries(self):
+        project = self._create_project()
+        selection_one, created = create_selection(
+            project,
+            actor=self.owner,
+            category="Flooring",
+            item_name="White oak",
+            idempotency_key="selection-create-retry",
+        )
+        selection_two, retried = create_selection(
+            project,
+            actor=self.owner,
+            category="Different category",
+            item_name="Different item",
+            idempotency_key="selection-create-retry",
+        )
+        self.assertTrue(created)
+        self.assertFalse(retried)
+        self.assertEqual(selection_one.pk, selection_two.pk)
+        self.assertEqual(Selection.objects.filter(project=project).count(), 1)
+
+        inspection_one, created = create_inspection(
+            project,
+            actor=self.owner,
+            inspection_type="Electrical rough-in",
+            idempotency_key="inspection-create-retry",
+        )
+        inspection_two, retried = create_inspection(
+            project,
+            actor=self.owner,
+            inspection_type="Different inspection",
+            idempotency_key="inspection-create-retry",
+        )
+        self.assertTrue(created)
+        self.assertFalse(retried)
+        self.assertEqual(inspection_one.pk, inspection_two.pk)
+        self.assertEqual(Inspection.objects.filter(project=project).count(), 1)
+
+        subcontractor = Subcontractor.objects.create(company="Retry-safe trade", created_by=self.owner)
+        assignment_one, created = create_subcontractor_assignment(
+            project,
+            actor=self.owner,
+            subcontractor=subcontractor,
+            work_package="Plumbing",
+            idempotency_key="assignment-create-retry",
+        )
+        assignment_two, retried = create_subcontractor_assignment(
+            project,
+            actor=self.owner,
+            subcontractor=subcontractor,
+            work_package="Different package",
+            idempotency_key="assignment-create-retry",
+        )
+        self.assertTrue(created)
+        self.assertFalse(retried)
+        self.assertEqual(assignment_one.pk, assignment_two.pk)
+        self.assertEqual(SubcontractorAssignment.objects.filter(project=project).count(), 1)
+
+    @override_settings(
+        GCC_EXECUTION_LOOP_ENABLED=True,
+        GCC_EXECUTION_LOOP_PROJECT_IDS="",
+        GCC_EXECUTION_LOOP_USER_IDS="",
+        GCC_OPERATING_SYSTEM_ENABLED=True,
+    )
+    def test_execution_calendar_aggregates_project_signals_and_conflicts(self):
+        project = self._create_project()
+        scheduled_at = timezone.now() + timedelta(hours=2)
+        create_site_visit(
+            project.lead,
+            actor=self.owner,
+            project=project,
+            assigned_to=self.owner,
+            scheduled_at=scheduled_at,
+            address=project.location,
+            scope="Calendar conflict test",
+            idempotency_key="calendar-visit-1",
+        )
+        Inspection.objects.create(
+            project=project,
+            inspection_type="Same-time inspection",
+            scheduled_at=scheduled_at,
+            created_by=self.owner,
+        )
+        self.http.force_login(self.owner)
+        month = timezone.localtime(scheduled_at).strftime("%Y-%m")
+        response = self.http.get(
+            reverse("operations:dashboard-section", kwargs={"section": "calendar"}),
+            data={"month": month},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.context["derived_calendar_event_count"], 2)
+        self.assertContains(response, "Site visit")
+        self.assertTrue(response.context["calendar_conflicts"])
 
     @override_settings(GCC_AI_ENABLED=True)
     def test_ask_grand_coast_is_read_only_and_permission_filtered(self):

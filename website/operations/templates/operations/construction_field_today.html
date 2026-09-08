@@ -78,6 +78,15 @@
                         <a class="button button-primary button-small" href="{% url 'operations:team-project-add-update' pk=project.pk %}">Send progress update</a>
                     </div>
 
+                    <div class="field-native-media construction-panel" data-native-media-control>
+                        <strong>Capture jobsite media</strong>
+                        <span data-native-media-status aria-live="polite">Camera and file uploads are available in the mobile workspace.</span>
+                        <div class="field-action-row">
+                            <button class="button button-quiet button-small" type="button" data-native-media-action="capture-media" data-native-media-target="project_media" data-native-media-project="{{ project.pk }}" data-native-media-context="progress" data-native-media-multiple="false">Use camera</button>
+                            <button class="button button-quiet button-small" type="button" data-native-media-action="pick-media" data-native-media-target="project_media" data-native-media-project="{{ project.pk }}" data-native-media-context="progress">Choose photos or video</button>
+                        </div>
+                    </div>
+
                     <div class="field-capture-grid">
                         <form method="post" action="{% url 'operations:field-daily-report' pk=project.pk %}">
                             {% csrf_token %}<input type="hidden" name="idempotency_key" value="">
