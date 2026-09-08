@@ -50,6 +50,10 @@ GCC_OWNER_COMMAND_CENTER_ENABLED = _env_flag("GCC_OWNER_COMMAND_CENTER_ENABLED",
 GCC_AI_ENABLED = _env_flag("GCC_AI_ENABLED", False)
 GCC_NATIVE_FIELD_ENABLED = _env_flag("GCC_NATIVE_FIELD_ENABLED", False)
 GCC_NATIVE_MEDIA_ENABLED = _env_flag("GCC_NATIVE_MEDIA_ENABLED", False)
+# The existing superuser/administrator may use the Expo WebView only when
+# explicitly enabled.  Browser administration remains behind /gccad/.
+GCC_MOBILE_OWNER_ACCESS_ENABLED = _env_flag("GCC_MOBILE_OWNER_ACCESS_ENABLED", False)
+GCC_MOBILE_OWNER_PUSH_ENABLED = _env_flag("GCC_MOBILE_OWNER_PUSH_ENABLED", False)
 # Simulation mode is separate from the execution-loop pilot. It is only valid
 # against generated database/media paths beneath the system temporary folder.
 GCC_SIMULATION_MODE = _env_flag("GCC_SIMULATION_MODE", False)

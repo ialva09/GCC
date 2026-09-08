@@ -71,3 +71,45 @@ npm run android
 npm run ios
 npm run doctor
 ~~~
+
+## Mobile owner Command Center access
+
+The Expo shell can use the existing Grand Coast admin/superuser identity as the Owner
+workspace without adding a SwiftUI screen or a second native application. The server
+must opt in explicitly:
+
+~~~powershell
+$env:GCC_MOBILE_OWNER_ACCESS_ENABLED = "true"
+$env:GCC_MOBILE_OWNER_PUSH_ENABLED = "true"
+$env:GCC_AI_ENABLED = "false"
+~~~
+
+The app loads `/accounts/login/?mobile=1`, preserves the WebView session cookie, and
+opens `/dashboard/` after successful authentication. If the account has administrator
+PIN or TOTP enabled, both factors are completed before Django creates the session. The
+app never opens `/gccad/`; attempted admin-catalog navigation is redirected to the
+Command Center. Normal browser login still rejects superuser credentials, while the
+existing protected `/gccad/` browser gate remains compatible.
+
+Owner push registration is accepted only when the server flag is enabled and the
+request is identified as the Grand Coast mobile WebView. The server remains authoritative
+if the optional client setting is omitted. Push destinations are limited to authorized
+Operations paths and fall back to the Operations Notifications page; they never open
+`/gccad/`.
+
+Use this sequence for a disposable development test:
+
+1. Start Django with the two mobile owner flags enabled and AI disabled.
+2. Start the Expo app with `EXPO_PUBLIC_WEB_APP_URL` pointing to the reachable Django
+   development URL.
+3. Sign in as the existing temporary superuser and complete PIN/TOTP if prompted.
+4. Verify the Command Center, Operations drawer, owner financial visibility, logout,
+   and `/gccad/` redirect behavior.
+5. Enable push only after native notification credentials are configured; verify device
+   registration, an internal notification destination, and deactivation on logout.
+6. Turn the flags off and verify the app returns to the existing compatibility behavior.
+
+Never place passwords, PINs, OTP codes, session values, recovery tokens, Django CSRF
+secrets, or push credentials in `mobile/.env.mobile`, native storage, screenshots, or
+committed files. The same admin credentials remain usable through the private browser
+admin gate by design.

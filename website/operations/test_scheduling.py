@@ -155,6 +155,37 @@ class EmployeeSchedulingTests(TestCase):
         device.refresh_from_db()
         self.assertFalse(device.is_active)
 
+    def test_owner_device_registration_is_mobile_flag_controlled(self):
+        self.client.force_login(self.owner)
+        token = 'ExponentPushToken[owner-mobile-device]'
+        mobile_headers = {
+            'HTTP_USER_AGENT': 'GrandCoastMobile/1.0',
+            'HTTP_X_GRAND_COAST_MOBILE': '1',
+        }
+        disabled = self.client.post(
+            reverse('operations:notification-device-register'),
+            {'token': token, 'platform': 'ios'},
+            **mobile_headers,
+        )
+        self.assertEqual(disabled.status_code, 403)
+        self.assertFalse(MobilePushDevice.objects.filter(token=token).exists())
+
+        with self.settings(GCC_MOBILE_OWNER_PUSH_ENABLED=True):
+            browser_request = self.client.post(
+                reverse('operations:notification-device-register'),
+                {'token': token, 'platform': 'ios'},
+            )
+            self.assertEqual(browser_request.status_code, 403)
+            enabled = self.client.post(
+                reverse('operations:notification-device-register'),
+                {'token': token, 'platform': 'ios'},
+                **mobile_headers,
+            )
+        self.assertEqual(enabled.status_code, 200)
+        device = MobilePushDevice.objects.get(token=token)
+        self.assertEqual(device.employee_id, self.owner.pk)
+        self.assertTrue(device.is_active)
+
     def test_blank_weekly_days_do_not_create_noop_notifications(self):
         day = self.pacific_day()
         self.client.force_login(self.owner)

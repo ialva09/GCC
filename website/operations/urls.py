@@ -14,6 +14,8 @@ urlpatterns = [
     path("process/", views.public_page, {"page": "process"}, name="process"),
     path("contact/", views.public_page, {"page": "contact"}, name="contact"),
     path("accounts/login/", views.GrandCoastLoginView.as_view(), name="login"),
+    path("accounts/mobile-owner/pin/", views.mobile_owner_pin, name="mobile-owner-pin"),
+    path("accounts/mobile-owner/otp/", views.mobile_owner_otp, name="mobile-owner-otp"),
     path("accounts/logout/", LogoutView.as_view(next_page=reverse_lazy("operations:login")), name="logout"),
     path("accounts/delete/", views.account_delete, name="account-delete"),
     path("accounts/password/change/", views.GrandCoastPasswordChangeView.as_view(), name="password-change"),

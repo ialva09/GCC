@@ -142,6 +142,214 @@ class PrivateAdminSecurityTests(TestCase):
         self.assertIsNone(self.browser.session.get("_auth_user_id"))
         self.assertNotContains(response, "gccad")
 
+    @staticmethod
+    def mobile_headers():
+        return {
+            "HTTP_USER_AGENT": "GrandCoastMobile/1.0",
+            "HTTP_X_GRAND_COAST_MOBILE": "1",
+        }
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=False,
+        GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_login_is_disabled_by_default(self):
+        response = self.browser.post(
+            reverse("operations:login") + "?mobile=1",
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+            **self.mobile_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Please enter a correct username and password.")
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_requires_mobile_marker_and_webview(self):
+        missing_query = self.browser.post(
+            reverse("operations:login"),
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+            },
+            **self.mobile_headers(),
+        )
+        self.assertEqual(missing_query.status_code, 200)
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        browser_request = self.browser.post(
+            reverse("operations:login") + "?mobile=1",
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+        )
+        self.assertEqual(browser_request.status_code, 200)
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_without_factors_lands_in_command_center(self):
+        response = self.browser.post(
+            reverse("operations:login") + "?mobile=1",
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(response, reverse("operations:dashboard"))
+        self.assertEqual(
+            self.browser.session.get("_auth_user_id"),
+            str(self.admin_user.pk),
+        )
+        self.assertTrue(self.browser.session.get("gcc_mobile_owner_mode"))
+        admin_response = self.browser.get(
+            reverse("admin:index"),
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(
+            admin_response,
+            reverse("operations:dashboard"),
+        )
+        admin_access_response = self.browser.get(
+            reverse("admin:access"),
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(
+            admin_access_response,
+            reverse("operations:dashboard"),
+        )
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+        ADMIN_SECURITY_EMAIL_ALERTS_ENABLED=False,
+    )
+    def test_mobile_owner_pin_is_required_before_session_is_created(self):
+        self.profile.pin_enabled = True
+        self.profile.pin_hash = make_password("123456")
+        self.profile.save(update_fields=["pin_enabled", "pin_hash", "updated_at"])
+
+        password_response = self.browser.post(
+            reverse("operations:login") + "?mobile=1",
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(
+            password_response,
+            reverse("operations:mobile-owner-pin") + "?mobile=1",
+        )
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        wrong = self.browser.post(
+            reverse("operations:mobile-owner-pin") + "?mobile=1",
+            {"pin": "000000", "mobile": "1"},
+            **self.mobile_headers(),
+        )
+        self.assertEqual(wrong.status_code, 200)
+        self.assertContains(wrong, "could not be verified")
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        valid = self.browser.post(
+            reverse("operations:mobile-owner-pin") + "?mobile=1",
+            {"pin": "123456", "mobile": "1"},
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(valid, reverse("operations:dashboard"))
+        self.assertEqual(
+            self.browser.session.get("_auth_user_id"),
+            str(self.admin_user.pk),
+        )
+        self.assertTrue(
+            AdminSecurityEvent.objects.filter(
+                user=self.admin_user,
+                event_type=AdminSecurityEvent.EventType.PIN_FAILURE,
+            ).exists()
+        )
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+        ADMIN_SECURITY_EMAIL_ALERTS_ENABLED=False,
+    )
+    def test_mobile_owner_totp_is_required_before_session_is_created(self):
+        device = TOTPDevice.objects.create(
+            user=self.admin_user,
+            name="Mobile owner test device",
+            confirmed=True,
+        )
+        password_response = self.browser.post(
+            reverse("operations:login") + "?mobile=1",
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(
+            password_response,
+            reverse("operations:mobile-owner-otp") + "?mobile=1",
+        )
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        invalid = self.browser.post(
+            reverse("operations:mobile-owner-otp") + "?mobile=1",
+            {"token": "000000", "mobile": "1"},
+            **self.mobile_headers(),
+        )
+        self.assertEqual(invalid.status_code, 200)
+        self.assertContains(invalid, "could not be verified")
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        # django-otp intentionally throttles a device after a failed token.
+        # Replace the disposable device before testing the successful factor.
+        device.delete()
+        device = TOTPDevice.objects.create(
+            user=self.admin_user,
+            name="Mobile owner valid test device",
+            confirmed=True,
+        )
+        valid = self.browser.post(
+            reverse("operations:mobile-owner-otp") + "?mobile=1",
+            {"token": f"{totp(device.bin_key):06d}", "mobile": "1"},
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(valid, reverse("operations:dashboard"))
+        self.assertEqual(
+            self.browser.session.get("_auth_user_id"),
+            str(self.admin_user.pk),
+        )
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_challenge_without_pending_password_redirects_to_login(self):
+        response = self.browser.get(
+            reverse("operations:mobile-owner-pin") + "?mobile=1",
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(
+            response,
+            reverse("operations:login") + "?mobile=1",
+        )
+
     @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
     def test_recovery_email_locks_after_five_unknown_emails_and_is_one_time(self):
         self.profile.pin_enabled = True

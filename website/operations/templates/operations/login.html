@@ -21,6 +21,7 @@
             <label>Username{{ form.username }}{{ form.username.errors }}</label>
             <label>Password{{ form.password }}{{ form.password.errors }}</label>
             {% if turnstile_site_key %}<div class="turnstile-widget"><div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="login"></div></div>{% endif %}
+            {% if mobile_owner_mode %}<input type="hidden" name="mobile" value="1">{% endif %}
             {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
             <button class="button button-primary full-width" type="submit">Sign in &rarr;</button>
         </form>

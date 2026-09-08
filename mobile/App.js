@@ -61,6 +61,7 @@ const FIELD_TODAY_PATH = '/team/field/';
 const EMPLOYEE_PROJECTS_PATH = '/team/projects/';
 const EMPLOYEE_PROFILE_PATH = '/team/profile/';
 const EMPLOYEE_NOTIFICATIONS_PATH = '/team/notifications/';
+const ADMIN_NOTIFICATIONS_PATH = '/dashboard/notifications/';
 const CLIENT_WORKSPACE_PATH = '/portal/';
 const PRIVATE_ROUTE_PREFIXES = ['/dashboard', '/team', '/portal'];
 const LAUNCH_SPLASH_HOLD_MS = 1000;
@@ -471,6 +472,10 @@ function isInternalUrl(url) {
   );
 }
 
+function isAdminPath(pathname) {
+  return pathname === '/gccad' || pathname.startsWith('/gccad/');
+}
+
 function openExternalUrl(url) {
   Linking.openURL(url).catch(() => {});
   return false;
@@ -686,6 +691,22 @@ function PushNotificationBridge() {
   const pushTokenRef = useRef(null);
   const registrationAttemptedRef = useRef(false);
   const pendingNotificationDestinationRef = useRef(null);
+  const isOperationsWorkspace = workspaceKind === 'employee' || workspaceKind === 'admin';
+  const ownerPushClientEnabled = process.env.EXPO_PUBLIC_MOBILE_OWNER_PUSH_ENABLED !== 'false';
+
+  const safeNotificationDestination = useCallback((requestedDestination) => {
+    const fallback = workspaceKind === 'admin'
+      ? ADMIN_NOTIFICATIONS_PATH
+      : EMPLOYEE_NOTIFICATIONS_PATH;
+    if (
+      typeof requestedDestination !== 'string'
+      || !requestedDestination.startsWith('/')
+      || isAdminPath(requestedDestination)
+    ) {
+      return fallback;
+    }
+    return requestedDestination;
+  }, [workspaceKind]);
 
   const registerTokenInWebView = useCallback((token) => {
     if (!token || !webViewRef.current) {
@@ -715,17 +736,18 @@ true;`;
 
   const openNotificationDestination = useCallback((response) => {
     const data = response?.notification?.request?.content?.data || {};
-    const destination = typeof data.url === 'string' && data.url.startsWith('/')
+    const requestedDestination = typeof data.url === 'string' && data.url.startsWith('/')
       ? data.url
-      : EMPLOYEE_NOTIFICATIONS_PATH;
-    if (!isAuthenticated || workspaceKind !== 'employee' || !webViewRef.current) {
-      pendingNotificationDestinationRef.current = destination;
+      : '';
+    if (!isAuthenticated || !isOperationsWorkspace || !webViewRef.current) {
+      pendingNotificationDestinationRef.current = requestedDestination;
       return false;
     }
+    const destination = safeNotificationDestination(requestedDestination);
     setActiveTab('Workspace');
     setActiveWebPath(destination);
     return navigate(destination);
-  }, [isAuthenticated, navigate, setActiveTab, setActiveWebPath, webViewRef, workspaceKind]);
+  }, [isAuthenticated, isOperationsWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef]);
 
   useEffect(() => {
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(
@@ -743,14 +765,20 @@ true;`;
 
   useEffect(() => {
     const destination = pendingNotificationDestinationRef.current;
-    if (!destination || !isAuthenticated || workspaceKind !== 'employee' || !webViewRef.current) {
+    if (
+      destination === null
+      || !isAuthenticated
+      || !isOperationsWorkspace
+      || !webViewRef.current
+    ) {
       return;
     }
     pendingNotificationDestinationRef.current = null;
+    const safeDestination = safeNotificationDestination(destination);
     setActiveTab('Workspace');
-    setActiveWebPath(destination);
-    navigate(destination);
-  }, [isAuthenticated, navigate, setActiveTab, setActiveWebPath, webViewRef, workspaceKind, workspacePath]);
+    setActiveWebPath(safeDestination);
+    navigate(safeDestination);
+  }, [isAuthenticated, isOperationsWorkspace, navigate, safeNotificationDestination, setActiveTab, setActiveWebPath, webViewRef, workspacePath]);
 
   useEffect(() => {
     if (Platform.OS === 'android') {
@@ -765,7 +793,11 @@ true;`;
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated || workspaceKind !== 'employee') {
+    const canRegisterPush = isAuthenticated && (
+      workspaceKind === 'employee'
+      || (workspaceKind === 'admin' && ownerPushClientEnabled)
+    );
+    if (!canRegisterPush) {
       registrationAttemptedRef.current = false;
       pushTokenRef.current = null;
       return undefined;
@@ -805,13 +837,17 @@ true;`;
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, registerTokenInWebView, workspaceKind]);
+  }, [isAuthenticated, ownerPushClientEnabled, registerTokenInWebView, workspaceKind]);
 
   useEffect(() => {
-    if (isAuthenticated && workspaceKind === 'employee' && pushTokenRef.current && workspacePath) {
+    const canRegisterPush = isAuthenticated && (
+      workspaceKind === 'employee'
+      || (workspaceKind === 'admin' && ownerPushClientEnabled)
+    );
+    if (canRegisterPush && pushTokenRef.current && workspacePath) {
       registerTokenInWebView(pushTokenRef.current);
     }
-  }, [isAuthenticated, registerTokenInWebView, workspaceKind, workspacePath]);
+  }, [isAuthenticated, ownerPushClientEnabled, registerTokenInWebView, workspaceKind, workspacePath]);
 
   return null;
 }
@@ -845,7 +881,7 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
   const nativeMediaEnabled = process.env.EXPO_PUBLIC_NATIVE_MEDIA_ENABLED !== 'false';
   const canPullToRefresh = isAuthenticated && isPrivatePath(pathnameFromUrl(currentWebViewPath));
   const injectMobileChrome = useWebViewChrome(webViewRef);
-  const loginSource = useMemo(() => ({ uri: pageUrl(AUTH_PATH) }), []);
+  const loginSource = useMemo(() => ({ uri: pageUrl(`${AUTH_PATH}?mobile=1`) }), []);
   const webViewMotionStyle = Platform.OS === 'android'
     ? { transform: [{ translateY: androidPullOffset }] }
     : null;
@@ -911,6 +947,12 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
 
     const relativePath = relativePathFromUrl(state.url);
     const pathname = pathnameFromUrl(relativePath);
+    if (isAdminPath(pathname)) {
+      webViewRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(pageUrl(ADMIN_WORKSPACE_PATH))}); true;`,
+      );
+      return;
+    }
     setCurrentWebViewPath(relativePath);
     setCurrentPath(relativePath);
 
@@ -941,7 +983,15 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
       return openExternalUrl(requestUrl);
     }
 
-    if (pathnameFromUrl(requestUrl) === HOME_PATH) {
+    const requestPathname = pathnameFromUrl(requestUrl);
+    if (isAdminPath(requestPathname)) {
+      webViewRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(pageUrl(ADMIN_WORKSPACE_PATH))}); true;`,
+      );
+      return false;
+    }
+
+    if (requestPathname === HOME_PATH) {
       return false;
     }
 
@@ -957,6 +1007,12 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
 
     const loadedPath = relativePathFromUrl(event?.nativeEvent?.url || AUTH_PATH);
     const loadedPathname = pathnameFromUrl(loadedPath);
+    if (isAdminPath(loadedPathname)) {
+      webViewRef.current?.injectJavaScript(
+        `window.location.replace(${JSON.stringify(pageUrl(ADMIN_WORKSPACE_PATH))}); true;`,
+      );
+      return;
+    }
     setCurrentWebViewPath(loadedPath);
     setCurrentPath(loadedPath);
     onWebViewLoadEnd?.(loadedPath);

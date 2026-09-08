@@ -56,6 +56,7 @@ from .security import (
     begin_otp_challenge,
     begin_totp_enrollment,
     clear_admin_challenges,
+    clear_mobile_owner_session,
     clear_gate,
     clear_otp_challenge,
     clear_recovery_failures,
@@ -68,6 +69,7 @@ from .security import (
     gate_next,
     has_totp_enabled,
     is_active_admin,
+    is_mobile_owner_session,
     mark_otp_verified,
     otp_is_verified,
     pending_otp_next,
@@ -87,6 +89,7 @@ from .security import (
     totp_qr_data_uri,
     verify_admin_pin,
 )
+from .turnstile import is_mobile_webview
 
 
 
@@ -286,6 +289,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
 
     def admin_view(self, view, cacheable=False):
         def inner(request, *args, **kwargs):
+            if is_mobile_webview(request) and is_mobile_owner_session(request):
+                return redirect("operations:dashboard")
             if not self.has_permission(request):
                 if request.user.is_authenticated:
                     return HttpResponseForbidden("Administration access is restricted.")
@@ -317,6 +322,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         return super().search(request, extra_context=extra_context)
 
     def login(self, request, extra_context=None):
+        if is_mobile_webview(request) and is_mobile_owner_session(request):
+            return redirect("operations:dashboard")
         if not self.has_permission(request) and admin_ip_block(request) is not None:
             if request.method == "POST":
                 record_admin_security_event(
@@ -357,6 +364,7 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         return GrandCoastAdminLoginView.as_view(**defaults)(request)
 
     def logout(self, request, extra_context=None):
+        clear_mobile_owner_session(request)
         logout(request)
         clear_admin_challenges(request)
         return redirect(self._access_url())
@@ -442,6 +450,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         return custom_urls + super().get_urls()
 
     def access(self, request):
+        if is_mobile_webview(request) and is_mobile_owner_session(request):
+            return redirect("operations:dashboard")
         if request.user.is_authenticated and not self.has_permission(request):
             return HttpResponseForbidden("Administration access is restricted.")
         if not self.has_permission(request) and admin_ip_block(request) is not None:
@@ -591,6 +601,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
 
     def otp(self, request):
+        if is_mobile_webview(request) and is_mobile_owner_session(request):
+            return redirect("operations:dashboard")
         if not is_active_admin(request.user) and admin_ip_block(request) is not None:
             if request.method == "POST":
                 record_admin_security_event(
@@ -663,6 +675,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
 
     def recovery(self, request):
+        if is_mobile_webview(request) and is_mobile_owner_session(request):
+            return redirect("operations:dashboard")
         if request.user.is_authenticated and not self.has_permission(request):
             return HttpResponseForbidden("Administration access is restricted.")
         if not self.has_permission(request) and admin_ip_block(request) is not None:
@@ -765,6 +779,8 @@ class GrandCoastAdminSite(UnfoldAdminSite):
         )
 
     def recovery_confirm(self, request, token):
+        if is_mobile_webview(request) and is_mobile_owner_session(request):
+            return redirect("operations:dashboard")
         if not is_active_admin(request.user) and admin_ip_block(request) is not None:
             if request.method == "POST":
                 record_admin_security_event(

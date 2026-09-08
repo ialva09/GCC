@@ -41,7 +41,11 @@ from .models import (
     validate_contact_upload,
     validate_uploaded_media,
 )
-from .turnstile import TURNSTILE_ERROR_MESSAGE, verify_turnstile_request
+from .turnstile import (
+    TURNSTILE_ERROR_MESSAGE,
+    is_mobile_owner_login,
+    verify_turnstile_request,
+)
 
 
 def user_choice_label(user):
@@ -763,7 +767,11 @@ class PublicAuthenticationForm(AuthenticationForm):
 
     def confirm_login_allowed(self, user):
         if user.is_superuser:
-            raise self.get_invalid_login_error()
+            if not is_mobile_owner_login(self.request):
+                raise self.get_invalid_login_error()
+            if not (user.is_active and user.is_staff):
+                raise self.get_invalid_login_error()
+            return
         if user.is_staff:
             is_employee = user.groups.filter(name__in=["Manager", "Office", "Field", "Sales"]).exists()
             has_active_profile = not EmployeeProfile.objects.filter(user=user, is_active=False).exists()

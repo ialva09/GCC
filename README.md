@@ -1558,3 +1558,60 @@ clients can see only the permitted lightweight status surface. Clients can open
 an estimate link only after staff explicitly publishes that link. Invoice and
 payment links are handled the same way: GCC records only links and confirmed
 status, while the detailed commercial document remains in the selected service.
+
+## 33. Mobile owner Command Center access
+
+The existing admin/superuser account can optionally use the Expo WebView as the Owner
+workspace. This does not create a new Owner role, does not expose the `/gccad/` admin
+catalog in the app, and does not change normal browser login behavior.
+
+Enable it only for a development or staging test session:
+
+~~~powershell
+$env:GCC_MOBILE_OWNER_ACCESS_ENABLED = "true"
+$env:GCC_MOBILE_OWNER_PUSH_ENABLED = "true"
+$env:GCC_AI_ENABLED = "false"
+~~~
+
+The mobile app opens `/accounts/login/?mobile=1`. The owner must still complete the
+existing administrator PIN and authenticator verification steps when those protections
+are enabled. Only after the factors succeed is the Django session created, and the app
+lands at `/dashboard/` (the Command Center). The app redirects any `/gccad/` navigation
+back to `/dashboard/`; browser access to `/gccad/` remains available through its existing
+protected administration gate.
+
+The mobile owner flags are disabled by default. Keep the server-side flags authoritative;
+the optional mobile setting below only controls whether the native shell attempts owner
+push registration before the server accepts it:
+
+~~~dotenv
+EXPO_PUBLIC_MOBILE_OWNER_PUSH_ENABLED=true
+~~~
+
+Owner push registration is accepted only for a marked Grand Coast mobile WebView while
+`GCC_MOBILE_OWNER_PUSH_ENABLED=true`. Push links are permission-checked Operations paths
+and never open `/gccad/`. Logout deactivates the registered device. Passwords, PINs,
+authenticator codes, session cookies, recovery tokens, and push credentials are not
+stored in native plaintext storage or written to logs.
+
+### Mobile owner validation checklist
+
+1. Leave `GCC_MOBILE_OWNER_ACCESS_ENABLED=false` and verify the superuser is rejected by
+   the mobile login form.
+2. Enable the access flag, sign in through the Expo app, and verify the owner lands on
+   the Command Center.
+3. If enabled, verify the PIN page appears before a session exists; then verify the
+   authenticator page appears before a session exists.
+4. Open the app drawer and verify Operations links work while `/gccad/` redirects to
+   the Command Center.
+5. Enable owner push, register a device, open an Operations notification, and verify the
+   destination is internal and not `/gccad/`.
+6. Log out and verify the device is deactivated.
+7. Repeat the same checks with the flags disabled and confirm employee and client login
+   behavior is unchanged.
+
+Do not enable these flags in production until HTTPS, secure cookies, Turnstile, PIN/TOTP,
+push credentials, audit events, and logout behavior have been verified in staging. The
+same superuser credentials can still access `/gccad/` in a browser by design; restricting
+one credential cryptographically to only one app would require a separate scoped account
+or device-attestation system.

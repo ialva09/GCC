@@ -7,7 +7,7 @@ import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import wraps
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from django.contrib import messages
 from django.contrib.auth import get_user_model
@@ -22,6 +22,7 @@ from django.contrib.auth.views import (
 )
 from django.contrib.auth.models import Group
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
@@ -49,6 +50,8 @@ from .forms import (
     EmployeeInviteAcceptForm,
     EmployeeProfileForm,
     AccountDeleteForm,
+    AdminOtpForm,
+    AdminPinForm,
     CalendarDayOverrideForm,
     EmployeeScheduleOverrideForm,
     EmployeeWeeklyScheduleForm,
@@ -75,6 +78,7 @@ from .models import (
     AdminRecoveryToken,
     CALENDAR_TIME_ZONE,
     AdminSecurityProfile,
+    AdminSecurityEvent,
     Agreement,
     ChangeOrder,
     CalendarDayOverride,
@@ -113,9 +117,22 @@ from .models import (
     schedule_event_local_dates,
     sanitize_uploaded_name,
 )
-from .turnstile import get_turnstile_site_key
+from .turnstile import get_turnstile_site_key, is_mobile_owner_login, is_mobile_webview
 from .security import (
+    admin_ip_block,
+    admin_user_block,
+    confirmed_totp_device,
+    is_active_admin,
+    mark_mobile_owner_session,
+    mobile_owner_factor_locked,
+    pending_mobile_owner_user,
+    pin_is_enabled,
     PasswordResetThrottleMixin,
+    record_admin_security_event,
+    register_mobile_owner_failure,
+    resolve_admin_identifier,
+    set_mobile_owner_challenge,
+    verify_admin_pin,
 )
 from .services import (
     complete_client_invite,
@@ -633,6 +650,167 @@ def client_required(view_func):
     return wrapped
 
 
+def _mobile_owner_login_url():
+    return f"{reverse('operations:login')}?mobile=1"
+
+
+def _mobile_owner_challenge_url(name):
+    return f"{reverse(f'operations:{name}')}?mobile=1"
+
+
+def _mobile_owner_request_allowed(request):
+    if not is_mobile_webview(request) or not getattr(
+        settings, "GCC_MOBILE_OWNER_ACCESS_ENABLED", False
+    ):
+        return False
+    return is_mobile_owner_login(request) or bool(
+        request.session.get("gcc_mobile_owner_pending_user")
+    )
+
+
+def _mobile_owner_security_block(request, user):
+    return admin_ip_block(request) or admin_user_block(user)
+
+
+def _complete_mobile_owner_login(request, user):
+    login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+    mark_mobile_owner_session(request, user)
+    record_admin_security_event(
+        request,
+        AdminSecurityEvent.EventType.LOGIN_SUCCESS,
+        outcome=AdminSecurityEvent.Outcome.SUCCESS,
+        user=user,
+        attempted_identifier=user.get_username(),
+        detail="Mobile Operations owner sign-in completed.",
+    )
+    return redirect("operations:dashboard")
+
+
+def _mobile_owner_factor_failure(request, user, factor):
+    locked = register_mobile_owner_failure(request, factor)
+    record_admin_security_event(
+        request,
+        (
+            AdminSecurityEvent.EventType.PIN_FAILURE
+            if factor == "pin"
+            else AdminSecurityEvent.EventType.OTP_FAILURE
+        ),
+        user=user,
+        attempted_identifier=user.get_username(),
+        detail=(
+            "The mobile Operations admin PIN could not be verified."
+            if factor == "pin"
+            else "The mobile Operations authenticator code could not be verified."
+        ),
+    )
+    return locked
+
+
+def _render_mobile_owner_challenge(request, *, form, step, status=200):
+    return render(
+        request,
+        "operations/mobile_owner_challenge.html",
+        {
+            "form": form,
+            "step": step,
+            "mobile_owner_locked": mobile_owner_factor_locked(request, step),
+        },
+        status=status,
+    )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def mobile_owner_pin(request):
+    if not _mobile_owner_request_allowed(request):
+        return redirect(_mobile_owner_login_url())
+    user = pending_mobile_owner_user(request, "pin")
+    if user is None:
+        return redirect(_mobile_owner_login_url())
+
+    form = AdminPinForm(request.POST or None)
+    blocked = _mobile_owner_security_block(request, user)
+    if blocked is not None:
+        if request.method == "POST":
+            record_admin_security_event(
+                request,
+                AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                user=user,
+                attempted_identifier=user.get_username(),
+                detail="The administrator account or source IP is blocked from mobile Operations access.",
+            )
+        form.add_error(None, "Unable to verify administrator access.")
+        return _render_mobile_owner_challenge(request, form=form, step="pin", status=403)
+
+    locked = mobile_owner_factor_locked(request, "pin")
+    if request.method == "POST" and not locked and form.is_valid():
+        if verify_admin_pin(user, form.cleaned_data["pin"]):
+            if confirmed_totp_device(user) is not None:
+                set_mobile_owner_challenge(request, user, "otp")
+                return redirect(_mobile_owner_challenge_url("mobile-owner-otp"))
+            return _complete_mobile_owner_login(request, user)
+        locked = _mobile_owner_factor_failure(request, user, "pin")
+        form.add_error(None, "That verification code could not be verified.")
+
+    if locked:
+        form.add_error(None, "Too many attempts. Try again in 15 minutes.")
+    return _render_mobile_owner_challenge(
+        request,
+        form=form,
+        step="pin",
+        status=429 if locked else 200,
+    )
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
+def mobile_owner_otp(request):
+    if not _mobile_owner_request_allowed(request):
+        return redirect(_mobile_owner_login_url())
+    user = pending_mobile_owner_user(request, "otp")
+    if user is None:
+        return redirect(_mobile_owner_login_url())
+
+    form = AdminOtpForm(request.POST or None)
+    blocked = _mobile_owner_security_block(request, user)
+    if blocked is not None:
+        if request.method == "POST":
+            record_admin_security_event(
+                request,
+                AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                user=user,
+                attempted_identifier=user.get_username(),
+                detail="The administrator account or source IP is blocked from mobile Operations access.",
+            )
+        form.add_error(None, "Unable to verify administrator access.")
+        return _render_mobile_owner_challenge(request, form=form, step="otp", status=403)
+
+    locked = mobile_owner_factor_locked(request, "otp")
+    device = confirmed_totp_device(user)
+    if request.method == "POST" and not locked and form.is_valid():
+        valid = False
+        if device is not None:
+            try:
+                valid = bool(device.verify_token(form.cleaned_data["token"]))
+            except (TypeError, ValueError):
+                valid = False
+        if valid:
+            return _complete_mobile_owner_login(request, user)
+        locked = _mobile_owner_factor_failure(request, user, "otp")
+        form.add_error(None, "That verification code could not be verified.")
+
+    if locked:
+        form.add_error(None, "Too many attempts. Try again in 15 minutes.")
+    return _render_mobile_owner_challenge(
+        request,
+        form=form,
+        step="otp",
+        status=429 if locked else 200,
+    )
+
+
 class GrandCoastLoginView(LoginView):
     template_name = "operations/login.html"
     authentication_form = PublicAuthenticationForm
@@ -640,7 +818,58 @@ class GrandCoastLoginView(LoginView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["turnstile_site_key"] = get_turnstile_site_key(self.request)
+        context["mobile_owner_mode"] = is_mobile_owner_login(self.request)
         return context
+
+    def form_invalid(self, form):
+        if (
+            self.request.method == "POST"
+            and is_mobile_owner_login(self.request)
+            and form.errors.get("__all__")
+            and form.cleaned_data.get("username")
+            and form.cleaned_data.get("password")
+        ):
+            attempted_identifier = form.cleaned_data["username"]
+            resolved_admin = resolve_admin_identifier(attempted_identifier)
+            record_admin_security_event(
+                self.request,
+                (
+                    AdminSecurityEvent.EventType.PASSWORD_FAILURE
+                    if resolved_admin is not None
+                    else AdminSecurityEvent.EventType.IDENTIFIER_FAILURE
+                ),
+                attempted_identifier=attempted_identifier,
+                user=resolved_admin,
+                detail=(
+                    "The mobile Operations administrator password could not be verified."
+                    if resolved_admin is not None
+                    else "The identifier did not match an active administrator for mobile Operations."
+                ),
+            )
+        return super().form_invalid(form)
+
+    def form_valid(self, form):
+        user = form.get_user()
+        if user.is_superuser and is_mobile_owner_login(self.request):
+            if not is_active_admin(user) or _mobile_owner_security_block(self.request, user):
+                record_admin_security_event(
+                    self.request,
+                    AdminSecurityEvent.EventType.ACCESS_BLOCKED,
+                    outcome=AdminSecurityEvent.Outcome.BLOCKED,
+                    user=user,
+                    attempted_identifier=user.get_username(),
+                    detail="The administrator account or source IP is blocked from mobile Operations access.",
+                )
+                form.add_error(None, "Please enter a correct username and password.")
+                return self.form_invalid(form)
+            if pin_is_enabled(user):
+                set_mobile_owner_challenge(self.request, user, "pin")
+                return redirect(_mobile_owner_challenge_url("mobile-owner-pin"))
+            if confirmed_totp_device(user) is not None:
+                set_mobile_owner_challenge(self.request, user, "otp")
+                return redirect(_mobile_owner_challenge_url("mobile-owner-otp"))
+            return _complete_mobile_owner_login(self.request, user)
+        return super().form_valid(form)
 
     def get_success_url(self):
         if self.request.user.is_staff:
@@ -801,6 +1030,28 @@ def _dashboard_context(request, section, form_overrides=None):
     if selected_estimate:
         selected_estimate.display_total = selected_estimate.total
         selected_estimate.project = selected_estimate.projects.order_by("-created_at").first()
+    text_client_href = ""
+    if (
+        external_estimate_enabled
+        and selected_estimate
+        and selected_estimate.external_url
+        and selected_estimate.client
+        and selected_estimate.client.phone
+        and can_manage_external_estimate(request.user, estimate=selected_estimate)
+    ):
+        sms_phone = "".join(
+            character
+            for character in str(selected_estimate.client.phone)
+            if character.isdigit() or character in "+()-"
+        )
+        if any(character.isdigit() for character in sms_phone):
+            sms_message = (
+                f"Hi {selected_estimate.client.name}, your Grand Coast Construction "
+                f"estimate is ready to review: {selected_estimate.external_url}"
+            )
+            text_client_href = (
+                f"sms:{quote(sms_phone, safe='+()-')}?body={quote(sms_message, safe='')}"
+            )
     if selected_project:
         selected_project.progress = selected_project.progress_percent
 
@@ -904,6 +1155,7 @@ def _dashboard_context(request, section, form_overrides=None):
         "selected_lead": selected_lead,
         "estimates": estimates,
         "selected_estimate": selected_estimate,
+        "text_client_href": text_client_href,
         "external_estimate_enabled": external_estimate_enabled,
         "can_manage_external_estimate_status": bool(
             external_estimate_enabled
@@ -2637,6 +2889,14 @@ def _notification_request_data(request):
 @require_POST
 @team_required
 def notification_device_register(request):
+    if request.user.is_superuser and (
+        not getattr(settings, "GCC_MOBILE_OWNER_PUSH_ENABLED", False)
+        or not is_mobile_webview(request)
+    ):
+        return JsonResponse(
+            {"error": "Owner mobile notifications are disabled."},
+            status=403,
+        )
     data = _notification_request_data(request)
     token = str(data.get('token') or data.get('expo_push_token') or '').strip()
     if not token or len(token) > 255 or not token.startswith(('ExpoPushToken[', 'ExponentPushToken[')):
@@ -3370,7 +3630,7 @@ def estimate_create(request):
 @require_POST
 @staff_required
 def external_estimate_send(request, pk):
-    """Optionally email the saved estimate link through the GCC outbox."""
+    """Email the saved estimate link and publish it to the client portal."""
     if not feature_enabled("external_estimate", default=False):
         raise Http404
     estimate = get_object_or_404(
@@ -3396,8 +3656,17 @@ def external_estimate_send(request, pk):
                 actor=request.user,
                 status=Estimate.ExternalEstimateStatus.SENT,
                 external_url=locked.external_url,
-                external_client_visible=locked.external_client_visible,
+                external_client_visible=True,
                 idempotency_key=f"{idempotency_key}:status",
+            )
+        elif not locked.external_client_visible:
+            locked, _created = record_external_estimate_status(
+                locked,
+                actor=request.user,
+                status=locked.external_status,
+                external_url=locked.external_url,
+                external_client_visible=True,
+                idempotency_key=f"{idempotency_key}:portal",
             )
         outbox = queue_email(
             recipient=client.email,
@@ -3407,8 +3676,7 @@ def external_estimate_send(request, pk):
                 "Your Grand Coast Construction estimate is ready to review. "
                 "Open it here:\n\n"
                 f"{locked.external_url}\n\n"
-                "You may continue using this link from your usual email or text conversation. "
-                "If the team has published it, the same estimate is also available in your Grand Coast client portal.\n\n"
+                "The same estimate link is also available in your Grand Coast client portal.\n\n"
                 "Grand Coast Construction"
             ),
             actor=request.user,
@@ -3417,14 +3685,17 @@ def external_estimate_send(request, pk):
         )
     outbox = deliver_email_outbox(outbox)
     if outbox and outbox.status == EmailOutbox.Status.SENT:
-        messages.success(request, f"Estimate link emailed to {client.email}.")
+        messages.success(
+            request,
+            f"Estimate link emailed to {client.email} and published to the client portal.",
+        )
     elif outbox and outbox.status == EmailOutbox.Status.FAILED:
         messages.warning(
             request,
-            "The estimate was saved, but email delivery failed. You can continue sending the link manually.",
+            "The estimate link was published to the client portal, but email delivery failed. You can continue sending the link manually.",
         )
     else:
-        messages.info(request, "Estimate link queued for email delivery.")
+        messages.info(request, "Estimate link queued for email delivery and published to the client portal.")
     return _dashboard_redirect("estimates", estimate=estimate.pk)
 
 

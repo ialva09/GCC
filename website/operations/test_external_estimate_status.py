@@ -351,10 +351,65 @@ class ExternalEstimateStatusTests(TestCase):
         self.assertEqual(second.status_code, 302)
         self.estimate.refresh_from_db()
         self.assertEqual(self.estimate.external_status, Estimate.ExternalEstimateStatus.SENT)
+        self.assertTrue(self.estimate.external_client_visible)
         self.assertEqual(
             EmailOutbox.objects.filter(idempotency_key="estimate-email-once").count(),
             1,
         )
+
+    @override_settings(GCC_EMAIL_DELIVERY_ENABLED=False)
+    def test_estimate_email_send_publishes_an_existing_status_to_the_client_portal(self):
+        record_external_estimate_status(
+            self.estimate,
+            actor=self.owner,
+            status=Estimate.ExternalEstimateStatus.SENT,
+            external_url="https://estimates.example.com/estimate/already-sent",
+            external_client_visible=False,
+            idempotency_key="already-sent-status",
+        )
+        http = HttpClient()
+        http.force_login(self.owner)
+        response = http.post(
+            reverse("operations:external-estimate-send", kwargs={"pk": self.estimate.pk}),
+            {"idempotency_key": "already-sent-email"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.estimate.refresh_from_db()
+        self.assertTrue(self.estimate.external_client_visible)
+        self.assertEqual(
+            EmailOutbox.objects.filter(idempotency_key="already-sent-email").count(),
+            1,
+        )
+
+    def test_estimate_panel_offers_provider_free_native_text_link(self):
+        self.client_record.phone = "+1 (805) 555-0100"
+        self.client_record.save(update_fields=["phone", "updated_at"])
+        self.estimate.external_url = "https://estimates.example.com/estimate/text"
+        self.estimate.save(update_fields=["external_url", "updated_at"])
+
+        http = HttpClient()
+        http.force_login(self.owner)
+        response = http.get(
+            reverse("operations:dashboard-section", kwargs={"section": "estimates"}),
+            {"estimate": self.estimate.pk},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Text client")
+        self.assertContains(response, "sms:")
+        self.assertContains(response, "device's Messages app")
+        self.assertContains(response, "emails the saved estimate link")
+        self.assertContains(response, "client portal")
+        self.assertNotContains(response, "Twilio")
+
+        self.client_record.phone = ""
+        self.client_record.save(update_fields=["phone", "updated_at"])
+        response = http.get(
+            reverse("operations:dashboard-section", kwargs={"section": "estimates"}),
+            {"estimate": self.estimate.pk},
+        )
+        self.assertNotContains(response, "Text client")
 
     def test_client_portal_never_falls_back_to_internal_estimate_details(self):
         project = self._approve_and_create_project()

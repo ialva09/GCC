@@ -98,18 +98,32 @@
                 </form>
             {% endif %}
 
-            {% if selected_estimate.external_url and selected_estimate.client.email and can_manage_external_estimate_status %}
+            {% if selected_estimate.external_url and can_manage_external_estimate_status %}
                 <div class="estimate-editor-footer">
                     <div>
-                        <span class="section-kicker">Optional GCC delivery</span>
-                        <p class="detail-value">Send the saved link to {{ selected_estimate.client.email }}, or keep sending it yourself by email or text.</p>
+                        <span class="section-kicker">GCC delivery</span>
+                        {% if selected_estimate.client.email %}
+                            <p class="detail-value"><strong>Send link to client</strong> emails the saved estimate link to {{ selected_estimate.client.email }} and publishes the same link in the client's Grand Coast portal.</p>
+                        {% else %}
+                            <p class="detail-value">Add a client email to enable GCC email and portal delivery. You can still keep sending the saved link yourself.</p>
+                        {% endif %}
                     </div>
-                    <form method="post" action="{% url 'operations:external-estimate-send' pk=selected_estimate.pk %}">
-                        {% csrf_token %}
-                        <input type="hidden" name="idempotency_key" value="{{ external_email_idempotency_key }}">
-                        <button class="button button-outline" type="submit">Send link to client</button>
-                    </form>
+                    <div class="detail-actions">
+                        {% if selected_estimate.client.email %}
+                            <form method="post" action="{% url 'operations:external-estimate-send' pk=selected_estimate.pk %}">
+                                {% csrf_token %}
+                                <input type="hidden" name="idempotency_key" value="{{ external_email_idempotency_key }}">
+                                <button class="button button-outline" type="submit" aria-label="Email estimate link and publish it to the client portal">Send link to client</button>
+                            </form>
+                        {% endif %}
+                        {% if text_client_href %}
+                            <a class="button button-outline" href="{{ text_client_href }}">Text client</a>
+                        {% endif %}
+                    </div>
                 </div>
+                {% if text_client_href %}
+                    <p class="detail-value">Text client opens the device's Messages app with the number and estimate link filled in. Review it and tap Send.</p>
+                {% endif %}
             {% endif %}
 
             {% if selected_estimate.external_status == 'approved' and selected_estimate.status == 'accepted' %}

@@ -23,6 +23,24 @@ def is_mobile_webview(request):
     return MOBILE_WEBVIEW_USER_AGENT_MARKER in user_agent
 
 
+def is_mobile_owner_login(request):
+    """Return whether this is the explicitly marked mobile owner login flow.
+
+    The marker selects the authentication flow; it is not an authorization
+    boundary.  Project, financial, document, and administration access still
+    use Django's normal server-side authorization checks.
+    """
+    if request is None or not is_mobile_webview(request):
+        return False
+    marker = str(
+        request.GET.get("mobile") or request.POST.get("mobile") or ""
+    ).strip()
+    return bool(
+        marker == "1"
+        and getattr(settings, "GCC_MOBILE_OWNER_ACCESS_ENABLED", False)
+    )
+
+
 def get_turnstile_site_key(request=None):
     if not getattr(settings, "GCC_TURNSTILE_ENABLED", True):
         return ""

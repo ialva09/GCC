@@ -51,6 +51,15 @@ ADMIN_RECOVERY_ATTEMPTS = "gccad_recovery_attempts"
 ADMIN_RECOVERY_LOCKED_UNTIL = "gccad_recovery_locked_until"
 PASSWORD_RESET_ATTEMPTS = "password_reset_attempts"
 PASSWORD_RESET_LOCKED_UNTIL = "password_reset_locked_until"
+MOBILE_OWNER_MODE = "gcc_mobile_owner_mode"
+MOBILE_OWNER_USER_ID = "gcc_mobile_owner_user_id"
+MOBILE_OWNER_PENDING_USER = "gcc_mobile_owner_pending_user"
+MOBILE_OWNER_PENDING_STEP = "gcc_mobile_owner_pending_step"
+MOBILE_OWNER_PENDING_EXPIRES_AT = "gcc_mobile_owner_pending_expires_at"
+MOBILE_OWNER_PIN_ATTEMPTS = "gcc_mobile_owner_pin_attempts"
+MOBILE_OWNER_PIN_LOCKED_UNTIL = "gcc_mobile_owner_pin_locked_until"
+MOBILE_OWNER_OTP_ATTEMPTS = "gcc_mobile_owner_otp_attempts"
+MOBILE_OWNER_OTP_LOCKED_UNTIL = "gcc_mobile_owner_otp_locked_until"
 
 ADMIN_GATE_TTL = timedelta(minutes=10)
 ADMIN_RECOVERY_TTL = timedelta(minutes=30)
@@ -60,6 +69,9 @@ ADMIN_OTP_ATTEMPT_LIMIT = 5
 ADMIN_RECOVERY_ATTEMPT_LIMIT = 5
 PASSWORD_RESET_ATTEMPT_LIMIT = 5
 PASSWORD_RESET_LOCKOUT = timedelta(minutes=15)
+MOBILE_OWNER_CHALLENGE_TTL = timedelta(minutes=10)
+MOBILE_OWNER_ATTEMPT_LIMIT = 5
+MOBILE_OWNER_LOCKOUT = timedelta(minutes=15)
 
 
 def _normalize_ip_address(value):
@@ -678,6 +690,126 @@ def register_recovery_failure(request):
         ).timestamp()
     request.session.modified = True
     return attempts
+
+
+def _mobile_owner_factor_keys(factor):
+    if factor == "pin":
+        return MOBILE_OWNER_PIN_ATTEMPTS, MOBILE_OWNER_PIN_LOCKED_UNTIL
+    if factor == "otp":
+        return MOBILE_OWNER_OTP_ATTEMPTS, MOBILE_OWNER_OTP_LOCKED_UNTIL
+    raise ValueError("Unsupported mobile owner factor.")
+
+
+def set_mobile_owner_challenge(request, user, step):
+    """Start a short-lived, unauthenticated mobile-owner factor challenge."""
+    if step not in {"pin", "otp"}:
+        raise ValueError("Unsupported mobile owner challenge step.")
+    attempts_key, _ = _mobile_owner_factor_keys(step)
+    request.session[MOBILE_OWNER_PENDING_USER] = str(user.pk)
+    request.session[MOBILE_OWNER_PENDING_STEP] = step
+    request.session[MOBILE_OWNER_PENDING_EXPIRES_AT] = (
+        timezone.now() + MOBILE_OWNER_CHALLENGE_TTL
+    ).timestamp()
+    if not mobile_owner_factor_locked(request, step):
+        request.session[attempts_key] = 0
+    request.session.modified = True
+
+
+def pending_mobile_owner_user(request, step=None):
+    user_id = request.session.get(MOBILE_OWNER_PENDING_USER)
+    stored_step = request.session.get(MOBILE_OWNER_PENDING_STEP)
+    expires_at = request.session.get(MOBILE_OWNER_PENDING_EXPIRES_AT)
+    if not user_id or stored_step not in {"pin", "otp"} or not expires_at:
+        clear_mobile_owner_challenge(request)
+        return None
+    if step is not None and stored_step != step:
+        return None
+    try:
+        active = float(expires_at) > timezone.now().timestamp()
+    except (TypeError, ValueError):
+        active = False
+    if not active:
+        clear_mobile_owner_challenge(request)
+        return None
+    user = get_user_model().objects.filter(
+        pk=user_id,
+        is_active=True,
+        is_staff=True,
+        is_superuser=True,
+    ).first()
+    if user is None:
+        clear_mobile_owner_challenge(request)
+    return user
+
+
+def mobile_owner_challenge_step(request):
+    return request.session.get(MOBILE_OWNER_PENDING_STEP)
+
+
+def mobile_owner_factor_locked(request, factor):
+    _, locked_key = _mobile_owner_factor_keys(factor)
+    locked_until = request.session.get(locked_key)
+    if not locked_until:
+        return False
+    try:
+        locked = float(locked_until) > timezone.now().timestamp()
+    except (TypeError, ValueError):
+        locked = False
+    if not locked:
+        attempts_key, _ = _mobile_owner_factor_keys(factor)
+        request.session.pop(locked_key, None)
+        request.session.pop(attempts_key, None)
+        request.session.modified = True
+    return locked
+
+
+def register_mobile_owner_failure(request, factor):
+    attempts_key, locked_key = _mobile_owner_factor_keys(factor)
+    attempts = int(request.session.get(attempts_key, 0)) + 1
+    request.session[attempts_key] = attempts
+    if attempts >= MOBILE_OWNER_ATTEMPT_LIMIT:
+        request.session[locked_key] = (
+            timezone.now() + MOBILE_OWNER_LOCKOUT
+        ).timestamp()
+    request.session.modified = True
+    return attempts >= MOBILE_OWNER_ATTEMPT_LIMIT
+
+
+def clear_mobile_owner_challenge(request):
+    for key in (
+        MOBILE_OWNER_PENDING_USER,
+        MOBILE_OWNER_PENDING_STEP,
+        MOBILE_OWNER_PENDING_EXPIRES_AT,
+        MOBILE_OWNER_PIN_ATTEMPTS,
+        MOBILE_OWNER_PIN_LOCKED_UNTIL,
+        MOBILE_OWNER_OTP_ATTEMPTS,
+        MOBILE_OWNER_OTP_LOCKED_UNTIL,
+    ):
+        request.session.pop(key, None)
+    request.session.modified = True
+
+
+def mark_mobile_owner_session(request, user):
+    clear_mobile_owner_challenge(request)
+    request.session[MOBILE_OWNER_MODE] = True
+    request.session[MOBILE_OWNER_USER_ID] = str(user.pk)
+    request.session.modified = True
+
+
+def clear_mobile_owner_session(request):
+    request.session.pop(MOBILE_OWNER_MODE, None)
+    request.session.pop(MOBILE_OWNER_USER_ID, None)
+    request.session.modified = True
+
+
+def is_mobile_owner_session(request):
+    return bool(
+        request
+        and request.session.get(MOBILE_OWNER_MODE)
+        and str(request.session.get(MOBILE_OWNER_USER_ID, ""))
+        == str(getattr(getattr(request, "user", None), "pk", ""))
+        and is_active_admin(getattr(request, "user", None))
+    )
 
 
 def clear_recovery_failures(request):
