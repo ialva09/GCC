@@ -1,5 +1,4 @@
-from django.contrib.auth.views import LogoutView
-from django.urls import path, reverse_lazy
+from django.urls import path
 
 from . import construction_views
 from . import views
@@ -16,7 +15,7 @@ urlpatterns = [
     path("accounts/login/", views.GrandCoastLoginView.as_view(), name="login"),
     path("accounts/mobile-owner/pin/", views.mobile_owner_pin, name="mobile-owner-pin"),
     path("accounts/mobile-owner/otp/", views.mobile_owner_otp, name="mobile-owner-otp"),
-    path("accounts/logout/", LogoutView.as_view(next_page=reverse_lazy("operations:login")), name="logout"),
+    path("accounts/logout/", views.GrandCoastLogoutView.as_view(), name="logout"),
     path("accounts/delete/", views.account_delete, name="account-delete"),
     path("accounts/password/change/", views.GrandCoastPasswordChangeView.as_view(), name="password-change"),
     path("accounts/password/reset/", views.PublicPasswordResetView.as_view(), name="password-reset"),

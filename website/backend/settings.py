@@ -104,10 +104,15 @@ X_FRAME_OPTIONS = "DENY"
 
 ALLOWED_HOSTS = [
     host.strip()
-    for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver,192.168.1.172").split(",")
+    for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver,192.168.1.172,nonpendant-profligately-tessa.ngrok-free.dev/api").split(",")
     if host.strip()
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 # Application definition
 

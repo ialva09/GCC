@@ -1,0 +1,18 @@
+<div class="portal-page-heading"><span class="section-kicker">Your account</span><h1>Profile</h1><p>Keep your account details and access under your control.</p></div>
+
+<section class="portal-profile-panel account-actions-panel" aria-labelledby="client-profile-details">
+    <div>
+        <span class="section-kicker">Client account</span>
+        <h2 id="client-profile-details">{{ portal_client.name }}</h2>
+        <p>{{ portal_client.email }}{% if portal_client.phone %} &middot; {{ portal_client.phone }}{% endif %}</p>
+    </div>
+    <div class="account-actions">
+        <form method="post" action="{% url 'operations:logout' %}">
+            {% csrf_token %}
+            <button class="button button-quiet" type="submit">Log out</button>
+        </form>
+        <a class="button button-danger" href="{% url 'operations:account-delete' %}">Delete account</a>
+    </div>
+</section>
+
+<p class="secure-note">Deleting your account disables portal access and anonymizes your personal details. Project history remains available to Grand Coast as an anonymous record.</p>

@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth import login, logout
 from django.contrib.auth.views import (
     LoginView,
+    LogoutView,
     PasswordChangeView,
     PasswordResetCompleteView,
     PasswordResetConfirmView,
@@ -883,6 +884,19 @@ class GrandCoastLoginView(LoginView):
         return reverse("operations:portal")
 
 
+class GrandCoastLogoutView(LogoutView):
+    next_page = reverse_lazy("operations:login")
+
+    def get_success_url(self):
+        # Django clears the session during logout, including the marker that
+        # selects the mobile owner login flow. Re-seed that flow on the next
+        # login page for marked WebView requests so an owner can switch
+        # accounts and authenticate again without restarting the app.
+        if is_mobile_webview(self.request):
+            return _mobile_owner_login_url()
+        return super().get_success_url()
+
+
 class GrandCoastPasswordChangeView(PasswordChangeView):
     template_name = "operations/password_change.html"
 
@@ -1243,30 +1257,52 @@ class _DerivedCalendarAssignees:
 class _DerivedCalendarEvent:
     is_virtual = True
 
-    def __init__(self, *, key, title, project, start_at, end_at, location="", notes="", assignees=None, anchor="execution-loop"):
+    def __init__(
+        self,
+        *,
+        key,
+        title,
+        project,
+        start_at,
+        end_at,
+        location="",
+        notes="",
+        assignees=None,
+        task=None,
+        calendar_event_kind="Job event",
+        anchor="execution-loop",
+    ):
         self.pk = f"derived:{key}"
         self.title = title
         self.project = project
-        self.task = None
+        self.task = task
         self.start_at = start_at
         self.end_at = end_at
         self.location = location
         self.notes = notes
         self.created_by = None
+        self.calendar_event_kind = calendar_event_kind
         self.assignees = _DerivedCalendarAssignees(assignees or [])
-        self.source_url = (
-            reverse("operations:project-operations", kwargs={"pk": project.pk})
-            + f"#{anchor}"
-            if project is not None
-            else reverse("operations:dashboard")
-        )
-
+        if project is not None:
+            self.source_url = reverse("operations:project-operations", kwargs={"pk": project.pk}) + f"#{anchor}"
+        elif task is not None:
+            self.source_url = reverse("operations:dashboard-section", kwargs={"section": "tasks"}) + f"?task={task.pk}"
+        else:
+            self.source_url = reverse("operations:dashboard")
 
 def _calendar_at(day, hour, minute=0):
     return timezone.make_aware(datetime.combine(day, time(hour, minute)), CALENDAR_TIME_ZONE)
 
 
-def _execution_calendar_events(projects):
+def _calendar_datetime(value):
+    if value is None:
+        return None
+    if timezone.is_naive(value):
+        return timezone.make_aware(value, CALENDAR_TIME_ZONE)
+    return value
+
+
+def _execution_calendar_events(projects, *, include_completed=False):
     """Project-linked, read-only calendar signals for the execution pilot."""
     project_ids = [project.pk for project in projects]
     project_by_id = {project.pk: project for project in projects}
@@ -1289,6 +1325,7 @@ def _execution_calendar_events(projects):
             location=visit.address or project.location,
             notes=visit.scope,
             assignees=[visit.assigned_to or project.project_manager],
+            calendar_event_kind="Site visit",
             anchor="site-visits",
         ))
     inspections = Inspection.objects.filter(
@@ -1309,13 +1346,16 @@ def _execution_calendar_events(projects):
             location=project.location,
             notes=inspection.corrective_action or inspection.result_notes,
             assignees=[project.project_manager],
+            calendar_event_kind="Inspection",
             anchor="permits",
         ))
-    tasks = Task.objects.filter(
+    tasks_queryset = Task.objects.filter(
         project_id__in=project_ids,
         due_date__isnull=False,
-    ).exclude(status=Task.Status.COMPLETE).select_related("project", "assigned_to")
-    for task in tasks:
+    ).select_related("project", "assigned_to")
+    if not include_completed:
+        tasks_queryset = tasks_queryset.exclude(status=Task.Status.COMPLETE)
+    for task in tasks_queryset:
         project = project_by_id.get(task.project_id)
         if project is None:
             continue
@@ -1324,11 +1364,13 @@ def _execution_calendar_events(projects):
             key=f"task:{task.pk}",
             title=f"Task: {task.title}",
             project=project,
+            task=task,
             start_at=start,
             end_at=start + timedelta(hours=1),
             location=project.location,
             notes=task.description,
             assignees=[task.assigned_to or project.project_manager],
+            calendar_event_kind="Task due",
             anchor="schedule",
         ))
     assignments = SubcontractorAssignment.objects.filter(
@@ -1353,10 +1395,11 @@ def _execution_calendar_events(projects):
             location=project.location,
             notes=assignment.scope,
             assignees=[project.project_manager],
+            calendar_event_kind="Subcontractor work",
             anchor="subcontractors",
         ))
     for project in projects:
-        if project.target_date and project.status != Project.Status.COMPLETE:
+        if project.target_date and (include_completed or project.status != Project.Status.COMPLETE):
             start = _calendar_at(project.target_date, 16)
             derived.append(_DerivedCalendarEvent(
                 key=f"deadline:{project.pk}",
@@ -1367,10 +1410,105 @@ def _execution_calendar_events(projects):
                 location=project.location,
                 notes=project.next_step,
                 assignees=[project.project_manager],
+                calendar_event_kind="Project target",
                 anchor="schedule",
             ))
     return derived
 
+
+def _admin_calendar_events(projects, tasks):
+    """Return every actionable job timestamp the Owner needs in the calendar."""
+    derived = _execution_calendar_events(projects, include_completed=True)
+    project_by_id = {project.pk: project for project in projects}
+
+    # Project-linked due dates are already represented by the execution helper.
+    # Add lead follow-up tasks as well, since those can exist before a project.
+    project_task_ids = {
+        event.task.pk
+        for event in derived
+        if getattr(event, "task", None) is not None
+    }
+    for task in tasks:
+        if task.due_date and task.pk not in project_task_ids:
+            project = project_by_id.get(task.project_id)
+            start = _calendar_at(task.due_date, 9)
+            derived.append(_DerivedCalendarEvent(
+                key=f"task:{task.pk}",
+                title=f"Task: {task.title}",
+                project=project,
+                task=task,
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                location=project.location if project else "",
+                notes=task.description,
+                assignees=[task.assigned_to],
+                calendar_event_kind="Task due",
+                anchor="schedule",
+            ))
+
+        if task.completed_at:
+            start = _calendar_datetime(task.completed_at)
+            project = project_by_id.get(task.project_id)
+            derived.append(_DerivedCalendarEvent(
+                key=f"task-completed:{task.pk}",
+                title=f"Task completed: {task.title}",
+                project=project,
+                task=task,
+                start_at=start,
+                end_at=start + timedelta(minutes=30),
+                location=project.location if project else "",
+                notes=task.description,
+                assignees=[task.assigned_to],
+                calendar_event_kind="Task completed",
+                anchor="schedule",
+            ))
+
+    for project in projects:
+        if project.start_date:
+            start = _calendar_at(project.start_date, 8)
+            derived.append(_DerivedCalendarEvent(
+                key=f"project-start:{project.pk}",
+                title=f"Project start: {project.title}",
+                project=project,
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                location=project.location,
+                notes=project.next_step,
+                assignees=[project.project_manager],
+                calendar_event_kind="Project start",
+                anchor="schedule",
+            ))
+        if project.construction_ready_at:
+            start = _calendar_datetime(project.construction_ready_at)
+            derived.append(_DerivedCalendarEvent(
+                key=f"project-ready:{project.pk}",
+                title=f"Construction ready: {project.title}",
+                project=project,
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                location=project.location,
+                notes=project.next_step,
+                assignees=[project.project_manager],
+                calendar_event_kind="Construction ready",
+                anchor="schedule",
+            ))
+        for milestone in project.milestones.all():
+            if not milestone.completed_at:
+                continue
+            start = _calendar_datetime(milestone.completed_at)
+            derived.append(_DerivedCalendarEvent(
+                key=f"milestone-completed:{milestone.pk}",
+                title=f"Milestone completed: {milestone.title}",
+                project=project,
+                start_at=start,
+                end_at=start + timedelta(minutes=30),
+                location=project.location,
+                notes=project.next_step,
+                assignees=[project.project_manager],
+                calendar_event_kind="Milestone completed",
+                anchor="schedule",
+            ))
+    return derived
 
 def _calendar_conflicts(events, overrides):
     conflicts = []
@@ -1457,8 +1595,17 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
     schedule_queryset = _visible_team_schedule_for_user(request.user) if team_mode else _visible_schedule_for_user(request.user)
     events = list(schedule_queryset.select_related("project", "task", "created_by").prefetch_related("assignees"))
     derived_calendar_events = []
-    if section == "calendar" and execution_loop_enabled_for(request.user):
-        derived_calendar_events = _execution_calendar_events(projects)
+    admin_calendar_tasks = []
+    if section == "calendar":
+        if _can_access_dashboard(request.user):
+            admin_calendar_tasks = list(
+                _visible_tasks_for_user(request.user)
+                .select_related("lead", "project", "milestone", "assigned_to")
+                .prefetch_related("watchers")
+            )
+            derived_calendar_events = _admin_calendar_events(projects, admin_calendar_tasks)
+        elif execution_loop_enabled_for(request.user):
+            derived_calendar_events = _execution_calendar_events(projects)
         events.extend(derived_calendar_events)
     today = timezone.localtime(timezone.now(), CALENDAR_TIME_ZONE).date()
     requested_month = request.GET.get("month", "")
@@ -1476,6 +1623,11 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         for event_day in schedule_event_local_dates(event):
             if event_day in calendar_dates:
                 events_by_day.setdefault(event_day, []).append(event)
+    calendar_job_event_count = sum(
+        1
+        for event in derived_calendar_events
+        if any(event_day in calendar_dates for event_day in schedule_event_local_dates(event))
+    )
     overrides_by_day = {
         override.date: override
         for override in CalendarDayOverride.objects.filter(
@@ -1844,6 +1996,7 @@ def _workspace_context(request, section, team_mode=False, form_overrides=None):
         "calendar_preview_events": calendar_preview_events,
         "calendar_conflicts": calendar_conflicts,
         "derived_calendar_event_count": len(derived_calendar_events),
+        "calendar_job_event_count": calendar_job_event_count,
         "calendar_weeks": calendar_weeks,
         "calendar_month_days": calendar_month_days,
         "calendar_month_label": month_anchor.strftime("%B %Y"),
@@ -4532,6 +4685,7 @@ _PORTAL_SECTION_LABELS = (
     ("messages", "Messages"),
     ("estimate-files", "Estimate & files"),
     ("notifications", "Notifications"),
+    ("profile", "Profile"),
 )
 _PORTAL_SECTION_KEYS = {key for key, _label in _PORTAL_SECTION_LABELS}
 

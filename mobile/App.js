@@ -66,6 +66,7 @@ const EMPLOYEE_PUSH_REGISTER_PATH = '/team/notifications/devices/';
 const EMPLOYEE_PUSH_DEACTIVATE_PATH = '/team/notifications/devices/deactivate/';
 const CLIENT_WORKSPACE_PATH = '/portal/';
 const CLIENT_OVERVIEW_PATH = '/portal/overview/';
+const CLIENT_PROFILE_PATH = '/portal/profile/';
 const CLIENT_NOTIFICATIONS_PATH = '/portal/notifications/';
 const CLIENT_PUSH_REGISTER_PATH = '/portal/notifications/devices/';
 const CLIENT_PUSH_DEACTIVATE_PATH = '/portal/notifications/devices/deactivate/';
@@ -74,9 +75,10 @@ const LAUNCH_SPLASH_HOLD_MS = 1000;
 const LAUNCH_SPLASH_FADE_MS = 600;
 const SPLASH_LOGO = require('./assets/gcc-logo.png');
 const MOBILE_WEBVIEW_USER_AGENT = 'GrandCoastMobile/1.0';
+const MOBILE_WEBVIEW_REQUEST_HEADERS = { 'X-Grand-Coast-Mobile': '1' };
 const NATIVE_CONTACT_PATH = '/contact/';
 const NATIVE_CONTACT_SUCCESS_MESSAGE = 'Thanks for sharing your project. We will be in touch soon.';
-const MOBILE_CONTACT_REQUEST_HEADERS = { 'X-Grand-Coast-Mobile': '1' };
+const MOBILE_CONTACT_REQUEST_HEADERS = MOBILE_WEBVIEW_REQUEST_HEADERS;
 const EMPTY_NATIVE_CONTACT_FORM = {
   first_name: '',
   last_name: '',
@@ -135,6 +137,7 @@ const clientDrawerPages = [
   { label: 'Messages', icon: 'chatbubbles-outline', path: '/portal/messages/', tab: 'Workspace' },
   { label: 'Estimate & files', icon: 'receipt-outline', path: '/portal/estimate-files/', tab: 'Workspace' },
   { label: 'Notifications', icon: 'notifications-outline', path: '/portal/notifications/', tab: 'Workspace' },
+  { label: 'Profile', icon: 'person-circle-outline', path: CLIENT_PROFILE_PATH, tab: 'Overview' },
 ];
 
 const employeeDrawerPages = [
@@ -515,7 +518,7 @@ function AppHeader({ navigation }) {
     const isClient = workspaceKind === 'client';
     const profilePath = isEmployee
       ? EMPLOYEE_PROFILE_PATH
-      : isAdmin ? ADMIN_WORKSPACE_PATH : isClient ? CLIENT_OVERVIEW_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
+      : isAdmin ? ADMIN_WORKSPACE_PATH : isClient ? CLIENT_PROFILE_PATH : workspacePath || CLIENT_WORKSPACE_PATH;
     setActiveTab(isAdmin ? 'Dashboard' : isClient ? 'Overview' : 'Workspace');
     setActiveWebPath(profilePath);
     navigate(profilePath);
@@ -539,7 +542,7 @@ function AppHeader({ navigation }) {
         </View>
 
         <Pressable
-          accessibilityLabel={workspaceKind === 'employee' ? 'Open profile' : workspaceKind === 'admin' ? 'Open operations' : 'Open portal overview'}
+          accessibilityLabel={workspaceKind === 'employee' || workspaceKind === 'client' ? 'Open profile' : workspaceKind === 'admin' ? 'Open operations' : 'Open workspace'}
           hitSlop={10}
           onPress={openProfile}
           style={styles.headerButton}
@@ -934,7 +937,10 @@ function SignInGate({ onWebViewLoadEnd, webViewRef }) {
   const nativeMediaEnabled = process.env.EXPO_PUBLIC_NATIVE_MEDIA_ENABLED !== 'false';
   const canPullToRefresh = isAuthenticated && isPrivatePath(pathnameFromUrl(currentWebViewPath));
   const injectMobileChrome = useWebViewChrome(webViewRef);
-  const loginSource = useMemo(() => ({ uri: pageUrl(`${AUTH_PATH}?mobile=1`) }), []);
+  const loginSource = useMemo(() => ({
+    headers: MOBILE_WEBVIEW_REQUEST_HEADERS,
+    uri: pageUrl(`${AUTH_PATH}?mobile=1`),
+  }), []);
   const webViewMotionStyle = Platform.OS === 'android'
     ? { transform: [{ translateY: androidPullOffset }] }
     : null;

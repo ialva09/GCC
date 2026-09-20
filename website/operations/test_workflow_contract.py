@@ -292,6 +292,7 @@ class WorkflowContractTests(TestCase):
             "/portal/notifications/",
         ):
             self.assertIn(f"path: '{route}'", client_block)
+        self.assertIn("path: CLIENT_PROFILE_PATH", client_block)
         self.assertNotIn("/portal/#", client_block)
         client_tabs = mobile_source[
             mobile_source.index("const clientBottomTabs") : mobile_source.index("const employeeMorePages")
@@ -301,7 +302,7 @@ class WorkflowContractTests(TestCase):
         self.assertIn("CLIENT_OVERVIEW_PATH", client_tabs)
         self.assertIn("CLIENT_NOTIFICATIONS_PATH", client_tabs)
         self.assertIn("function ClientMoreScreen", mobile_source)
-        self.assertIn("'Open portal overview'", mobile_source)
+        self.assertIn("workspaceKind === 'employee' || workspaceKind === 'client' ? 'Open profile'", mobile_source)
         self.assertIn("key={`${page.group || 'overview'}:${page.label}`}", mobile_source)
         self.assertIn(".admin-sidebar, .staging-bar", mobile_source)
         self.assertIn(".admin-main { margin-left: 0 !important; }", mobile_source)

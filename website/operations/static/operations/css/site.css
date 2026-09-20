@@ -887,6 +887,9 @@ body.modal-open { overflow: hidden; }
 .calendar-card > .text-link-button { white-space: nowrap; }
 .calendar-month-panel { padding: 23px; margin: 22px 0; background: var(--white); border: 1px solid var(--line-blue); }
 .calendar-month-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-bottom: 19px; border-bottom: 1px solid var(--line); }
+.calendar-job-summary { padding: 11px 13px; margin: 15px 0 0; color: var(--muted); background: #f7f9fc; border-left: 3px solid var(--brand-gold); font-size: .68rem; line-height: 1.5; }
+.calendar-job-summary strong { color: var(--brand-navy); }
+.calendar-day-event-kind, .calendar-mobile-event-kind { display: block; color: var(--brand-blue); font-size: .46rem; font-weight: 900; letter-spacing: .04em; line-height: 1.1; text-transform: uppercase; }
 .calendar-month-heading h3 { margin: 3px 0 0; color: var(--brand-navy); font-family: var(--serif); font-size: 1.45rem; }
 .calendar-month-heading .section-kicker { margin-bottom: 0; }
 .calendar-weekdays, .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }

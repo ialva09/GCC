@@ -234,6 +234,68 @@ class PrivateAdminSecurityTests(TestCase):
     @override_settings(
         GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
         GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_can_log_in_again_after_mobile_logout(self):
+        login_url = reverse("operations:login") + "?mobile=1"
+        credentials = {
+            "username": self.admin_user.username,
+            "password": "security-owner-pass",
+            "mobile": "1",
+        }
+
+        first_login = self.browser.post(
+            login_url,
+            credentials,
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(first_login, reverse("operations:dashboard"))
+
+        logout_response = self.browser.post(
+            reverse("operations:logout"),
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(logout_response, login_url)
+        self.assertIsNone(self.browser.session.get("_auth_user_id"))
+
+        second_login = self.browser.post(
+            login_url,
+            credentials,
+            **self.mobile_headers(),
+        )
+        self.assertRedirects(second_login, reverse("operations:dashboard"))
+        self.assertEqual(
+            self.browser.session.get("_auth_user_id"),
+            str(self.admin_user.pk),
+        )
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
+    )
+    def test_mobile_owner_marker_survives_a_webview_post_without_mobile_headers(self):
+        login_url = reverse("operations:login") + "?mobile=1"
+        initial_response = self.browser.get(login_url, **self.mobile_headers())
+        self.assertEqual(initial_response.status_code, 200)
+        self.assertContains(initial_response, 'name="mobile" value="1"')
+
+        response = self.browser.post(
+            login_url,
+            {
+                "username": self.admin_user.username,
+                "password": "security-owner-pass",
+                "mobile": "1",
+            },
+        )
+
+        self.assertRedirects(response, reverse("operations:dashboard"))
+        self.assertEqual(
+            self.browser.session.get("_auth_user_id"),
+            str(self.admin_user.pk),
+        )
+
+    @override_settings(
+        GCC_MOBILE_OWNER_ACCESS_ENABLED=True,
+        GCC_TURNSTILE_ENABLED=False,
         ADMIN_SECURITY_EMAIL_ALERTS_ENABLED=False,
     )
     def test_mobile_owner_pin_is_required_before_session_is_created(self):

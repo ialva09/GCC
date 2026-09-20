@@ -1490,6 +1490,65 @@ class PlatformWorkflowTests(TestCase):
         )
         self.assertNotIn('Pacific overnight event', [event.title for event in next_day['events']])
 
+    def test_admin_calendar_includes_project_and_task_timestamps(self):
+        calendar_day = timezone.localdate() + timedelta(days=25)
+        project = self.project
+        project.start_date = calendar_day
+        project.target_date = calendar_day
+        project.construction_ready_at = self.pacific_datetime(calendar_day, 7, 30)
+        project.save(update_fields=["start_date", "target_date", "construction_ready_at", "updated_at"])
+
+        completed_task = Task.objects.create(
+            title="Admin calendar completed task",
+            description="A completed task timestamp should remain visible to the Owner.",
+            project=project,
+            lead=self.lead,
+            status=Task.Status.COMPLETE,
+            due_date=calendar_day,
+            completed_at=self.pacific_datetime(calendar_day, 13),
+            created_by=self.owner,
+        )
+        Milestone.objects.create(
+            project=project,
+            title="Admin calendar milestone",
+            sort_order=2,
+            is_complete=True,
+            completed_at=self.pacific_datetime(calendar_day, 14),
+        )
+
+        self.login(self.owner)
+        month = calendar_day.strftime("%Y-%m")
+        owner_response = self.browser.get(
+            reverse("operations:dashboard-section", kwargs={"section": "calendar"}),
+            {"month": month, "day": calendar_day.isoformat()},
+        )
+        self.assertEqual(owner_response.status_code, 200)
+        owner_event_titles = [
+            event.title
+            for event in owner_response.context["selected_day_events"]
+        ]
+        self.assertIn(f"Project start: {project.title}", owner_event_titles)
+        self.assertIn(f"Project deadline: {project.title}", owner_event_titles)
+        self.assertIn(f"Construction ready: {project.title}", owner_event_titles)
+        self.assertIn(f"Task: {completed_task.title}", owner_event_titles)
+        self.assertIn(f"Task completed: {completed_task.title}", owner_event_titles)
+        self.assertIn("Milestone completed: Admin calendar milestone", owner_event_titles)
+        self.assertGreaterEqual(owner_response.context["calendar_job_event_count"], 6)
+        self.assertContains(owner_response, "Owner job timeline:")
+        self.assertContains(owner_response, "Task due")
+        self.assertContains(owner_response, "Project target")
+
+        self.login(self.field)
+        employee_response = self.browser.get(
+            reverse("operations:team-section", kwargs={"section": "calendar"}),
+            {"month": month, "day": calendar_day.isoformat()},
+        )
+        self.assertEqual(employee_response.status_code, 200)
+        self.assertNotContains(employee_response, f"Project start: {project.title}")
+        self.assertNotContains(employee_response, f"Construction ready: {project.title}")
+        self.assertNotContains(employee_response, f"Task completed: {completed_task.title}")
+        self.assertNotContains(employee_response, "Milestone completed: Admin calendar milestone")
+
     def test_owner_can_set_clear_calendar_day_and_employee_sees_it(self):
         calendar_day = timezone.localdate() + timedelta(days=12)
         month = calendar_day.strftime('%Y-%m')
@@ -2212,9 +2271,16 @@ class PlatformWorkflowTests(TestCase):
                 reverse('operations:team-section', kwargs={'section': section}),
             )
             self.assertEqual(response.status_code, 200, section)
+        employee_profile = self.browser.get(reverse('operations:team-section', kwargs={'section': 'profile'}))
+        self.assertContains(employee_profile, 'Log out')
+        self.assertContains(employee_profile, 'Delete account')
 
         self.login(self.client_user)
         self.assertEqual(self.browser.get(reverse('operations:portal')).status_code, 200)
+        client_profile = self.browser.get(reverse('operations:portal-section', kwargs={'section': 'profile'}))
+        self.assertEqual(client_profile.status_code, 200)
+        self.assertContains(client_profile, 'Log out')
+        self.assertContains(client_profile, 'Delete account')
         for page in ('home', 'services', 'projects', 'process', 'contact'):
             response = self.browser.get(reverse(f'operations:{page}'))
             self.assertEqual(response.status_code, 200, page)

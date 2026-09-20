@@ -12,15 +12,33 @@ TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverif
 TURNSTILE_ERROR_MESSAGE = "Complete the security check and try again."
 MOBILE_WEBVIEW_USER_AGENT_MARKER = "GrandCoastMobile/"
 MOBILE_WEBVIEW_HEADER = "HTTP_X_GRAND_COAST_MOBILE"
+MOBILE_WEBVIEW_SESSION_KEY = "gcc_mobile_webview"
 
 
 def is_mobile_webview(request):
     if request is None:
         return False
-    if request.META.get(MOBILE_WEBVIEW_HEADER) == "1":
-        return True
+    marked_request = request.META.get(MOBILE_WEBVIEW_HEADER) == "1"
     user_agent = request.META.get("HTTP_USER_AGENT", "")
-    return MOBILE_WEBVIEW_USER_AGENT_MARKER in user_agent
+    marked_request = marked_request or MOBILE_WEBVIEW_USER_AGENT_MARKER in user_agent
+    session = getattr(request, "session", None)
+    if marked_request:
+        mobile_owner_route = (
+            request.path.rstrip("/") == "/accounts/login"
+            or request.path.startswith("/accounts/mobile-owner/")
+        )
+        mobile_owner_marker = str(
+            request.GET.get("mobile") or request.POST.get("mobile") or ""
+        ).strip() == "1"
+        if (
+            session is not None
+            and mobile_owner_route
+            and mobile_owner_marker
+            and getattr(settings, "GCC_MOBILE_OWNER_ACCESS_ENABLED", False)
+        ):
+            session[MOBILE_WEBVIEW_SESSION_KEY] = True
+        return True
+    return bool(session is not None and session.get(MOBILE_WEBVIEW_SESSION_KEY))
 
 
 def is_mobile_owner_login(request):

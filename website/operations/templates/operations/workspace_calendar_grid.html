@@ -8,6 +8,9 @@
         </div>
         <a class='text-link-button' href='?month={{ calendar_next }}'>Next &rarr;</a>
     </div>
+    {% if not team_mode %}
+        <p class='calendar-job-summary'><strong>Owner job timeline:</strong> {% if calendar_job_event_count %}{{ calendar_job_event_count }} job timestamp{% if calendar_job_event_count != 1 %}s{% endif %} this month{% else %}No project or task dates are set for this month yet{% endif %}. Project dates, task due/completion times, milestones, and project events appear here alongside employee hours.</p>
+    {% endif %}
     {% if calendar_conflicts %}
         <section class='calendar-conflict-panel' aria-label='Scheduling conflicts'>
             <div class='admin-section-heading compact'><div><span class='section-kicker'>Coordination watch</span><h3>{{ calendar_conflicts|length }} scheduling conflict{% if calendar_conflicts|length != 1 %}s{% endif %}</h3></div><span class='status-badge red'>Review</span></div>
@@ -46,7 +49,8 @@
                         {% endif %}
                         {% for event in day.preview_events %}
                             <span class='calendar-day-event' title='{{ event.title }}'>
-                                <span>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}
+                                <span class='calendar-day-event-kind'>{{ event.calendar_event_kind|default:'Scheduled event' }}</span>
+                                <span class='calendar-day-event-time'>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}
                             </span>
                         {% empty %}
                             <span class='calendar-day-empty'></span>
@@ -87,7 +91,7 @@
                     {% if day.effective_shift and day.effective_shift.is_company_short and not day.effective_shift.employee_override %}<span class='calendar-mobile-shift is-short'>No shift in short-day hours</span>{% endif %}
                     {% if day.effective_shift and day.effective_shift.is_working %}<span class='calendar-mobile-shift'>Shift {{ day.effective_shift.start_time|time:'g:i A' }} &ndash; {{ day.effective_shift.end_time|time:'g:i A' }}</span>{% elif day.effective_shift and day.effective_shift.employee_override and not day.effective_shift.is_company_closed %}<span class='calendar-mobile-shift is-off'>Day off{% if day.effective_shift.reason %} · {{ day.effective_shift.reason }}{% endif %}</span>{% endif %}
                     {% for event in day.preview_events %}
-                        <span class='calendar-mobile-event'><span>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}</span>
+                        <span class='calendar-mobile-event'><span class='calendar-mobile-event-kind'>{{ event.calendar_event_kind|default:'Scheduled event' }}</span><span>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}</span> {{ event.title }}</span>
                     {% endfor %}
                     {% if day.remaining_event_count %}
                         <a class='text-link-button' href='?month={{ calendar_month_key }}&amp;day={{ day.date|date:"Y-m-d" }}'>View all {{ day.event_count }} events &rarr;</a>
@@ -122,7 +126,7 @@
                 {% for event in selected_day_events %}
                     <article class='calendar-day-detail'>
                         <div>
-                            <span class='section-kicker'>{{ event.project.title|default:'Internal event' }}</span>
+                            <span class='section-kicker'>{{ event.calendar_event_kind|default:'Scheduled event' }}{% if event.project %} · {{ event.project.title }}{% elif event.task %} · Lead task{% endif %}</span>
                             <h4>{{ event.title }}</h4>
                             <p>{{ event.start_at|date:'g:i A' }} &ndash; {{ event.end_at|date:'g:i A' }}{% if event.location %} &middot; {{ event.location }}{% endif %}</p>
                         </div>
