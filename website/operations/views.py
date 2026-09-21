@@ -89,6 +89,7 @@ from .models import (
     ClientNotification,
     ClientMessage,
     Estimate,
+    GoogleReview,
     EstimateLineItem,
     EmployeeInvite,
     EmployeeProfile,
@@ -146,6 +147,11 @@ from .services import (
     find_employee_invite,
     get_or_create_client_for_lead,
     record_activity,
+)
+from .google_reviews import (
+    GoogleReviewsConfigurationError,
+    GoogleReviewsFetchError,
+    sync_google_reviews,
 )
 from .construction_services import (
     accept_agreement as accept_agreement_command,
@@ -519,6 +525,7 @@ def _project_image(project):
 
 def _public_context():
     site_settings = _site_settings()
+    google_reviews = list(GoogleReview.objects.all()[:5])
     services = list(Service.objects.filter(is_active=True))
     process_steps = list(ProcessStep.objects.all())
     for service in services:
@@ -534,6 +541,7 @@ def _public_context():
     public_featured_project = featured_project if featured_project and featured_project.is_published else None
     return {
         "site_settings": site_settings,
+        "google_reviews": google_reviews,
         "services": services,
         "process_steps": process_steps,
         "public_projects": projects,
@@ -966,6 +974,7 @@ def _content_form(instance, services, process_steps, data=None):
 def _dashboard_context(request, section, form_overrides=None):
     form_overrides = form_overrides or {}
     site_settings = _site_settings()
+    google_review_cache = list(GoogleReview.objects.all()[:5])
     services = list(Service.objects.filter(is_active=True))
     process_steps = list(ProcessStep.objects.all())
 
@@ -1208,6 +1217,11 @@ def _dashboard_context(request, section, form_overrides=None):
         "content_service_fields": content_service_fields,
         "content_step_fields": content_step_fields,
         "site_settings": site_settings,
+        "google_review_cache": google_review_cache,
+        "google_places_configured": bool(
+            getattr(settings, "GCC_GOOGLE_PLACES_API_KEY", "")
+            and getattr(settings, "GCC_GOOGLE_PLACE_ID", "")
+        ),
         "new_type": new_type,
         "last_invite_url": request.session.pop("last_invite_url", ""),
         "last_invite_email_status": request.session.pop("last_invite_email_status", ""),
@@ -4560,6 +4574,24 @@ def content_update(request):
         return _render_dashboard_form_error(request, "content", {"content_form": form})
     return _dashboard_redirect("content")
 
+
+
+@require_POST
+@staff_required
+def google_reviews_sync(request):
+    if not _can_manage_content(request.user):
+        raise PermissionDenied
+    try:
+        result = sync_google_reviews()
+    except (GoogleReviewsConfigurationError, GoogleReviewsFetchError) as exc:
+        messages.error(request, str(exc))
+    else:
+        place_name = result["display_name"] or "the configured Google listing"
+        messages.success(
+            request,
+            f"Synced {result['review_count_cached']} reviews for {place_name}.",
+        )
+    return _dashboard_redirect("content")
 
 @require_GET
 def public_project_detail(request, pk):

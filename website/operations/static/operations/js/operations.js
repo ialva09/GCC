@@ -37,6 +37,159 @@
         }
     }
 
+    function initGoogleReviewsCarousel() {
+        each("[data-google-reviews-carousel]", function (carousel) {
+            var viewport = carousel.querySelector("[data-google-reviews-viewport]");
+            var cards = Array.prototype.slice.call(carousel.querySelectorAll("[data-google-review-card]"));
+            var previous = carousel.querySelector("[data-google-reviews-prev]");
+            var next = carousel.querySelector("[data-google-reviews-next]");
+            var dots = carousel.querySelector("[data-google-reviews-dots]");
+            if (!viewport || !cards.length || !previous || !next || !dots) {
+                return;
+            }
+
+            var page = 0;
+            var previousPerView = 0;
+
+            function cardsPerView() {
+                if (window.innerWidth <= 560) {
+                    return 1;
+                }
+                if (window.innerWidth <= 860) {
+                    return 2;
+                }
+                return 3;
+            }
+
+            function pageCount() {
+                return Math.max(1, Math.ceil(cards.length / cardsPerView()));
+            }
+
+            function pageStart(pageIndex) {
+                return Math.max(
+                    0,
+                    Math.min(cards.length - cardsPerView(), pageIndex * cardsPerView())
+                );
+            }
+
+            function reducedMotion() {
+                return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            }
+
+            function nearestCardIndex() {
+                var closest = 0;
+                var closestDistance = Infinity;
+                cards.forEach(function (card, index) {
+                    var distance = Math.abs(card.offsetLeft - viewport.scrollLeft);
+                    if (distance < closestDistance) {
+                        closest = index;
+                        closestDistance = distance;
+                    }
+                });
+                return closest;
+            }
+
+            function setPage(nextPage, shouldScroll) {
+                var maxPage = pageCount() - 1;
+                page = Math.max(0, Math.min(maxPage, nextPage));
+                var target = cards[pageStart(page)];
+                if (target && shouldScroll !== false) {
+                    var left = target.offsetLeft;
+                    if (typeof viewport.scrollTo === "function") {
+                        viewport.scrollTo({
+                            left: left,
+                            behavior: reducedMotion() ? "auto" : "smooth",
+                        });
+                    } else {
+                        viewport.scrollLeft = left;
+                    }
+                }
+                updateState(page);
+            }
+
+            function buildDots() {
+                dots.innerHTML = "";
+                for (var index = 0; index < pageCount(); index += 1) {
+                    var dot = document.createElement("button");
+                    dot.type = "button";
+                    dot.className = "google-reviews-dot";
+                    dot.setAttribute("role", "tab");
+                    dot.setAttribute("aria-label", "Show Google review group " + (index + 1));
+                    dot.dataset.googleReviewsDot = String(index);
+                    dot.addEventListener("click", function () {
+                        setPage(Number(this.dataset.googleReviewsDot));
+                    });
+                    dots.appendChild(dot);
+                }
+            }
+
+            function nearestPage() {
+                var currentScrollLeft = viewport.scrollLeft;
+                var closestPage = 0;
+                var closestDistance = Infinity;
+                for (var index = 0; index < pageCount(); index += 1) {
+                    var target = cards[pageStart(index)];
+                    var distance = Math.abs(target.offsetLeft - currentScrollLeft);
+                    if (distance < closestDistance) {
+                        closestPage = index;
+                        closestDistance = distance;
+                    }
+                }
+                return closestPage;
+            }
+
+            function updateState(forcePage) {
+                page = typeof forcePage === "number" ? forcePage : nearestPage();
+                previous.disabled = page === 0;
+                next.disabled = page >= pageCount() - 1;
+                Array.prototype.slice.call(dots.children).forEach(function (dot, index) {
+                    var selected = index === page;
+                    dot.setAttribute("aria-selected", String(selected));
+                    dot.tabIndex = selected ? 0 : -1;
+                });
+            }
+
+            function rebuild() {
+                var currentPerView = cardsPerView();
+                if (currentPerView !== previousPerView) {
+                    previousPerView = currentPerView;
+                    buildDots();
+                    setPage(Math.min(page, pageCount() - 1), false);
+                } else {
+                    updateState();
+                }
+            }
+
+            previous.addEventListener("click", function () {
+                setPage(page - 1);
+            });
+            next.addEventListener("click", function () {
+                setPage(page + 1);
+            });
+            viewport.addEventListener("scroll", function () {
+                window.requestAnimationFrame(function () {
+                    updateState();
+                });
+            });
+            viewport.addEventListener("keydown", function (event) {
+                if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    setPage(page - 1);
+                } else if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    setPage(page + 1);
+                } else if (event.key === "Home") {
+                    event.preventDefault();
+                    setPage(0);
+                } else if (event.key === "End") {
+                    event.preventDefault();
+                    setPage(pageCount() - 1);
+                }
+            });
+            window.addEventListener("resize", rebuild);
+            rebuild();
+        });
+    }
     function initProjectFilters() {
         var buttons = document.querySelectorAll("[data-project-filter]");
         var cards = document.querySelectorAll("[data-project-card]");
@@ -1210,6 +1363,7 @@
     function init() {
         initNavigation();
         initProjectFilters();
+        initGoogleReviewsCarousel();
         initFileInputs();
         initCalendarDayForms();
         initEmployeeScheduleForms();

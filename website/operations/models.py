@@ -839,6 +839,10 @@ class SiteSettings(models.Model):
         default="Thoughtful construction, clear communication, and a better experience from first walkthrough to final handoff."
     )
     google_review_url = models.URLField(blank=True, max_length=500)
+    google_places_display_name = models.CharField(max_length=180, blank=True)
+    google_places_rating = models.DecimalField(max_digits=2, decimal_places=1, null=True, blank=True)
+    google_places_review_count = models.PositiveIntegerField(null=True, blank=True)
+    google_reviews_synced_at = models.DateTimeField(null=True, blank=True)
     featured_title = models.CharField(max_length=180, default="Coastal Bathroom Renovation")
     featured_body = models.TextField(
         default="A calm, highly functional renovation shaped around durable materials, thoughtful storage, and the small details that make a space feel finished."
@@ -854,6 +858,27 @@ class SiteSettings(models.Model):
 
     def __str__(self):
         return "Grand Coast site settings"
+
+
+class GoogleReview(models.Model):
+    provider_review_id = models.CharField(max_length=512, unique=True)
+    place_id = models.CharField(max_length=255)
+    author_name = models.CharField(max_length=180, default="Google user")
+    author_uri = models.URLField(blank=True, max_length=1000)
+    author_photo_uri = models.URLField(blank=True, max_length=2000)
+    rating = models.DecimalField(max_digits=2, decimal_places=1)
+    review_text = models.TextField(blank=True)
+    publish_time = models.DateTimeField(null=True, blank=True)
+    google_maps_uri = models.URLField(blank=True, max_length=2000)
+    display_order = models.PositiveIntegerField(default=0)
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["display_order", "-publish_time", "pk"]
+        indexes = [models.Index(fields=["place_id", "display_order"])]
+
+    def __str__(self):
+        return f"{self.author_name} · {self.rating} stars"
 
 
 class Service(models.Model):

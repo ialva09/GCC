@@ -54,6 +54,11 @@ GCC_NATIVE_MEDIA_ENABLED = _env_flag("GCC_NATIVE_MEDIA_ENABLED", False)
 # explicitly enabled.  Browser administration remains behind /gccad/.
 GCC_MOBILE_OWNER_ACCESS_ENABLED = _env_flag("GCC_MOBILE_OWNER_ACCESS_ENABLED", False)
 GCC_MOBILE_OWNER_PUSH_ENABLED = _env_flag("GCC_MOBILE_OWNER_PUSH_ENABLED", False)
+# Google Places credentials are server-only. Never copy these values into the
+# public templates, browser JavaScript, mobile environment, or database.
+GCC_GOOGLE_PLACES_API_KEY = os.getenv("GCC_GOOGLE_PLACES_API_KEY", "").strip()
+GCC_GOOGLE_PLACE_ID = os.getenv("GCC_GOOGLE_PLACE_ID", "").strip()
+GCC_GOOGLE_PLACES_TIMEOUT_SECONDS = int(os.getenv("GCC_GOOGLE_PLACES_TIMEOUT_SECONDS", "8"))
 # Simulation mode is separate from the execution-loop pilot. It is only valid
 # against generated database/media paths beneath the system temporary folder.
 GCC_SIMULATION_MODE = _env_flag("GCC_SIMULATION_MODE", False)

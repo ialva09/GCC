@@ -1556,7 +1556,39 @@ an estimate link only after staff explicitly publishes that link. Invoice and
 payment links are handled the same way: GCC records only links and confirmed
 status, while the detailed commercial document remains in the selected service.
 
-## 33. Mobile owner Command Center access
+## 33. Google Reviews carousel
+
+The public homepage can show up to five cached Google Places reviews in the section
+immediately below the hero. Google supplies the returned relevance order; GCC does
+not rewrite review text. The existing review-link CTA remains available separately.
+
+Keep the Google Places credentials only in website/.env:
+
+~~~dotenv
+GCC_GOOGLE_PLACES_API_KEY=your_server_side_key
+GCC_GOOGLE_PLACE_ID=your_grand_coast_place_id
+GCC_GOOGLE_PLACES_TIMEOUT_SECONDS=8
+~~~
+
+The API key is read only by Django. It is never placed in HTML, browser JavaScript,
+the mobile environment, or database content. The Owner opens Content Studio and
+selects “Sync Google reviews” after the values are configured. A successful sync
+replaces the cache and records the last-sync time; a failed request leaves the last
+successful reviews visible. If no cache exists, the carousel stays hidden and the
+existing Google review link is still available.
+
+Run the migration and an initial sync from the website directory:
+
+~~~powershell
+.\venv\Scripts\python.exe manage.py migrate
+.\venv\Scripts\python.exe manage.py sync_google_reviews
+~~~
+
+Schedule the sync command daily in the deployment environment. The Places API
+returns a maximum of five reviews per request, and each displayed card includes
+Google attribution plus a direct “Read on Google” link.
+
+## 34. Mobile owner Command Center access
 
 The existing admin/superuser account can optionally use the Expo WebView as the Owner
 workspace. This does not create a new Owner role, does not expose the `/gccad/` admin

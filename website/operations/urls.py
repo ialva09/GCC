@@ -129,6 +129,7 @@ urlpatterns = [
     path("team/media/<uuid:pk>/update/", views.media_edit, name="team-media-update"),
     path("team/projects/<uuid:pk>/update-note/", views.project_add_update, name="team-project-add-update"),
     path("dashboard/content/update/", views.content_update, name="content-update"),
+    path("dashboard/content/google-reviews/sync/", views.google_reviews_sync, name="google-reviews-sync"),
     path("portal/", views.portal, name="portal"),
     path("portal/<slug:section>/", views.portal, name="portal-section"),
     path("portal/estimates/<uuid:pk>/external/", views.external_estimate_link, name="external-estimate-link"),

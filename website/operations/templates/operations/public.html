@@ -48,6 +48,49 @@
         </div>
     </section>
 
+    {% if google_reviews %}
+    <section class="section google-reviews-section" aria-labelledby="google-reviews-title">
+        <div class="container">
+            <div class="section-intro split-intro google-reviews-intro">
+                <div><span class="section-kicker">Client perspective</span><h2 id="google-reviews-title">The experience matters.</h2></div>
+                <div class="google-reviews-summary">
+                    {% if site_settings.google_places_rating %}<strong>{{ site_settings.google_places_rating|floatformat:1 }}<span>/5</span></strong><span>from {{ site_settings.google_places_review_count|default:0 }} Google ratings</span>{% endif %}
+                    {% if site_settings.google_review_url %}<a class="text-link" href="{{ site_settings.google_review_url }}" target="_blank" rel="noopener noreferrer">See all reviews <span aria-hidden="true">→</span></a>{% elif google_reviews.0.google_maps_uri %}<a class="text-link" href="{{ google_reviews.0.google_maps_uri }}" target="_blank" rel="noopener noreferrer">See all reviews <span aria-hidden="true">→</span></a>{% endif %}
+                </div>
+            </div>
+            <div class="google-reviews-carousel" data-google-reviews-carousel>
+                <div class="google-reviews-carousel-heading">
+                    <p class="google-reviews-order-note">Reviews are displayed in Google&rsquo;s returned relevance order.</p>
+                    <div class="google-reviews-carousel-controls" aria-label="Google review carousel controls">
+                        <button class="google-reviews-carousel-button" type="button" data-google-reviews-prev aria-label="Show previous Google reviews">←</button>
+                        <button class="google-reviews-carousel-button" type="button" data-google-reviews-next aria-label="Show next Google reviews">→</button>
+                    </div>
+                </div>
+                <div class="google-reviews-viewport" data-google-reviews-viewport tabindex="0" aria-label="Google reviews">
+                    <div class="google-reviews-track" data-google-reviews-track>
+                        {% for review in google_reviews %}
+                        <article class="google-review-card" data-google-review-card>
+                            <div class="google-review-card-header">
+                                {% if review.author_photo_uri %}<img class="google-review-author-photo" src="{{ review.author_photo_uri }}" alt="{{ review.author_name }} profile photo" loading="lazy" referrerpolicy="no-referrer">{% else %}<span class="google-review-author-fallback" aria-hidden="true">G</span>{% endif %}
+                                <div><strong class="google-review-author">{{ review.author_name }}</strong><span class="google-review-attribution">Google review</span></div>
+                            </div>
+                            <div class="google-review-stars" aria-label="{{ review.rating|floatformat:1 }} out of 5 stars">★★★★★</div>
+                            <p class="google-review-text">{% if review.review_text %}{{ review.review_text }}{% else %}This reviewer shared a rating without a written comment.{% endif %}</p>
+                            <div class="google-review-card-footer">
+                                {% if review.publish_time %}<time datetime="{{ review.publish_time|date:'c' }}">{{ review.publish_time|date:'F j, Y' }}</time>{% endif %}
+                                {% if review.google_maps_uri %}<a class="text-link" href="{{ review.google_maps_uri }}" target="_blank" rel="noopener noreferrer">Read on Google <span aria-hidden="true">↗</span></a>{% endif %}
+                            </div>
+                        </article>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="google-reviews-dots" data-google-reviews-dots role="tablist" aria-label="Choose a group of Google reviews"></div>
+                <div class="google-review-attribution-footer" aria-label="Google attribution"><span class="google-wordmark">Google</span> reviews</div>
+            </div>
+        </div>
+    </section>
+    {% endif %}
+
     <section class="section services-section" id="services"><div class="container">
         <div class="section-intro split-intro"><div><span class="section-kicker">What we do</span><h2>Built around your vision.</h2></div><p>From focused remodels to full project oversight, the right plan keeps every decision moving forward.</p></div>
         <div class="service-list service-list-home">
