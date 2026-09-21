@@ -19,7 +19,12 @@ class HealthCheckTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {"status": "unhealthy", "database": "unavailable"})
 
-    def test_health_check_only_accepts_get(self):
+    def test_health_check_accepts_head(self):
+        response = self.client.head(reverse('operations-api:health'))
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_health_check_rejects_post(self):
         response = self.client.post(reverse("operations-api:health"))
 
         self.assertEqual(response.status_code, 405)

@@ -3,11 +3,11 @@
 from django.db import DatabaseError, connection
 from django.http import JsonResponse
 from django.views.decorators.cache import never_cache
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_http_methods
 
 
 @never_cache
-@require_GET
+@require_http_methods(['GET', 'HEAD'])
 def health_check(request):
     """Return a small JSON response that UptimeRobot can assert against."""
 
