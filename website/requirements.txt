@@ -5,3 +5,6 @@ tzdata==2026.3
 django-storages[boto3]>=1.14,<2
 django-unfold==0.104.1
 django-otp[segno]==1.7.0
+gunicorn==23.0.0
+python-dotenv==1.1.0
+whitenoise==6.9.0

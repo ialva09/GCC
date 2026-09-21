@@ -1749,6 +1749,20 @@ class AdminSecurityEvent(models.Model):
         return f"{self.get_event_type_display()} - {self.created_at:%Y-%m-%d %H:%M:%S}"
 
 
+class APIRateLimitBucket(models.Model):
+    """Fixed-window counters used by the API rate limiter."""
+
+    identity = models.CharField(max_length=191, unique=True)
+    window_started_at = models.DateTimeField()
+    request_count = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["window_started_at"], name="api_rate_window_idx"),
+        ]
+
+
 class AdminAccessBlock(models.Model):
     class Scope(models.TextChoices):
         IP = "ip", "IP address"

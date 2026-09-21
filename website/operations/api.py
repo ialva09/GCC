@@ -77,6 +77,7 @@ from .construction_services import (
     submit_daily_report,
     weekly_project_review,
 )
+from .api_rate_limit import api_rate_limit as _api_rate_limit
 from .models import (
     Agreement,
     Activity,
@@ -130,7 +131,6 @@ def _api_login(view):
 
 def _api_access(view):
     @wraps(view)
-    @_api_login
     def wrapped(request, *args, **kwargs):
         from .construction_policies import can_access_operating_system
 
@@ -138,7 +138,7 @@ def _api_access(view):
             return JsonResponse({"error": "Access denied."}, status=403)
         return view(request, *args, **kwargs)
 
-    return wrapped
+    return _api_rate_limit(_api_login(wrapped))
 
 
 def _error(message, status=400):
@@ -424,6 +424,7 @@ def _native_related_record(grant):
 @csrf_exempt
 @never_cache
 @require_POST
+@_api_rate_limit
 def api_v1_native_upload_complete(request):
     raw_token = (
         request.headers.get("X-Grand-Coast-Upload-Token")

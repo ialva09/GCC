@@ -2,11 +2,13 @@ from django.urls import path
 
 from . import api
 from . import construction_api
+from . import health
 
 
 app_name = "operations-api"
 
 urlpatterns = [
+    path("health/", health.health_check, name="health"),
     path("v1/me/", api.api_v1_me, name="me"),
     path("v1/leads/", api.api_v1_leads, name="leads"),
     path("v1/leads/<uuid:pk>/", api.api_v1_lead_detail, name="lead-detail"),

@@ -72,6 +72,12 @@ GCC_EXECUTION_LOOP_USER_IDS = os.getenv("GCC_EXECUTION_LOOP_USER_IDS", "")
 # permission-checked links; it never stores provider credentials or syncs data.
 GCC_EMAIL_DELIVERY_ENABLED = _env_flag("GCC_EMAIL_DELIVERY_ENABLED", False)
 GCC_STORAGE_SMOKE_ENABLED = _env_flag("GCC_STORAGE_SMOKE_ENABLED", False)
+GCC_API_RATE_LIMIT = int(os.getenv("GCC_API_RATE_LIMIT", "120"))
+GCC_API_RATE_WINDOW_SECONDS = int(os.getenv("GCC_API_RATE_WINDOW_SECONDS", "60"))
+if GCC_API_RATE_LIMIT < 1 or GCC_API_RATE_WINDOW_SECONDS < 1:
+    raise ImproperlyConfigured(
+        "GCC_API_RATE_LIMIT and GCC_API_RATE_WINDOW_SECONDS must be positive integers."
+    )
 GCC_STORAGE_PREFIX = os.getenv("GCC_STORAGE_PREFIX", "").strip().strip("/")
 if GCC_STORAGE_PREFIX:
     if not (GCC_SIMULATION_MODE or GCC_STORAGE_SMOKE_ENABLED):
@@ -136,6 +142,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -241,6 +248,11 @@ USE_TZ = True
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_BACKEND = (
+    'whitenoise.storage.CompressedManifestStaticFilesStorage'
+    if not DEBUG
+    else 'django.contrib.staticfiles.storage.StaticFilesStorage'
+)
 
 # User uploads are local during development. Production can opt into the
 # Supabase S3-compatible backend without changing application code.
@@ -282,7 +294,7 @@ STORAGES = {
         'BACKEND': 'django.core.files.storage.FileSystemStorage',
     },
     'staticfiles': {
-        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        'BACKEND': STATICFILES_BACKEND,
     },
     'contact_submissions': {
         'BACKEND': 'django.core.files.storage.FileSystemStorage',
